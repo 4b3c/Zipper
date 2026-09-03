@@ -69,7 +69,7 @@ totals to metrics — individual transactions are never copied into the vault.
 
 With a token (unattended, works on the VPS):
 
-    export CANVAS_TOKEN=...        # ASU disables self-service tokens; request via UTO
+    export CANVAS_TOKEN=...        # some schools disable self-service tokens; ask IT
     python3 -m zipper canvas
 
 Without one, dump the JSON from a **logged-in** browser and pass `--file`. Paste this in
@@ -98,7 +98,7 @@ Then:
     python3 -m zipper canvas --file ~/Downloads/planner.json
     python3 -m zipper agenda
 
-The ASU session expires within the hour, so this is an **on-demand reconciliation**, not
+The browser session expires within the hour, so this is an **on-demand reconciliation**, not
 something launchd can drive. Only a token makes it unattended.
 
 ## Dashboard

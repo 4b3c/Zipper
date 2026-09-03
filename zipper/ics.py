@@ -191,7 +191,7 @@ def _known_codes():
 
 def _clean_canvas(summary, codes):
     """Canvas appends a course tag: 'HW 01 [2026FallC-T-CSE485-CSE423-60367-...]'.
-    Turn that into 'HW 01 · CSE 423', or drop it when it's an ASU org calendar."""
+    Turn that into 'HW 01 · CSE 423', or drop it when it's an org calendar."""
     m = re.search(r'\s*\[([^\]]+)\]\s*$', summary)
     if not m:
         return summary.strip()
@@ -199,7 +199,7 @@ def _clean_canvas(summary, codes):
     hits = [codes[c] for c in codes if c in tag.replace('-', '')]
     if hits:
         return '%s · %s' % (title, '/'.join(sorted(set(hits))))
-    return '%s · ASU' % title if tag.startswith('ORG-') else title
+    return '%s · org' % title if tag.startswith('ORG-') else title
 
 def _ics_text(src):
     if src.startswith('http'):

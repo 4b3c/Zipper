@@ -28,7 +28,8 @@ def _canvas_courses():
 def _canvas_fetch(days):
     """Pull planner items straight from the API. Needs CANVAS_TOKEN.
 
-    Until ASU grants a token this raises, and --file is the way in. The parsing
+    Where the institution withholds tokens this raises, and --file is the way
+    in. The parsing
     below is identical either way, so the token is a swap of transport only.
     """
     tok = os.environ.get('CANVAS_TOKEN')

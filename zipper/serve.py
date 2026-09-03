@@ -592,7 +592,7 @@ def do_refresh():
                  ('github', gh.cmd_github, {'since_days': 30, 'full': False})]
         if os.environ.get('CANVAS_TOKEN'):
             steps.append(('canvas', canvas.cmd_canvas, {'file': None, 'days': 60}))
-        # Run the sources concurrently: ASU's Canvas ICS alone takes ~6s to
+        # Run the sources concurrently: a Canvas ICS feed alone can take ~6s to
         # generate, and GitHub has no reason to queue behind it.
         dlock = threading.Lock()
 

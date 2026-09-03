@@ -107,7 +107,7 @@ last_touched: 2026-09     # evidence of activity. Only ever moves FORWARD
 last_push: 2026-09-03     # written by `zipper github`
 commits_recent: 8         # written by `zipper github`
 commits_mine: 3           # on an org repo: yours, where commits_recent is the team's
-repos: [pantry-app, ASU-LL/orbitscape]   # hand-maintained; first is primary
+repos: [my-app, some-org/team-repo]      # hand-maintained; first is primary
 revenue_to_date: 0        # 0 is a fact; blank is invisible to queries
 revenue_intent: true      # separates ventures from builds
 next_action: email three coffee shops the demo link   # ONE concrete physical action
@@ -354,7 +354,7 @@ An event note exists for calendar entries that have a *reason*: what you are goi
 out of it, and afterwards, what actually happened.
 
 ```bash
-python3 -m zipper event "Orbitscape Meeting" --date 2026-09-04 --about "Orbitscape"
+python3 -m zipper event "Team Meeting" --date 2026-09-04 --about "Some Project"
 python3 -m zipper events --pending
 ```
 
@@ -484,7 +484,6 @@ zipper/          the engine and the dashboard
 bot/             the Discord relay: gateway client, HTTP surface
 utils/           the two modules the bot depends on
 deploy/          systemd units and an nginx vhost
-docs/            setup journal
 ```
 
 `CLAUDE.md` governs how an agent should work in this repo. It deliberately contains nothing

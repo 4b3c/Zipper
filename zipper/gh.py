@@ -11,8 +11,8 @@ from . import core
 
 
 GH_USER = os.environ.get('ZIPPER_GH_USER', '')
-# Orgs whose repos also count as his work. Team repos live here (Luminosity Lab),
-# so without this Orbitscape and Mini Charlotte look dead in the vault when they aren't.
+# Orgs whose repos also count as the operator's work. Team repos live under an org,
+# so without this a team project looks dead in the vault when it isn't.
 GH_ORGS = [o for o in os.environ.get('ZIPPER_GH_ORGS', '').split(',') if o.strip()]
 
 def _token():

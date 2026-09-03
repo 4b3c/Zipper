@@ -62,7 +62,7 @@ def resolve_events(fix=False):
     """Match every Events/ note to the calendar event it was written for.
 
     The key is the pair (uid, start). A uid on its own names a whole recurring
-    series, so it cannot say *which* Friday's Orbitscape meeting a note is
+    series, so it cannot say *which* Friday's standup a note is
     about. But a uid that occurs exactly once and has moved is a reschedule,
     not a mystery — people move things, and a note still claiming the old time
     is exactly the stale copy this vault exists not to keep. With `fix`, the

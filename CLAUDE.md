@@ -41,7 +41,6 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `zipper/README.md` | operational reference. **Read before touching any of it** |
 | `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
-| `docs/` | setup journal |
 
 Run it as a module: `python3 -m zipper <command>`, `python3 -m zipper.serve`.
 
