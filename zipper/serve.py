@@ -9,7 +9,7 @@ Design notes, 2026-09-01:
     presented as current.
 
 No framework: stdlib only, so the VPS needs nothing but python3.
-    python3 Scripts/serve.py --port 8800
+    python3 -m zipper.serve --port 8800
 """
 import argparse, datetime, glob, html, json, os, shutil, subprocess, sys, tempfile, threading, time
 import base64, io, re, urllib.parse
@@ -102,7 +102,7 @@ def _queue_prompt():
               "these changes affect, and update the vault to match. Flag anything that looks "
               "contradictory rather than guessing. Then tell me what you changed.\n\n"
               "Cross each item off as you finish it, using the key in brackets:\n"
-              "  python3 Scripts/serve.py --mark <key>\n"
+              "  python3 -m zipper.serve --mark <key>\n"
               "An open dashboard picks that up within a second, so the card shows what is "
               "actually left rather than what arrived.")
 

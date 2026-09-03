@@ -18,8 +18,9 @@ Two programs and a data format.
   fetches from external sources, and writes back only facts.
 - `python3 -m zipper.serve` — a local web dashboard over what the engine wrote. Stdlib HTTP server,
   no framework.
-- `bot/` — a Discord relay. It needs an HTTP endpoint to talk to; the service that used to
-  provide one was removed, so treat it as a front door looking for a house.
+- `bot/` — a Discord relay. It posts every message it sees to the server's `/discord`
+  endpoint, which delivers it into the live Claude session (or starts one primed with it).
+  Replies go back out through `python3 -m zipper discord send`.
 - The vault — plain markdown, one directory per note type. **Not in this repository.**
 
 Both are stdlib-only and target `python3` as shipped. No pip installs, no virtualenv. Keep
@@ -38,7 +39,7 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `zipper/chat.py` | the Discord CLI |
 | `zipper/serve.py` | the dashboard |
 | `zipper/README.md` | operational reference. **Read before touching any of it** |
-| `bot/` | Discord relay — the only part of the old runtime kept |
+| `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
 | `docs/` | setup journal |
 
