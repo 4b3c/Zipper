@@ -82,7 +82,11 @@ def ago(iso):
 # ---------------------------------------------------------------- terminal
 
 TERM = {'proc': None, 'port': 8801, 'url': '', 'enabled': True, 'ready': None,
-        'host': '127.0.0.1', 'cred': '', 'session': 'brain'}
+        'host': '127.0.0.1', 'cred': '',
+        # One tmux session per Brain instance. Overridable so a second
+        # instance -- a test, or a staging box -- cannot paste into the
+        # conversation the real one is holding.
+        'session': os.environ.get('BRAIN_TMUX_SESSION', 'brain')}
 
 def _queue_prompt():
     """The queue as an opening instruction — only what is still outstanding."""
@@ -164,6 +168,33 @@ def new_session():
     return {'ok': True}
 
 
+def paste_to_session(text, label='text'):
+    """Type a block into the running pane.
+
+    Everything that reaches a live conversation from outside goes through here:
+    the run queue, and now anything arriving over Discord. See inject_queue for
+    why this is a bracketed paste and not send-keys.
+    """
+    tmux = shutil.which('tmux')
+    if not tmux:
+        return {'ok': False, 'error': 'tmux not installed'}
+    if not session_exists():
+        return {'ok': False, 'error': 'no conversation to hand %s to' % label}
+    try:
+        subprocess.run([tmux, 'load-buffer', '-b', 'brainq', '-'],
+                       input=text.encode('utf-8'), check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([tmux, 'paste-buffer', '-b', 'brainq', '-t', TERM['session'],
+                        '-p', '-d'], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.25)                   # let the TUI settle before submitting
+        subprocess.run([tmux, 'send-keys', '-t', TERM['session'], 'Enter'],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    return {'ok': True}
+
+
 def inject_queue(prompt):
     """Hand this run's queue to a conversation that is already running.
 
@@ -177,29 +208,15 @@ def inject_queue(prompt):
     what makes a multi-line paste one message there. A plain shell does not, and
     would run each line; that is the shape of it if this ever misbehaves.
     """
-    tmux = shutil.which('tmux')
-    if not tmux:
-        return {'ok': False, 'error': 'tmux not installed'}
-    if not session_exists():
-        return {'ok': False, 'error': 'no conversation to hand the queue to'}
-    try:
-        subprocess.run([tmux, 'load-buffer', '-b', 'brainq', '-'],
-                       input=prompt.encode('utf-8'), check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([tmux, 'paste-buffer', '-b', 'brainq', '-t', TERM['session'],
-                        '-p', '-d'], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.25)                   # let the TUI settle before submitting
-        subprocess.run([tmux, 'send-keys', '-t', TERM['session'], 'Enter'],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        publish('diff', 'terminal    could not hand over the queue: %s' % e)
-        return {'ok': False, 'error': str(e)}
+    res = paste_to_session(prompt, 'the queue')
+    if not res['ok']:
+        publish('diff', 'terminal    could not hand over the queue: %s' % res['error'])
+        return res
     publish('diff', 'terminal    queue handed to the running conversation')
-    return {'ok': True}
+    return res
 
 
-def start_terminal(mode='blank'):
+def start_terminal(mode='blank', prompt=None):
     """Spawn ttyd running Claude Code in the vault. Only ever called from the
     page, never at launch: opening the dashboard must not start a Claude
     session, because merely looking at the day should not cost tokens.
@@ -224,7 +241,8 @@ def start_terminal(mode='blank'):
     if mode == 'queue' and session_exists():
         new_session()
     resumed = session_exists()
-    prompt = '' if resumed else (_queue_prompt() if mode == 'queue' else '')
+    opening = prompt or ''
+    prompt = '' if resumed else (opening or (_queue_prompt() if mode == 'queue' else ''))
     handed = False
     if resumed and mode == 'catchup':
         res = inject_queue(_queue_prompt())
@@ -279,6 +297,56 @@ def start_terminal(mode='blank'):
     except Exception as e:
         publish('diff', 'terminal    failed: %s' % e)
         return {'ok': False, 'error': str(e)}
+
+# ---------------------------------------------------------------- inbound
+#
+# A message that arrives from outside the dashboard -- today that means Discord,
+# tomorrow a cron trigger or a webhook. There is exactly one Claude session, and
+# these are the three states it can be in:
+#
+#   live      ttyd is serving and tmux holds a conversation  -> paste into it
+#   detached  tmux still holds the conversation, ttyd is not serving
+#             (the tab was closed, or the server restarted)  -> bring ttyd back,
+#                                                                then paste
+#   cold      no tmux session at all                         -> start one, primed
+#                                                                with the message
+#
+# The cold path deliberately does NOT paste. claude-session.sh reads the
+# ready-file before exec'ing claude, so the message becomes the conversation's
+# opening prompt -- no race against a TUI that has not drawn yet.
+
+def _tagged(text, source):
+    """Claude needs to know where this came from, because the reply goes back the
+    same way. The instruction is part of the message rather than the system
+    prompt so it survives into a conversation that started some other way."""
+    return ('[via %s] %s\n\n'
+            '(Reply to this by running: python3 %s discord send "your reply".'
+            ' The sender is not watching this terminal.)'
+            % (source, text, os.path.join(os.path.basename(HERE), 'brain.py')))
+
+
+def deliver_to_claude(text, source='discord'):
+    if not TERM['enabled']:
+        return {'ok': False, 'error': 'terminal disabled'}
+    body = _tagged(text, source)
+
+    if session_exists():
+        state = 'live' if terminal_up() else 'detached'
+        if state == 'detached':
+            r = start_terminal('resume')
+            if not r['ok']:
+                return r
+            time.sleep(1.0)          # let tmux finish attaching before pasting
+        res = paste_to_session(body, 'a %s message' % source)
+        if res['ok']:
+            publish('diff', 'terminal    %s message delivered (%s)' % (source, state))
+        return dict(res, state=state)
+
+    r = start_terminal('blank', prompt=body)
+    if r['ok']:
+        publish('diff', 'terminal    %s message started a new conversation' % source)
+    return dict(r, state='cold')
+
 
 def stop_terminal():
     if TERM['proc']:
@@ -1526,13 +1594,15 @@ window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__
 
 # ---------------------------------------------------------------- http
 
-SRV = {'server': None, 'clients': 0, 'quit_timer': None}
+SRV = {'server': None, 'clients': 0, 'quit_timer': None, 'daemon': False}
 
 def _maybe_quit():
     """Last tab closed -> stop. A reload also drops the SSE stream, so wait a
     beat before believing it: a grace window tells a reload from a real close."""
     if SRV['clients'] > 0:
         return
+    if SRV.get('daemon'):
+        return          # always-on: the browser is a viewer, not the owner
     print('no clients left - shutting down')
     stop_terminal()
     threading.Thread(target=SRV['server'].shutdown, daemon=True).start()
@@ -1704,6 +1774,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(res), 'application/json')
             except Exception as e:
                 self._send(400, json.dumps({'error': str(e)}), 'application/json')
+        elif self.path == '/discord':
+            # The bot posts every message it sees here. It is loopback-only and
+            # unauthenticated, exactly like the rest of this server.
+            try:
+                n = int(self.headers.get('Content-Length', 0))
+                body = json.loads(self.rfile.read(n) or b'{}')
+            except Exception:
+                self._send(400, json.dumps({'error': 'bad json'}), 'application/json')
+                return
+            text = (body.get('content') or body.get('prompt') or '').strip()
+            if not text:
+                self._send(400, json.dumps({'error': 'content required'}),
+                           'application/json')
+                return
+            res = deliver_to_claude(text, body.get('source', 'discord'))
+            self._send(200 if res.get('ok') else 503, json.dumps(res),
+                       'application/json')
         elif self.path == '/api/canvas':
             n = int(self.headers.get('Content-Length', 0))
             try:
@@ -1745,6 +1832,8 @@ def main():
     ap.add_argument('--mark', metavar='KEY',
                     help='cross a queue item off by key (or unique prefix) and exit')
     ap.add_argument('--queue', action='store_true', help='print the run queue and exit')
+    ap.add_argument('--daemon', action='store_true',
+                    help='stay up when the last tab closes (for systemd)')
     a = ap.parse_args()
     if a.mark or a.queue:
         feed_load()
@@ -1763,10 +1852,13 @@ def main():
     TERM['host'] = a.term_host
     TERM['cred'] = a.term_cred
     SRV['server'] = srv
+    SRV['daemon'] = a.daemon
     feed_load()
     threading.Thread(target=feed_watch, daemon=True).start()
     url = 'http://%s:%d/' % (a.host, a.port)
-    print('brain dashboard on %s' % url)
+    print('brain dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))
+    if a.daemon:
+        print('inbound: POST %sdiscord   {"content": "..."}' % url)
     threading.Thread(target=do_refresh, daemon=True).start()
     if a.open:
         import webbrowser

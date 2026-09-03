@@ -1,8 +1,10 @@
 import os
 
-# Where the bot posts what it receives. The original Zipper service that used to
-# answer on 4199 is retired; point this at whatever handles messages now.
-ZIPPER_URL = os.environ.get('ZIPPER_URL', 'http://127.0.0.1:4199')
+# Where the bot forwards every message it sees. This is Brain's /discord
+# endpoint: it decides whether to paste into a live Claude session, wake a
+# detached one, or start a new conversation primed with the message.
+BRAIN_URL = os.environ.get('BRAIN_URL', 'http://127.0.0.1:8800')
+ZIPPER_URL = os.environ.get('ZIPPER_URL', BRAIN_URL)
 
-# Where that handler pushes replies back for the bot to deliver.
+# Where Brain (and any agent session) reaches the bot to send, read and attach.
 BOT_URL = os.environ.get('BOT_URL', 'http://127.0.0.1:4200')

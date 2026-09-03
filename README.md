@@ -83,17 +83,59 @@ person, school, or host is compiled in.
 
 ---
 
-## The bot
+## The lifecycle
 
-```bash
-pip install -r requirements.txt
-DISCORD_TOKEN=... DISCORD_CHANNEL_ID=... ZIPPER_URL=http://127.0.0.1:8800 \
-  python3 -m bot.discord_bot
+Two processes stay up; the third comes and goes.
+
+```
+brain-web.service       serve.py --daemon     dashboard, views, POST /discord
+brain-discord.service   bot/                  the gateway connection, always on
+   └── claude           ttyd + tmux           only while a conversation exists
 ```
 
-It POSTs each message to `ZIPPER_URL/discord` and serves an HTTP API on `BOT_URL` for the
-handler to push replies back through. **The service that used to answer is gone**, so the
-endpoint is now yours to provide.
+The Claude session is deliberately not a service. Opening the dashboard must not
+start one — merely looking at your day should not cost tokens — so it starts when you
+start it, survives a closed tab because tmux owns it, and can be resumed later.
+
+**A message from Discord lands in whichever of those three states the session is in:**
+
+| tmux session | ttyd | what happens |
+|---|---|---|
+| live | serving | pasted straight into the running conversation |
+| live | stopped | ttyd is brought back up, then pasted |
+| none | — | a new conversation starts, primed with the message |
+
+The last case takes the quiet path: rather than racing a TUI that has not drawn yet, the
+message is written to the ready-file that `claude-session.sh` reads before exec'ing, so it
+becomes the conversation's opening prompt.
+
+Messages arrive tagged `[via discord]` and carry the command to reply with, because the
+sender is not watching the terminal.
+
+## Talking back
+
+```bash
+python3 brain/brain.py discord send "the build finished"
+python3 brain/brain.py discord send "results" --file report.html
+python3 brain/brain.py discord read --limit 5
+python3 brain/brain.py discord status
+```
+
+Stdlib-only — `brain/` never imports `discord`, and the bot is the only process holding a
+gateway connection. That split is what lets a scheduled job or a finished long-running task
+say something without owning a socket.
+
+## Running it
+
+```bash
+pip install -r requirements.txt        # bot only; brain/ needs nothing
+cp .env.example .env                   # fill in BRAIN_VAULT and the Discord pair
+python3 brain/serve.py --daemon        # stays up when the last tab closes
+python3 -m bot.discord_bot
+```
+
+`deploy/` has systemd units for both and an nginx vhost. **Bind it to a tailnet address,
+never `0.0.0.0`** — nothing in this server is authenticated, and it can start a shell.
 
 ---
 

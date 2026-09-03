@@ -5,7 +5,7 @@ import aiohttp
 from aiohttp import ClientTimeout
 import discord
 
-from utils.constants import ZIPPER_URL
+from utils.constants import BRAIN_URL
 
 DISCORD_CHANNEL_ID = None  # set by __init__.py at startup
 
@@ -15,17 +15,22 @@ client = discord.Client(intents=intents)
 
 
 async def post_to_zipper(prompt: str, discord_thread_id: int) -> bool:
-    """Forward a message to zipper. Returns True if zipper acknowledged."""
+    """Forward a message to Brain. Returns True if Brain acknowledged.
+
+    Brain decides what happens to it: pasted into a live Claude session,
+    delivered to a detached one after bringing it back up, or used as the
+    opening prompt of a new conversation."""
     try:
         timeout = ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(f"{ZIPPER_URL}/discord", json={
+            async with session.post(f"{BRAIN_URL}/discord", json={
                 "prompt": prompt,
+                "source": "discord",
                 "discord_thread_id": discord_thread_id,
             }) as resp:
                 return resp.status == 200
     except Exception as e:
-        print(f"[discord] post_to_zipper error: {e}")
+        print(f"[discord] post to Brain failed: {e}")
         return False
 
 

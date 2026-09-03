@@ -1,0 +1,15 @@
+[Unit]
+Description=Brain — Discord relay, always on
+After=network-online.target brain-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/zipper/.venv/bin/python -m bot.discord_bot
+WorkingDirectory=/opt/zipper
+EnvironmentFile=/opt/zipper/.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
