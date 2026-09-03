@@ -1,29 +1,32 @@
 # Zipper Discord Bot
 
-Thin relay between Discord and the Zipper core service.
+A thin relay between Discord and the Zipper server. It holds the only gateway connection in
+the system; it holds no conversation state at all.
 
 ## Architecture
 
 ```
 bot/
-├── discord_bot.py   # Entry point — asyncio.run(main())
+├── discord_bot.py   # entry point — asyncio.run(main())
 ├── __init__.py      # main() — aiohttp server + Discord client startup
-├── client.py        # Discord gateway: on_message, on_ready, resolve_thread
-├── server.py        # HTTP handlers: /send, /history, /edit, /react, /inject
-└── zipper-discord.service
+├── client.py        # the gateway: on_ready, on_message, post_to_zipper, resolve_thread
+└── server.py        # HTTP surface: /send, /history, /edit, /react, /inject, /typing
 ```
 
-**Flow:**
-1. Discord message arrives → `client.py` POSTs to zipper's `/discord` endpoint
-2. Zipper runs the LLM loop in the background
-3. Zipper POSTs the result back to this bot's `/send` endpoint
-4. Bot sends the reply in the Discord thread
+**Inbound** — a message in the channel:
 
-All conversation state lives in zipper, never here.
+1. `client.py` POSTs it to the server's `/discord` endpoint
+2. the server delivers it into the live Claude session — pasting into a running
+   conversation, waking a detached one, or starting a new one primed with the message
+3. Claude replies by running `python3 -m zipper discord send "..."`, which POSTs to this
+   bot's `/send`
+4. the bot posts it **in the channel**
+
+Replies land in the channel, not in a thread. Until 2026-09-03 every message opened a thread
+named after its first 50 characters, which made one conversation per sentence. Messages that
+arrive in an existing thread are still relayed, so anything opened before that keeps working.
 
 ## Service
-
-Managed by systemd:
 
 ```bash
 systemctl status zipper-discord
@@ -31,19 +34,24 @@ systemctl restart zipper-discord
 journalctl -u zipper-discord -f
 ```
 
-To install or update the service file:
+The unit is `deploy/zipper-discord.service`; install it with:
 
 ```bash
-cp bot/zipper-discord.service /etc/systemd/system/zipper-discord.service
+cp deploy/zipper-discord.service /etc/systemd/system/
 systemctl daemon-reload
 ```
 
-Environment file: `/opt/zipper/app/.env`
-Port: `127.0.0.1:4200`
+Environment file: `/opt/zipper/.env`. Listens on `127.0.0.1:4200`.
 
-## Environment Variables
+## Environment
 
 ```
-DISCORD_TOKEN=
-DISCORD_CHANNEL_ID=
+DISCORD_TOKEN=          # the bot token
+DISCORD_CHANNEL_ID=     # the one channel it listens in
+BOT_URL=http://127.0.0.1:4200      # where zipper sends replies
+ZIPPER_URL=http://127.0.0.1:8800   # where this bot forwards messages
 ```
+
+This is the only part of the system with a pip dependency (`discord.py`, `aiohttp`). The
+engine stays stdlib-only, which is what lets a cron job or a finished background task speak
+without owning a socket.
