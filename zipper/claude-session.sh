@@ -6,7 +6,7 @@
 # where the notes are rather than inferring it from its own location.
 cd "${ZIPPER_VAULT:-$(dirname "${BASH_SOURCE[0]}")/..}" || exit 1
 
-# Zipper.app inherits Finder's minimal PATH, which has neither ~/.local/bin
+# A launcher or systemd gives a minimal PATH, with neither ~/.local/bin
 # (claude) nor /opt/homebrew/bin. Same trap that stopped the app launching.
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 CLAUDE="$(command -v claude)"

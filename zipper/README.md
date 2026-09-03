@@ -103,8 +103,6 @@ something launchd can drive. Only a token makes it unattended.
 
 ## Dashboard
 
-Double-click **Zipper.app** on the Desktop. It fetches once, opens a tab, and quits when you
-close the tab. Rebuild the bundle with `./zipper/install-app.sh`.
 
     python3 -m zipper.serve --port 8800 [--open]     # the same thing, by hand
 
@@ -204,7 +202,6 @@ expose the ttyd port through nginx.
 **PATH.** Finder launches an app with `/usr/bin:/bin:/usr/sbin:/sbin`, where none of `ttyd`,
 `tmux`, `gh` or `claude` exist. `serve.py` appends `~/.local/bin`, `/opt/homebrew/bin` and
 `/usr/local/bin` at startup and the app launcher exports the same. Before that fix the
-terminal card said *ttyd not installed* under Zipper.app and worked fine from a shell — and
 the same trap made `gh auth token` fail, so a launch-time fetch quietly wrote public-repo
 data over the notes.
 
@@ -235,7 +232,6 @@ connection and every tab close silently started a new Claude.
 session, so the next attach starts fresh. **refresh** re-fetches on demand; the launch
 fetch still happens, this just means you do not have to relaunch to get current data.
 
-Relaunching Zipper.app reattaches to the *existing* conversation, so a new run's queue is
 not injected into it — attaching to a live tmux session runs no command, and the prompt
 file is never read. **new conversation with queue** is the button that means it: it kills
 the session first, so `claude-session.sh` actually runs and actually reads the prompt.

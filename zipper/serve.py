@@ -20,7 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-# Finder launches Zipper.app with PATH=/usr/bin:/bin:/usr/sbin:/sbin. ttyd, tmux and
+# A desktop launcher hands a process PATH=/usr/bin:/bin:/usr/sbin:/sbin, and systemd
+# gives it even less. ttyd, tmux and
 # gh all live in Homebrew's bin, so under the app every shell-out failed silently:
 # the terminal card said "ttyd not installed", and worse, the fetcher's `gh auth token`
 # found no gh, fell back to public repos, and rewrote note frontmatter from a partial
@@ -140,8 +141,8 @@ def terminal_up():
     """Is ttyd actually serving? This, not a page-local flag, is what decides
     whether the card shows start buttons.
 
-    `window.__mounted` only ever lived in one tab, and Zipper.app opens a fresh
-    one every launch — so after a reload the page offered to *resume* a
+    `window.__mounted` only ever lived in one tab, and a launcher opens a fresh
+    one every time — so after a reload the page offered to *resume* a
     conversation that was already on screen. The server knows the truth: if ttyd
     is up the terminal is viewable right now, and there is nothing to resume.
     """
@@ -1009,7 +1010,7 @@ function row(e){
 function drawTerm(){
   const box=document.getElementById('termstart'); if(!box) return;
   // `on` means the terminal is viewable right now — either this page mounted it,
-  // or ttyd is already serving one (a reload, or Zipper.app's fresh tab). Either
+  // or ttyd is already serving one (a reload, or a freshly opened tab). Either
   // way there is nothing to resume, so no start buttons.
   const on=window.__mounted||window.__termup, live=window.__session, ready=window.__queueready;
   const qd = ready ? '' : ' disabled title="nothing in this run&#39;s queue to consume"';
