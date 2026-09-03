@@ -1827,9 +1827,11 @@ def main():
     ap.add_argument('--open', action='store_true', help='open a browser and exit when it closes')
     ap.add_argument('--no-terminal', action='store_true', help='skip the embedded Claude session')
     ap.add_argument('--term-port', type=int, default=8801)
-    ap.add_argument('--term-host', default='127.0.0.1',
+    # Defaults come from the environment so a systemd EnvironmentFile can set
+    # them; the flags still win when both are given.
+    ap.add_argument('--term-host', default=os.environ.get('ZIPPER_TERM_HOST', '127.0.0.1'),
                     help='ttyd -W is a live shell; leave on loopback unless you mean it')
-    ap.add_argument('--term-cred', default='',
+    ap.add_argument('--term-cred', default=os.environ.get('ZIPPER_TERM_CRED', ''),
                     help='user:password for the terminal; REQUIRED to bind it off loopback')
     ap.add_argument('--mark', metavar='KEY',
                     help='cross a queue item off by key (or unique prefix) and exit')
