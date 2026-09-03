@@ -128,6 +128,20 @@ def _wait_port(host, port, timeout=6.0):
     return False
 
 
+def _port_open(host, port, timeout=0.3):
+    """Is something already accepting on this port right now?"""
+    import socket
+    c = socket.socket()
+    c.settimeout(timeout)
+    try:
+        c.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        c.close()
+
+
 def session_exists():
     tmux = shutil.which('tmux')
     if not tmux:
@@ -146,7 +160,13 @@ def terminal_up():
     conversation that was already on screen. The server knows the truth: if ttyd
     is up the terminal is viewable right now, and there is nothing to resume.
     """
-    return TERM['proc'] is not None and TERM['proc'].poll() is None
+    if TERM['proc'] is not None and TERM['proc'].poll() is None:
+        return True
+    # A ttyd from a previous serve.py can outlive it (the service was restarted
+    # under an open dashboard). It is still serving the same tmux session, so it
+    # is still the terminal -- adopt it rather than spawning a second one that
+    # cannot bind the port and dies silently.
+    return _port_open(TERM['host'], TERM['port'])
 
 
 def new_session():
@@ -256,6 +276,12 @@ def start_terminal(mode='blank', prompt=None):
             open(TERM['ready'], 'w').write(prompt)
         return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
                 'primed': bool(prompt) or handed}
+    if _port_open(TERM['host'], TERM['port']):
+        # A ttyd this process did not spawn is still serving the port (the
+        # service was restarted under it). Spawning a second one would fail to
+        # bind and die silently, so use the one that is there.
+        return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
+                'primed': handed, 'adopted': True}
     exe = shutil.which('ttyd')
     if not exe:
         publish('diff', 'terminal    ttyd not installed')
@@ -289,6 +315,10 @@ def start_terminal(mode='blank', prompt=None):
             publish('diff', 'terminal    ttyd did not come up on port %d' % TERM['port'])
             return {'ok': False, 'error': 'terminal did not start'}
         publish('diff', 'terminal    %s session started' % mode)
+        # The page may be holding an iframe against the ttyd this one replaced.
+        # Without this it shows a dead terminal until someone reloads -- which
+        # is what "sending from Discord disconnects the dashboard" looked like.
+        publish('terminal', 'session started')
         if handed:
             pass
         elif mode == 'catchup' and session_exists() and _queue_prompt():
@@ -322,7 +352,7 @@ def _tagged(text, source):
     same way. The instruction is part of the message rather than the system
     prompt so it survives into a conversation that started some other way."""
     return ('[via %s] %s\n\n'
-            '(Reply to this by running: python3 %s discord send "your reply".'
+            '(Reply to this by running: %s discord send "your reply".'
             ' The sender is not watching this terminal.)'
             % (source, text, 'python3 -m zipper'))
 
@@ -1090,6 +1120,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(ev.key==='ArrowLeft') goDay(-1); else if(ev.key==='ArrowRight') goDay(1);
   });
   drawDay();
+});
+es.addEventListener('terminal',e=>{
+  // ttyd was (re)started under us -- point the iframe at the live one.
+  const p=JSON.parse(e.data).port; if(!p) return;
+  window.__termup=true; window.__termport=p; window.__mounted=true;
+  mountTerm(p); drawTerm();
 });
 es.addEventListener('source',()=>panels());
 es.addEventListener('status',e=>{document.getElementById('status').textContent=JSON.parse(e.data).text;});
