@@ -59,6 +59,6 @@ Both services were listening on `0.0.0.0`, making them publicly accessible.
 - `main.py`: uvicorn bind changed from `0.0.0.0` to `127.0.0.1`
 - `bot/__init__.py`: reads `BOT_HOST` from env; added `BOT_HOST=127.0.0.1` to `.env`
 
-**nginx:** Created `/etc/nginx/sites-available/zipper` with two server blocks listening on the tailscale IP (`100.117.22.95`) for ports 4199 and 4200, proxying to the local services. Enabled via symlink in `sites-enabled/`.
+**nginx:** Created `/etc/nginx/sites-available/zipper` with two server blocks listening on the machine's tailscale IP (`tailscale ip -4`) for ports 4199 and 4200, proxying to the local services. Enabled via symlink in `sites-enabled/`.
 
 Inter-service communication is unaffected — `BOT_URL` and `ZIPPER_URL` in `utils/constants.py` already use `127.0.0.1`.

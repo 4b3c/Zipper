@@ -6,11 +6,14 @@ A personal assistant built in two halves that finally met.
 with structured frontmatter, a stdlib-only engine that reads it, and a local dashboard that
 puts the day in front of you. This is the part that works.
 
-**everything else** — the original Zipper: a self-modifying agent that ran 24/7 on a VPS,
-took tasks over Discord, and could rewrite and restart itself. Retired in September 2026;
-kept here because the Discord relay is being reused and the LLM loop is worth reading.
+**`bot/`** — a Discord relay kept from the original Zipper: it opens a thread per
+conversation, forwards messages to an HTTP endpoint, and delivers replies back. Roughly
+seventy lines, and the right front door for something that works for a while and then
+reports in.
 
-Zipper's problem was never the model. It was that it had no job. `brain/` is the job.
+Everything else Zipper used to be — the self-modifying agent, its tool loop, its own web
+dashboard — was removed in September 2026. It is in the history if you want it. Zipper's
+problem was never the model; it was that it had no job. `brain/` is the job.
 
 ---
 
@@ -64,26 +67,17 @@ person, school, or host is compiled in.
 
 ---
 
-## Zipper (retired)
+## The bot
 
-The original: a FastAPI service that held a tool-using loop, a Discord bot as its front
-door, and cron hitting a `/wake` endpoint on a schedule. It could edit its own source,
-restart itself, and roll back if the restart crashed.
-
-```
-main.py         FastAPI — /chat /discord /wake /status
-bot/            Discord gateway; a thin relay, ~70 lines
-llm/            the conversation loop and model routing
-tools/          bash, file, web, task, restart
-storage/        conversations, memory, schedule, todos
-prompts/        system prompts per surface
+```bash
+pip install -r requirements.txt
+DISCORD_TOKEN=... DISCORD_CHANNEL_ID=... ZIPPER_URL=http://127.0.0.1:8800 \
+  python3 -m bot.discord_bot
 ```
 
-It died of economics and purpose: local models were too slow, cloud models too expensive,
-and there was no task worth the tokens. The interesting fragment is `bot/` — a Discord
-thread is a good interface for something that works for a while and reports back.
-
-See `docs/CLAUDE.md` for the original architecture notes.
+It POSTs each message to `ZIPPER_URL/discord` and serves an HTTP API on `BOT_URL` for the
+handler to push replies back through. **The service that used to answer is gone**, so the
+endpoint is now yours to provide.
 
 ---
 
@@ -91,9 +85,9 @@ See `docs/CLAUDE.md` for the original architecture notes.
 
 ```
 brain/          the vault engine, the dashboard, and their docs
-bot/            Discord relay (reused)
-llm/ tools/ storage/ utils/ prompts/    original Zipper runtime
-docs/           architecture notes, setup journal
+bot/            Discord relay
+utils/          the two constants the bot needs; nothing else survived
+docs/           setup journal
 ```
 
 ## Not in this repository

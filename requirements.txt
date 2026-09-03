@@ -1,7 +1,4 @@
-anthropic
-python-dotenv
-fastapi
-uvicorn
-discord.py
-aiohttp
-requests
+# brain/ needs nothing -- it is stdlib-only, by design.
+# These are for bot/ alone.
+discord.py>=2.3
+aiohttp>=3.9

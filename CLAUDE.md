@@ -18,6 +18,8 @@ Two programs and a data format.
   fetches from external sources, and writes back only facts.
 - `brain/serve.py` — a local web dashboard over what the engine wrote. Stdlib HTTP server,
   no framework.
+- `bot/` — a Discord relay. It needs an HTTP endpoint to talk to; the service that used to
+  provide one was removed, so treat it as a front door looking for a house.
 - The vault — plain markdown, one directory per note type. **Not in this repository.**
 
 Both are stdlib-only and target `python3` as shipped. No pip installs, no virtualenv. Keep
@@ -32,9 +34,9 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `brain/README.md` | operational reference. **Read before touching either** |
 | `brain/claude-session.sh` | ttyd entry point for the embedded terminal |
 | `brain/install-app.sh` | builds a macOS `.app` wrapper |
-| `bot/` | Discord relay, reused from the retired runtime |
-| `llm/` `tools/` `storage/` `utils/` `prompts/` | retired Zipper runtime |
-| `docs/` | original architecture notes |
+| `bot/` | Discord relay — the only part of the old runtime kept |
+| `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
+| `docs/` | setup journal |
 
 ## 3. The vault contract
 
