@@ -26,10 +26,26 @@ be active and hasn't been touched in six weeks.
 
 ```bash
 export BRAIN_VAULT=~/path/to/vault
-python3 brain/brain.py catchup     # github + calendars + agenda + status + queue
+python3 brain/brain.py catchup     # fetch, then regenerate every derived view
+python3 brain/brain.py views       # recompute the query views into Inbox/views.json
 python3 brain/brain.py lint        # validate frontmatter; run before committing
 python3 brain/serve.py --port 8800 --open
 ```
+
+### Views
+
+Twenty-one saved queries — next action per active project, the revenue scoreboard, three
+different definitions of drift, decisions coming due, who is on what — computed in one pass
+and written to `Inbox/views.json`.
+
+Every view is the same shape: a title, columns, and rows, where a cell is a scalar or a
+link. That is the whole reason this is a JSON file and not twenty panels — the renderer
+never has to know which view it is holding, so a new view is a function returning rows and
+costs nothing on the HTML side.
+
+They are served at `/views/<page>` (`now`, `ventures`, `school`, `drift`), and the two that
+belong in a morning glance — next actions, and the scoreboard — are also cards on the front
+page.
 
 No dependencies. No virtualenv. `python3` and the standard library.
 

@@ -798,6 +798,20 @@ li.crossed .rowtitle,li.crossed .rowtitle a{text-decoration:line-through;color:v
 .bt{overflow:hidden;text-overflow:ellipsis}
 .pin{font-size:10px;color:var(--accent);white-space:nowrap}
 .card h2.hdr{display:flex;align-items:center;gap:8px}
+.vtable{width:100%;border-collapse:collapse;font-size:13px}
+.vtable th{text-align:left;font-weight:600;color:var(--dim);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:0 10px 6px 0;border-bottom:1px solid var(--line)}
+.vtable td{padding:7px 10px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.vtable tr:last-child td{border-bottom:0}
+.vwrap{overflow-x:auto}
+.vlink{color:var(--accent);text-decoration:none}
+.vlink:hover{text-decoration:underline}
+.vnone{color:var(--dim)}
+.vnote{margin:0 0 10px}
+.vmore{margin:8px 0 0}
+.vnavbar{margin-bottom:16px}
+.vnav{color:var(--dim);text-decoration:none;margin-right:10px}
+.vnav.on{color:var(--fg)}
+.vnav:hover{color:var(--fg)}
 .daynav{margin-left:auto;display:flex;gap:4px;align-items:center}
 .daynav #daytoday{margin-right:10px}
 .daynav button{background:none;border:1px solid var(--line);border-radius:5px;color:var(--dim);cursor:pointer;font:inherit;font-size:13px;line-height:1;padding:3px 8px;text-transform:none;letter-spacing:0}
@@ -1312,6 +1326,74 @@ def panels_html(day=None):
             'p-work-tasks': _side(tk[:8], 'No open tasks.')}
 
 
+# ---------------------------------------------------------------- views
+#
+# `brain.py views` computed these; this only draws them. One renderer for every
+# view, because every view is the same shape -- which is the whole reason the
+# Dataview queries were replaced with a JSON file rather than twenty panels.
+
+VIEWS_JSON = os.path.join(brain.INBOX, 'views.json')
+
+def views_blob():
+    try:
+        return json.load(open(VIEWS_JSON, encoding='utf-8'))
+    except Exception:
+        return {'views': {}, 'pages': [], 'generated': ''}
+
+def _cell(c):
+    """A cell is a scalar, or {'link': 'Note'} when it should open in Obsidian."""
+    if isinstance(c, dict) and 'link' in c:
+        return ('<a class="vlink" href="obsidian://open?vault=%s&amp;file=%s">%s</a>'
+                % (urllib.parse.quote(os.path.basename(brain.VAULT)),
+                   urllib.parse.quote(c['link']), esc(c['link'])))
+    if c is None or c == '':
+        return '<span class="vnone">—</span>'
+    return esc(str(c))
+
+def _view_html(v, compact=False):
+    if not v:
+        return ''
+    head = ''.join('<th>%s</th>' % esc(c) for c in v['columns'])
+    rows = v['rows'][:6] if compact else v['rows']
+    body = ''.join('<tr>%s</tr>' % ''.join('<td>%s</td>' % _cell(c) for c in r)
+                   for r in rows)
+    more = ''
+    if compact and len(v['rows']) > 6:
+        more = '<p class="sub vmore">+%d more</p>' % (len(v['rows']) - 6)
+    if not v['rows']:
+        return ('<div class="vwrap"><p class="sub">%s</p></div>' % esc(v['empty']))
+    note = ('<p class="sub vnote">%s</p>' % esc(v['note'])) if v.get('note') and not compact else ''
+    return ('<div class="vwrap">%s<table class="vtable"><thead><tr>%s</tr></thead>'
+            '<tbody>%s</tbody></table>%s</div>' % (note, head, body, more))
+
+def _views_page(page_key):
+    blob = views_blob()
+    pages = blob.get('pages', [])
+    page = next((p for p in pages if p['key'] == page_key), None)
+    if not page:
+        return None
+    nav = ' '.join('<a class="vnav%s" href="/views/%s">%s</a>'
+                   % (' on' if p['key'] == page_key else '', p['key'], esc(p['title']))
+                   for p in pages)
+    cards = []
+    for key in page['views']:
+        v = blob['views'].get(key)
+        if not v:
+            continue
+        cards.append('<div class="card"><h2>%s <span class="sub">&middot; %d</span></h2>%s</div>'
+                     % (esc(v['title']), v['count'], _view_html(v)))
+    stamp = blob.get('generated', '')[:16].replace('T', ' ')
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<style>%s</style></head><body><div class="wrap">
+<h1>%s</h1><p class="sub">%s</p>
+<p class="sub vnavbar"><a class="plain" href="/">&larr; today</a> &middot; %s</p>
+%s
+<footer><div class="fresh">computed %s &middot; <code>brain.py views</code></div></footer>
+</div></body></html>""" % (esc(page['title']), CSS, esc(page['title']),
+                           esc(page['note']), nav, ''.join(cards), esc(stamp))
+
+
 def _list_page(kind):
     _, allitems = ranked()
     items = [i for i in allitems if i['source'] == kind]
@@ -1352,6 +1434,7 @@ document.addEventListener('click', async e=>{
 
 def render():
     f = freshness()
+    _vb = views_blob()
     p = panels_html()
     fl = flags()
     try:
@@ -1405,6 +1488,10 @@ def render():
 <div id="termstart">%s</div>
 <div id="termwrap"></div></div>
 
+<div class="card"><h2>Next actions <a class="more" href="/views/now">see all</a></h2>%s</div>
+
+<div class="card"><h2>Ventures <a class="more" href="/views/ventures">see all</a></h2>%s</div>
+
 <div class="card"><h2>Signals</h2>
 <div class="today">
   <div><h2>Flags (%d)</h2>%s</div>
@@ -1414,7 +1501,8 @@ def render():
 <div class="card"><h2>This run &middot; <span id="qcount">%d</span></h2>
 <div id="queue"%s>%s</div></div>
 
-<footer><div class="fresh" id="fresh"></div></footer>
+<footer><div class="fresh" id="fresh"></div>
+<div class="sub vnavbar">%s</div></footer>
 </div><script>window.__epochs=%s;window.__feed=%s;window.__session=%s;window.__mounted=false;window.__showdone=false;window.__queueready=%s;
 window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
 %s%s</script></body></html>""" % (
@@ -1423,9 +1511,13 @@ window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__
         'running \u2014 not attached here' if live else 'not started',
         '' if live else ' hidden',
         '' if terminal_up() else _startbtns(live, bool(_queue_prompt())),
+        _view_html(_vb['views'].get('next_actions'), compact=True),
+        _view_html(_vb['views'].get('scoreboard'), compact=True),
         len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl) or '<p class="sub">Clean.</p>',
         met, outstanding, '' if rows else ' data-empty="1"',
         feed or '<p class="sub">Waiting for this run’s fetch…</p>',
+        ' &middot; '.join('<a class="vnav" href="/views/%s">%s</a>'
+                         % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
         json.dumps(epochs), json.dumps(rows), json.dumps(session_exists()),
         json.dumps(bool(_queue_prompt())), json.dumps(terminal_up()),
         json.dumps(TERM['port']), json.dumps(brain.TODAY.isoformat()),
@@ -1503,6 +1595,13 @@ class Handler(BaseHTTPRequestHandler):
             st['sig'] = content_sig()
             st['clients'] = SRV['clients']
             self._send(200, json.dumps(st), 'application/json')
+        elif self.path == '/views' or self.path.startswith('/views/'):
+            key = self.path[7:].strip('/') or (views_blob().get('pages') or [{'key': ''}])[0]['key']
+            page = _views_page(key)
+            if page is None:
+                self._send(404, '<p>no such view page</p>')
+            else:
+                self._send(200, page)
         elif self.path in ('/tasks', '/canvas'):
             self._send(200, _list_page('task' if self.path == '/tasks' else 'canvas'))
         elif self.path == '/bookmarklet':
