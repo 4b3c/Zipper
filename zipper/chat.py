@@ -76,7 +76,11 @@ def cmd_discord(a):
             if not msgs:
                 print('discord: nothing to read'); return 0
             for m in reversed(msgs):          # oldest first reads like a conversation
-                print('  %s  %-16s %s' % (m['timestamp'][11:16], m['author'][:16],
+                # Discord stamps UTC. Slicing the raw string shows the wrong
+                # hour by the offset -- the same trap that once put a Phoenix
+                # evening push on the next day's date.
+                when = core._utc_local(m['timestamp'])[11:16] or m['timestamp'][11:16]
+                print('  %s  %-16s %s' % (when, m['author'][:16],
                                           (m['content'] or '').replace('\n', ' ')[:110]))
         elif a.action == 'status':
             try:
