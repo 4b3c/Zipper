@@ -10,6 +10,11 @@ Type=simple
 ExecStart=/usr/bin/python3 -m zipper.serve --host 127.0.0.1 --port 8800 --daemon
 WorkingDirectory=/opt/zipper
 EnvironmentFile=/opt/zipper/.env
+# systemd starts a service with no HOME. Without it git never reads
+# ~/.gitconfig, so the embedded Claude session committed as
+# root@<hostname> instead of zipper, and `git push` could not find the
+# credentials gh had stored.
+Environment=HOME=/root
 # Kill only python on restart. ttyd and the tmux server are its children, so
 # the default control-group kill takes the live Claude conversation down with
 # the service -- a restart looked like Discord disconnecting the dashboard.
