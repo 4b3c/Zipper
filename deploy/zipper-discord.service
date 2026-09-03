@@ -5,7 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/zipper/.venv/bin/python -m bot.discord_bot
+# No venv: discord.py and aiohttp are installed for the system python. The
+# module form matters -- `python bot/discord_bot.py` puts bot/ on sys.path
+# instead of its parent, so `from bot import main` raises ModuleNotFoundError.
+# That is exactly how the previous bot died, silently, for 70 days.
+ExecStart=/usr/bin/python3 -m bot.discord_bot
 WorkingDirectory=/opt/zipper
 EnvironmentFile=/opt/zipper/.env
 Restart=always
