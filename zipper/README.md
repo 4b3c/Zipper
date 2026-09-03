@@ -150,9 +150,16 @@ The grid needs `end` on every event. `ics.parse_ics` carries the master event's 
 onto each expanded occurrence for exactly this reason — before that, every recurring meeting
 arrived without one and would have drawn as a 30-minute stub.
 
-**The run queue** at the bottom is the diff for *this launch*: new and removed calendar
-events, newly submitted Canvas items, repo pushes, new flags. `no changes` when the
-sources were already current.
+**The run queue** at the bottom — the card is titled **This run** — is the diff for *this
+launch*: new and removed calendar events, newly submitted Canvas items, repo pushes, new
+flags. `no changes` when the sources were already current.
+
+**It is not `Meta/Queue.md`.** Two separate things are called the queue: this one, which
+lives in `Inbox/feed.json` and is crossed off row by row, and the *vault* queue in
+`Meta/Queue.md`, which is the diff of the notes since the last `python3 -m zipper queue`.
+When Abram says "clear the queue" unqualified he means **this** one — the rows in front of
+him. Running `zipper queue` instead resets the vault baseline and leaves every row here
+still open.
 
 It lives in `Inbox/feed.json`, so it survives a restart of the server — it used to be
 in-memory only, and a queue you were halfway through vanished with the app. Every row
@@ -163,7 +170,12 @@ The file is the interface, not just storage. The Claude session in the terminal 
 items off with
 
     python3 -m zipper.serve --mark <key>      # key, or any unique prefix
+    python3 -m zipper.serve --mark-all        # cross off everything still open
     python3 -m zipper.serve --queue           # print the queue, keys and all
+
+`--mark` toggles, so it doubles as an undo; `--mark-all` only ever crosses off, and so
+cannot undo a row you deliberately un-ticked. It writes once for the whole batch rather
+than once per row, which is one watcher push to the open tabs instead of N.
 
 and a watcher thread notices the file move and pushes the new state to every open
 dashboard within a second. That is why the queue prompt hands Claude the keys. A row is
@@ -212,14 +224,16 @@ conversation is already alive, and it asks the server rather than guessing.
 No live session:
 
 * **start blank session** — Claude in the vault, no opening instruction
-* **start session to clear queue** — Claude opened on this run's queue: read `Meta/Queue.md`
-  and `Inbox/queue.json`, update what the changes affect, flag contradictions
+* **start session to clear queue** — Claude opened on the **vault** queue: read
+  `Meta/Queue.md` and `Inbox/queue.json`, update what the changes affect, flag
+  contradictions. The button's wording is older than the two-queue split — it does *not*
+  touch the run queue above, whose rows stay open until something calls `--mark`
 
 A live session:
 
 * **resume conversation** — attach to it, mid-stream
 * **start new conversation** — kill it and open a blank one
-* **new conversation with queue** — kill it and open a new one on this run's queue
+* **new conversation with queue** — kill it and open a new one on the vault queue
 
 The last two confirm first, because they end the running conversation.
 

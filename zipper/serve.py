@@ -455,6 +455,21 @@ def feed_mark(key, done=None):
         feed_save()
         return {'ok': True, 'key': r['key'], 'done': bool(r['done']), 'text': r['text']}
 
+def feed_mark_all():
+    """Cross off every row still open, in one write. --mark takes a single key, so
+    clearing a whole run used to be a shell loop over --queue -- ten separate saves,
+    ten watcher pushes. This is one save and one push. It only ever crosses off:
+    nothing here restores a row, so it cannot undo a deliberate un-tick."""
+    with FEED_LOCK:
+        now = datetime.datetime.now().isoformat(timespec='seconds')
+        hits = [r for r in FEED if not r.get('done')]
+        for r in hits:
+            r['done'] = now
+        if hits:
+            feed_save()
+        return {'ok': True, 'marked': len(hits)}
+
+
 def publish(kind, text='', **extra):
     ev = {'kind': kind, 'text': text, 'at': datetime.datetime.now().strftime('%H:%M:%S')}
     ev.update(extra)
@@ -1871,15 +1886,21 @@ def main():
                     help='user:password for the terminal; REQUIRED to bind it off loopback')
     ap.add_argument('--mark', metavar='KEY',
                     help='cross a queue item off by key (or unique prefix) and exit')
+    ap.add_argument('--mark-all', action='store_true', dest='mark_all',
+                    help='cross off every run-queue item still open and exit')
     ap.add_argument('--queue', action='store_true', help='print the run queue and exit')
     ap.add_argument('--daemon', action='store_true',
                     help='stay up when the last tab closes (for systemd)')
     a = ap.parse_args()
-    if a.mark or a.queue:
+    if a.mark or a.queue or a.mark_all:
         feed_load()
         if a.queue:
             for r in feed_rows():
                 print('%s %s %s' % (r['key'], '[x]' if r['done'] else '[ ]', r['text']))
+            return 0
+        if a.mark_all:
+            n = feed_mark_all()['marked']
+            print('crossed off  %d item(s)' % n if n else 'nothing open')
             return 0
         res = feed_mark(a.mark)
         print(res.get('error') or ('crossed off  %s' % res['text'] if res['done']
