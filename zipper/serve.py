@@ -12,15 +12,17 @@ No framework: stdlib only, so the VPS needs nothing but python3.
     python3 Scripts/serve.py --port 8800
 """
 import argparse, datetime, glob, html, json, os, shutil, subprocess, sys, tempfile, threading, time
-import base64, io, urllib.parse
+import base64, io, re, urllib.parse
+
+from . import core, canvas, events, gh, ics, metrics
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
 
-# Finder launches Brain.app with PATH=/usr/bin:/bin:/usr/sbin:/sbin. ttyd, tmux and
+# Finder launches Zipper.app with PATH=/usr/bin:/bin:/usr/sbin:/sbin. ttyd, tmux and
 # gh all live in Homebrew's bin, so under the app every shell-out failed silently:
-# the terminal card said "ttyd not installed", and worse, brain.py's `gh auth token`
+# the terminal card said "ttyd not installed", and worse, the fetcher's `gh auth token`
 # found no gh, fell back to public repos, and rewrote note frontmatter from a partial
 # fetch -- last_push moving BACKWARDS as the private repos vanished. Restore a real
 # PATH before anything shells out. claude-session.sh does the same for `claude`.
@@ -28,7 +30,6 @@ for _dir in (os.path.expanduser('~/.local/bin'), '/opt/homebrew/bin', '/usr/loca
     if os.path.isdir(_dir) and _dir not in os.environ.get('PATH', '').split(os.pathsep):
         os.environ['PATH'] = os.environ.get('PATH', '') + os.pathsep + _dir
 
-import brain
 
 STATE = {'generation': 0, 'refreshing': False, 'last_error': '', 'last_refresh': None}
 LOCK = threading.Lock()
@@ -53,13 +54,13 @@ def _blob_fetched(path):
     return v or _mtime_iso(path)
 
 def freshness():
-    cal = [_blob_fetched(p) for p in glob.glob(os.path.join(brain.INBOX, 'calendar-*.json'))]
+    cal = [_blob_fetched(p) for p in glob.glob(os.path.join(core.INBOX, 'calendar-*.json'))]
     cal = [c for c in cal if c]
-    vault = max((_mtime_iso(p) for p in brain.iter_notes()), default=None)
+    vault = max((_mtime_iso(p) for p in core.iter_notes()), default=None)
     return {
         'calendars': min(cal) if cal else None,
-        'github': _blob_fetched(brain.GH_JSON),
-        'canvas': _blob_fetched(brain.CANVAS_JSON),
+        'github': _blob_fetched(core.GH_JSON),
+        'canvas': _blob_fetched(canvas.CANVAS_JSON),
         'vault': vault,
     }
 
@@ -83,10 +84,10 @@ def ago(iso):
 
 TERM = {'proc': None, 'port': 8801, 'url': '', 'enabled': True, 'ready': None,
         'host': '127.0.0.1', 'cred': '',
-        # One tmux session per Brain instance. Overridable so a second
+        # One tmux session per Zipper instance. Overridable so a second
         # instance -- a test, or a staging box -- cannot paste into the
         # conversation the real one is holding.
-        'session': os.environ.get('BRAIN_TMUX_SESSION', 'brain')}
+        'session': os.environ.get('ZIPPER_TMUX_SESSION', 'zipper')}
 
 def _queue_prompt():
     """The queue as an opening instruction — only what is still outstanding."""
@@ -94,7 +95,7 @@ def _queue_prompt():
             if not r['done'] and not r['text'].startswith('error')]
     if not real:
         return ''
-    return ("Brain just refreshed the vault. This run's queue:\n\n"
+    return ("Zipper just refreshed the vault. This run's queue:\n\n"
             + '\n'.join('  [%s] %s' % (r['key'], r['text']) for r in real)
             + "\n\nRead Meta/Queue.md and Inbox/queue.json, work out which notes and tasks "
               "these changes affect, and update the vault to match. Flag anything that looks "
@@ -139,7 +140,7 @@ def terminal_up():
     """Is ttyd actually serving? This, not a page-local flag, is what decides
     whether the card shows start buttons.
 
-    `window.__mounted` only ever lived in one tab, and Brain.app opens a fresh
+    `window.__mounted` only ever lived in one tab, and Zipper.app opens a fresh
     one every launch — so after a reload the page offered to *resume* a
     conversation that was already on screen. The server knows the truth: if ttyd
     is up the terminal is viewable right now, and there is nothing to resume.
@@ -181,10 +182,10 @@ def paste_to_session(text, label='text'):
     if not session_exists():
         return {'ok': False, 'error': 'no conversation to hand %s to' % label}
     try:
-        subprocess.run([tmux, 'load-buffer', '-b', 'brainq', '-'],
+        subprocess.run([tmux, 'load-buffer', '-b', 'zipperq', '-'],
                        input=text.encode('utf-8'), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([tmux, 'paste-buffer', '-b', 'brainq', '-t', TERM['session'],
+        subprocess.run([tmux, 'paste-buffer', '-b', 'zipperq', '-t', TERM['session'],
                         '-p', '-d'], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.25)                   # let the TUI settle before submitting
@@ -322,7 +323,7 @@ def _tagged(text, source):
     return ('[via %s] %s\n\n'
             '(Reply to this by running: python3 %s discord send "your reply".'
             ' The sender is not watching this terminal.)'
-            % (source, text, os.path.join(os.path.basename(HERE), 'brain.py')))
+            % (source, text, 'python3 -m zipper'))
 
 
 def deliver_to_claude(text, source='discord'):
@@ -368,7 +369,7 @@ FEED_LOCK = threading.RLock()
 # was gone), and the Claude session in the terminal can cross items off while the
 # dashboard is open. FEED_MTIME remembers our own last write so the watcher can
 # tell somebody else's edit from an echo of our own.
-FEED_JSON = os.path.join(brain.INBOX, 'feed.json')
+FEED_JSON = os.path.join(core.INBOX, 'feed.json')
 FEED_MAX = 200
 FEED_MTIME = [0.0]
 
@@ -464,7 +465,7 @@ def feed_watch(interval=1.0):
 def snapshot_data():
     """What the diff is measured against. Keys only — cheap to compare."""
     cal = set()
-    for f in glob.glob(os.path.join(brain.INBOX, 'calendar-*.json')):
+    for f in glob.glob(os.path.join(core.INBOX, 'calendar-*.json')):
         try:
             for e in json.load(open(f, encoding='utf-8'))['events']:
                 # Carry the uid: it is the same across every occurrence of a
@@ -475,13 +476,13 @@ def snapshot_data():
             pass
     canvas = {}
     try:
-        for r in json.load(open(brain.CANVAS_JSON, encoding='utf-8'))['items']:
+        for r in json.load(open(canvas.CANVAS_JSON, encoding='utf-8'))['items']:
             canvas[r['title']] = r['submitted']
     except Exception:
         pass
     repos = {}
     try:
-        for r in json.load(open(brain.GH_JSON, encoding='utf-8'))['repos']:
+        for r in json.load(open(core.GH_JSON, encoding='utf-8'))['repos']:
             repos[r['name']] = r.get('pushed_at', '')
     except Exception:
         pass
@@ -555,11 +556,11 @@ def do_refresh():
     before = snapshot_data()
     err, total = [], 0
     try:
-        brain.TODAY = datetime.date.today()
-        steps = [('calendars', brain.cmd_calendars, {}),
-                 ('github', brain.cmd_github, {'since_days': 30, 'full': False})]
+        core.TODAY = datetime.date.today()
+        steps = [('calendars', ics.cmd_calendars, {}),
+                 ('github', gh.cmd_github, {'since_days': 30, 'full': False})]
         if os.environ.get('CANVAS_TOKEN'):
-            steps.append(('canvas', brain.cmd_canvas, {'file': None, 'days': 60}))
+            steps.append(('canvas', canvas.cmd_canvas, {'file': None, 'days': 60}))
         # Run the sources concurrently: ASU's Canvas ICS alone takes ~6s to
         # generate, and GitHub has no reason to queue behind it.
         dlock = threading.Lock()
@@ -601,15 +602,15 @@ def _d(iso):
         return None
 
 def upcoming(days=10):
-    horizon = (brain.TODAY + datetime.timedelta(days=days)).isoformat()
-    cstat = brain.canvas_status_map()
+    horizon = (core.TODAY + datetime.timedelta(days=days)).isoformat()
+    cstat = canvas.canvas_status_map()
     rows = []
-    for f in sorted(glob.glob(os.path.join(brain.INBOX, 'calendar-*.json'))):
+    for f in sorted(glob.glob(os.path.join(core.INBOX, 'calendar-*.json'))):
         blob = json.load(open(f, encoding='utf-8'))
         for e in blob['events']:
             d = e['start'][:10]
-            if brain.TODAY.isoformat() <= d <= horizon:
-                done = cstat.get((d, brain._norm_title(e['summary']))) if blob['label'] == 'canvas' else None
+            if core.TODAY.isoformat() <= d <= horizon:
+                done = cstat.get((d, core._norm_title(e['summary']))) if blob['label'] == 'canvas' else None
                 rows.append({'date': d, 'time': e['start'][11:], 'label': blob['label'],
                              'summary': e['summary'], 'loc': e.get('location', ''),
                              'done': done, 'start': e['start'], 'end': e.get('end', ''),
@@ -621,14 +622,14 @@ def upcoming(days=10):
 def day_events(day):
     """Every ingested event on one date. `upcoming()` starts at today, so it
     cannot look backwards; the day arrows need to."""
-    cstat = brain.canvas_status_map()
+    cstat = canvas.canvas_status_map()
     rows = []
-    for f in sorted(glob.glob(os.path.join(brain.INBOX, 'calendar-*.json'))):
+    for f in sorted(glob.glob(os.path.join(core.INBOX, 'calendar-*.json'))):
         blob = json.load(open(f, encoding='utf-8'))
         for e in blob['events']:
             if e['start'][:10] != day:
                 continue
-            done = (cstat.get((day, brain._norm_title(e['summary'])))
+            done = (cstat.get((day, core._norm_title(e['summary'])))
                     if blob['label'] == 'canvas' else None)
             rows.append({'date': day, 'time': e['start'][11:], 'label': blob['label'],
                          'summary': e['summary'], 'loc': e.get('location', ''),
@@ -643,8 +644,8 @@ def today_split(day=None):
     things merely due on the left. All-day items strike through when submitted;
     timed ones strike through once the clock has passed — but only on today,
     since 'already happened' is meaningless on a day he is looking ahead to."""
-    day = day or brain.TODAY.isoformat()
-    is_today = day == brain.TODAY.isoformat()
+    day = day or core.TODAY.isoformat()
+    is_today = day == core.TODAY.isoformat()
     now = datetime.datetime.now().strftime('%H:%M')
     allday, timed = [], []
     for e in day_events(day):
@@ -657,39 +658,39 @@ def today_split(day=None):
 
 
 def canvas_items():
-    if not os.path.exists(brain.CANVAS_JSON):
+    if not os.path.exists(canvas.CANVAS_JSON):
         return []
-    return json.load(open(brain.CANVAS_JSON, encoding='utf-8')).get('items', [])
+    return json.load(open(canvas.CANVAS_JSON, encoding='utf-8')).get('items', [])
 
 
 def canvas_outstanding():
     return [r for r in canvas_items()
-            if not r['submitted'] and r['due'][:10] >= brain.TODAY.isoformat()]
+            if not r['submitted'] and r['due'][:10] >= core.TODAY.isoformat()]
 
 
 def task_text(raw):
-    """Exactly brain.py's normalisation, so the dashboard, ledger and queue all
+    """Exactly the engine's normalisation, so the dashboard, ledger and queue all
     key a task the same way. A naive character class stops inside [[Note]] and
     leaves a trailing ']]' on every task that names a project."""
-    t = brain.re.sub(r'\[[a-z_]+::\s*(?:\[\[[^\]]+\]\]|[^\]]*)\]', '', raw)
-    return brain.re.sub(r'#\w+', '', t).strip()
+    t = re.sub(r'\[[a-z_]+::\s*(?:\[\[[^\]]+\]\]|[^\]]*)\]', '', raw)
+    return re.sub(r'#\w+', '', t).strip()
 
 
 def open_tasks():
     out = []
-    for p in sorted(glob.glob(os.path.join(brain.VAULT, 'Tasks', '*.md'))):
+    for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
         for line in open(p, encoding='utf-8'):
-            m = brain.TASK_RE.match(line)
+            m = core.TASK_RE.match(line)
             if not m or m.group(1).lower() == 'x':
                 continue
             raw = m.group(2)
-            due = brain.re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
-            proj = brain.re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
+            due = re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
+            proj = re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
             out.append({'text': task_text(raw),
                         'due': due.group(1) if due else '',
                         'project': proj.group(1) if proj else '',
                         'next': '#next' in raw,
-                        'overdue': bool(due and due.group(1) < brain.TODAY.isoformat())})
+                        'overdue': bool(due and due.group(1) < core.TODAY.isoformat())})
     return out
 
 
@@ -700,7 +701,7 @@ def priority(it):
     surprising position can be argued with rather than trusted.
     """
     d = _d(it['due']) if it['due'] else None
-    days = (d - brain.TODAY).days if d else None
+    days = (d - core.TODAY).days if d else None
     base = ({None: 5}.get(days) if days is None else
             100 if days < 0 else 70 if days == 0 else 55 if days == 1 else
             40 if days <= 3 else 25 if days <= 7 else 10)
@@ -725,7 +726,7 @@ def ranked(limit=10):
     ov = _ov_load()
     for it in items:
         it['score'] = priority(it)
-        it['overdue'] = bool(it['due'] and it['due'] < brain.TODAY.isoformat())
+        it['overdue'] = bool(it['due'] and it['due'] < core.TODAY.isoformat())
         it['key'] = override_key(it)
         it['done'] = it['key'] in ov
     items = [i for i in items if not i['done']] + [i for i in items if i['done']]
@@ -733,7 +734,7 @@ def ranked(limit=10):
     return items[:limit], items
 
 
-OVERRIDES = os.path.join(brain.INBOX, 'overrides.json')
+OVERRIDES = os.path.join(core.INBOX, 'overrides.json')
 
 def _ov_load():
     try:
@@ -757,11 +758,11 @@ def toggle_done(key):
     """
     if key.startswith('task:'):
         title = key.split('|', 1)[1]
-        for p in sorted(glob.glob(os.path.join(brain.VAULT, 'Tasks', '*.md'))):
+        for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
             lines = open(p, encoding='utf-8').read().split('\n')
             hit = False
             for i, line in enumerate(lines):
-                m = brain.TASK_RE.match(line)
+                m = core.TASK_RE.match(line)
                 if not m:
                     continue
                 if task_text(m.group(2)) != title:
@@ -787,7 +788,7 @@ def toggle_done(key):
 
 def flags():
     try:
-        return json.load(open(os.path.join(brain.INBOX, 'queue.json'), encoding='utf-8')).get('flags', [])
+        return json.load(open(os.path.join(core.INBOX, 'queue.json'), encoding='utf-8')).get('flags', [])
     except Exception:
         return []
 
@@ -1008,7 +1009,7 @@ function row(e){
 function drawTerm(){
   const box=document.getElementById('termstart'); if(!box) return;
   // `on` means the terminal is viewable right now — either this page mounted it,
-  // or ttyd is already serving one (a reload, or Brain.app's fresh tab). Either
+  // or ttyd is already serving one (a reload, or Zipper.app's fresh tab). Either
   // way there is nothing to resume, so no start buttons.
   const on=window.__mounted||window.__termup, live=window.__session, ready=window.__queueready;
   const qd = ready ? '' : ' disabled title="nothing in this run&#39;s queue to consume"';
@@ -1161,8 +1162,8 @@ def _lanes(timed):
     by side instead of stacking into one ambiguous column."""
     blocks = []
     for e in timed:
-        st = brain._dt(e['start'])
-        en = brain._dt(e.get('end') or '')
+        st = core._dt(e['start'])
+        en = core._dt(e.get('end') or '')
         if st is None:
             continue
         s0 = st.hour * 60 + st.minute
@@ -1194,10 +1195,10 @@ def _gcal_ids():
     """
     if GCAL_IDS:
         return GCAL_IDS
-    path = os.path.join(brain.INBOX, 'calendars.json')
+    path = os.path.join(core.INBOX, 'calendars.json')
     if os.path.exists(path):
         for label, cfg in json.load(open(path, encoding='utf-8')).items():
-            m = brain.re.search(r'/ical/([^/]+)/', cfg.get('url', '') or '')
+            m = re.search(r'/ical/([^/]+)/', cfg.get('url', '') or '')
             if m and 'google.com' in cfg.get('url', ''):
                 GCAL_IDS[label] = urllib.parse.unquote(m.group(1))
     return GCAL_IDS
@@ -1217,7 +1218,7 @@ def _gcal_link(e, recurring):
         return ''
     eid_src = uid.split('@')[0]
     if recurring:
-        st = brain._dt(e['start'])
+        st = core._dt(e['start'])
         if st is None:
             return ''
         utc = st.astimezone(datetime.timezone.utc)
@@ -1229,8 +1230,8 @@ def _gcal_link(e, recurring):
 def _join_link(e):
     """A meeting URL hiding in the location field — Zoom, Meet, Teams."""
     for cand in (e.get('loc') or '', e.get('url') or ''):
-        m = brain.re.search(r'https?://\S+', cand)
-        if m and brain.re.search(r'zoom|meet\.google|teams\.microsoft|webex', m.group(0)):
+        m = re.search(r'https?://\S+', cand)
+        if m and re.search(r'zoom|meet\.google|teams\.microsoft|webex', m.group(0)):
             return m.group(0)
     return ''
 
@@ -1242,9 +1243,9 @@ def _schedule_html(timed, is_today=True):
     blocks, nlanes = _lanes(timed)
     if not blocks:
         return '<div><h2>Schedule</h2><p class="sub">Nothing scheduled.</p></div>'
-    notes = brain.event_note_map()
+    notes = events.event_note_map()
     seen = {}
-    for f in sorted(glob.glob(os.path.join(brain.INBOX, 'calendar-*.json'))):
+    for f in sorted(glob.glob(os.path.join(core.INBOX, 'calendar-*.json'))):
         for ev in json.load(open(f, encoding='utf-8')).get('events', []):
             u = ev.get('uid') or ''
             seen[u] = seen.get(u, 0) + 1
@@ -1265,7 +1266,7 @@ def _schedule_html(timed, is_today=True):
                    % ((nowm - lo) * PX_PER_MIN))
     for b in blocks:
         e = b['ev']
-        rec = notes.get((e.get('uid', ''), brain._fmt_dt(e['start'])))
+        rec = notes.get((e.get('uid', ''), core._fmt_dt(e['start'])))
         h = (b['e'] - b['s']) * PX_PER_MIN - 2
         cls = 'blk' + (' past' if b['e'] <= nowm else '') + (' noted' if rec else '')
         style = ('--top:%.1fpx;--h:%.1fpx;--l:%.4f%%;--w:%.4f%%'
@@ -1273,7 +1274,7 @@ def _schedule_html(timed, is_today=True):
                     b['lane'] * 100.0 / nlanes, 100.0 / nlanes))
         span = '%02d:%02d\u2013%02d:%02d' % (b['s'] // 60, b['s'] % 60,
                                              b['e'] // 60, b['e'] % 60)
-        meta = [span, brain._dur(b['e'] - b['s'])]
+        meta = [span, core._dur(b['e'] - b['s'])]
         if e['loc'] and 'http' not in e['loc']:
             meta.append(e['loc'][:30])
         pin = ''
@@ -1321,8 +1322,8 @@ def _schedule_html(timed, is_today=True):
 
 
 def _today_html(day=None):
-    day = day or brain.TODAY.isoformat()
-    is_today = day == brain.TODAY.isoformat()
+    day = day or core.TODAY.isoformat()
+    is_today = day == core.TODAY.isoformat()
     allday, timed = today_split(day)
     a = ['<div><h2>%s</h2><ul>' % ('Due today' if is_today else 'Due')]
     for e in allday:
@@ -1396,11 +1397,11 @@ def panels_html(day=None):
 
 # ---------------------------------------------------------------- views
 #
-# `brain.py views` computed these; this only draws them. One renderer for every
+# `zipper views` computed these; this only draws them. One renderer for every
 # view, because every view is the same shape -- which is the whole reason the
 # Dataview queries were replaced with a JSON file rather than twenty panels.
 
-VIEWS_JSON = os.path.join(brain.INBOX, 'views.json')
+VIEWS_JSON = os.path.join(core.INBOX, 'views.json')
 
 def views_blob():
     try:
@@ -1412,7 +1413,7 @@ def _cell(c):
     """A cell is a scalar, or {'link': 'Note'} when it should open in Obsidian."""
     if isinstance(c, dict) and 'link' in c:
         return ('<a class="vlink" href="obsidian://open?vault=%s&amp;file=%s">%s</a>'
-                % (urllib.parse.quote(os.path.basename(brain.VAULT)),
+                % (urllib.parse.quote(os.path.basename(core.VAULT)),
                    urllib.parse.quote(c['link']), esc(c['link'])))
     if c is None or c == '':
         return '<span class="vnone">—</span>'
@@ -1457,7 +1458,7 @@ def _views_page(page_key):
 <h1>%s</h1><p class="sub">%s</p>
 <p class="sub vnavbar"><a class="plain" href="/">&larr; today</a> &middot; %s</p>
 %s
-<footer><div class="fresh">computed %s &middot; <code>brain.py views</code></div></footer>
+<footer><div class="fresh">computed %s &middot; <code>zipper views</code></div></footer>
 </div></body></html>""" % (esc(page['title']), CSS, esc(page['title']),
                            esc(page['note']), nav, ''.join(cards), esc(stamp))
 
@@ -1506,7 +1507,7 @@ def render():
     p = panels_html()
     fl = flags()
     try:
-        sc, det = brain.compute_score()
+        sc, det = metrics.compute_score()
         met = ('<div class="metrics">' + ''.join(
             '<div class="metric"><span class="big">%s</span><small>%s</small></div>'
             % (sc[k], k.replace('_', ' ')) for k in
@@ -1536,7 +1537,7 @@ def render():
     live = session_exists()
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Brain</title><style>%s</style></head><body><div class="wrap">
+<title>Zipper</title><style>%s</style></head><body><div class="wrap">
 <h1><span id="pagedate">%s</span> <button id="dorefresh" class="btn">refresh</button></h1><div class="sub" id="status"></div>
 
 <div class="card"><h2 class="hdr"><span id="daylabel">Today</span>
@@ -1574,7 +1575,7 @@ def render():
 </div><script>window.__epochs=%s;window.__feed=%s;window.__session=%s;window.__mounted=false;window.__showdone=false;window.__queueready=%s;
 window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
 %s%s</script></body></html>""" % (
-        CSS, brain.TODAY.strftime('%A %d %B %Y'),
+        CSS, core.TODAY.strftime('%A %d %B %Y'),
         p['p-today'], p['p-work-canvas'], p['p-work-tasks'],
         'running \u2014 not attached here' if live else 'not started',
         '' if live else ' hidden',
@@ -1588,8 +1589,8 @@ window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__
                          % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
         json.dumps(epochs), json.dumps(rows), json.dumps(session_exists()),
         json.dumps(bool(_queue_prompt())), json.dumps(terminal_up()),
-        json.dumps(TERM['port']), json.dumps(brain.TODAY.isoformat()),
-        json.dumps(brain.CANVAS_HOST), JS, TICKJS)
+        json.dumps(TERM['port']), json.dumps(core.TODAY.isoformat()),
+        json.dumps(canvas.CANVAS_HOST), JS, TICKJS)
 
 
 # ---------------------------------------------------------------- http
@@ -1637,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(204, b'')
 
     def do_GET(self):
-        brain.TODAY = datetime.date.today()
+        core.TODAY = datetime.date.today()
         if self.path == '/':
             self._send(200, render())
         elif self.path == '/events':
@@ -1645,7 +1646,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.split('?')[0] == '/api/panels':
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             day = (q.get('day') or [''])[0]
-            if not brain.re.match(r'^\d{4}-\d{2}-\d{2}$', day or ''):
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', day or ''):
                 day = None
             ep = {}
             for k, v in freshness().items():
@@ -1676,11 +1677,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _list_page('task' if self.path == '/tasks' else 'canvas'))
         elif self.path == '/bookmarklet':
             base = 'http://%s' % self.headers.get('Host', 'localhost')
-            code = BOOKMARKLET % ((brain.TODAY - datetime.timedelta(days=14)).isoformat(),
-                                  (brain.TODAY + datetime.timedelta(days=120)).isoformat(), base)
+            code = BOOKMARKLET % ((core.TODAY - datetime.timedelta(days=14)).isoformat(),
+                                  (core.TODAY + datetime.timedelta(days=120)).isoformat(), base)
             self._send(200, '<!doctype html><meta charset=utf-8><title>Bookmarklet</title>'
                             '<p>Drag to your bookmarks bar, then click it on your Canvas host:</p>'
-                            '<p><a href="%s">Send Canvas &rarr; Brain</a></p>' % html.escape(code))
+                            '<p><a href="%s">Send Canvas &rarr; Zipper</a></p>' % html.escape(code))
         else:
             self._send(404, 'not found', 'text/plain; charset=utf-8')
 
@@ -1715,7 +1716,7 @@ class Handler(BaseHTTPRequestHandler):
             client_gone()
 
     def do_POST(self):
-        brain.TODAY = datetime.date.today()
+        core.TODAY = datetime.date.today()
         if self.path == '/api/refresh':
             threading.Thread(target=do_refresh, daemon=True).start()
             self._send(202, json.dumps({'ok': True}), 'application/json')
@@ -1734,10 +1735,10 @@ class Handler(BaseHTTPRequestHandler):
                 d = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
                 summary = (d.get('summary') or '').strip()
                 day = (d.get('date') or '').strip()
-                if not summary or not brain.re.match(r'^\d{4}-\d{2}-\d{2}$', day):
+                if not summary or not re.match(r'^\d{4}-\d{2}-\d{2}$', day):
                     raise ValueError('need summary and date')
 
-                class _A:                      # brain.cmd_event's argparse shape
+                class _A:                      # events.cmd_event's argparse shape
                     match = summary
                     date = day
                     about = None
@@ -1745,7 +1746,7 @@ class Handler(BaseHTTPRequestHandler):
                 buf = io.StringIO()
                 old, sys.stdout = sys.stdout, buf
                 try:
-                    rc = brain.cmd_event(_A())
+                    rc = events.cmd_event(_A())
                 finally:
                     sys.stdout = old
                 out = buf.getvalue().strip()
@@ -1796,8 +1797,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 before = snapshot_data()
                 items = json.loads(self.rfile.read(n).decode('utf-8'))
-                rows, skipped = brain._canvas_parse(items)
-                with open(brain.CANVAS_JSON, 'w', encoding='utf-8') as fh:
+                rows, skipped = canvas._canvas_parse(items)
+                with open(canvas.CANVAS_JSON, 'w', encoding='utf-8') as fh:
                     json.dump({'fetched': datetime.datetime.now().isoformat(timespec='seconds'),
                                'source': 'bookmarklet', 'items': rows}, fh, indent=1)
                 emit_diff(before, snapshot_data())
@@ -1815,7 +1816,7 @@ BOOKMARKLET = (
     "if(t.startsWith('while(1);'))t=t.slice(9);a.push(...JSON.parse(t));"
     "const m=(r.headers.get('Link')||'').match(/<([^>]+)>;\\s*rel=\"next\"/);u=m?m[1]:null;}"
     "await fetch('%s/api/canvas',{method:'POST',headers:{'Content-Type':'application/json'},"
-    "body:JSON.stringify(a)});alert('sent '+a.length+' items to Brain');})()")
+    "body:JSON.stringify(a)});alert('sent '+a.length+' items to Zipper');})()")
 
 
 def main():
@@ -1856,7 +1857,7 @@ def main():
     feed_load()
     threading.Thread(target=feed_watch, daemon=True).start()
     url = 'http://%s:%d/' % (a.host, a.port)
-    print('brain dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))
+    print('zipper dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))
     if a.daemon:
         print('inbound: POST %sdiscord   {"content": "..."}' % url)
     threading.Thread(target=do_refresh, daemon=True).start()

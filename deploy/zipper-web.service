@@ -1,5 +1,5 @@
 [Unit]
-Description=Brain — dashboard, view server, and the door Discord messages come through
+Description=Zipper — dashboard, view server, and the door Discord messages come through
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 # --daemon is what makes this always-on: without it the server exits when the
 # last browser tab closes, which is right for a laptop and wrong for a service.
-ExecStart=/usr/bin/python3 /opt/zipper/brain/serve.py --host 127.0.0.1 --port 8800 --daemon
+ExecStart=/usr/bin/python3 /opt/zipper/python3 -m zipper.serve --host 127.0.0.1 --port 8800 --daemon
 WorkingDirectory=/opt/zipper
 EnvironmentFile=/opt/zipper/.env
 Restart=always

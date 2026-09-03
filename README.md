@@ -2,7 +2,7 @@
 
 A personal assistant built in two halves that finally met.
 
-**`brain/`** — a queryable model of one person's work, in plain markdown. A vault of notes
+**`zipper/`** — a queryable model of one person's work, in plain markdown. A vault of notes
 with structured frontmatter, a stdlib-only engine that reads it, and a local dashboard that
 puts the day in front of you. This is the part that works.
 
@@ -13,11 +13,11 @@ reports in.
 
 Everything else Zipper used to be — the self-modifying agent, its tool loop, its own web
 dashboard — was removed in September 2026. It is in the history if you want it. Zipper's
-problem was never the model; it was that it had no job. `brain/` is the job.
+problem was never the model; it was that it had no job. `zipper/` is the job.
 
 ---
 
-## brain
+## zipper
 
 Notes are the database. Every note carries frontmatter — `type`, `status`, `stage`,
 `last_touched`, `next_action`, `repos` — and the engine answers questions from that rather
@@ -25,11 +25,11 @@ than from memory: what is drifting, what got pushed but never written down, what
 be active and hasn't been touched in six weeks.
 
 ```bash
-export BRAIN_VAULT=~/path/to/vault
-python3 brain/brain.py catchup     # fetch, then regenerate every derived view
-python3 brain/brain.py views       # recompute the query views into Inbox/views.json
-python3 brain/brain.py lint        # validate frontmatter; run before committing
-python3 brain/serve.py --port 8800 --open
+export ZIPPER_VAULT=~/path/to/vault
+python3 python3 -m zipper catchup     # fetch, then regenerate every derived view
+python3 python3 -m zipper views       # recompute the query views into Inbox/views.json
+python3 python3 -m zipper lint        # validate frontmatter; run before committing
+python3 python3 -m zipper.serve --port 8800 --open
 ```
 
 ### Views
@@ -88,8 +88,8 @@ person, school, or host is compiled in.
 Two processes stay up; the third comes and goes.
 
 ```
-brain-web.service       serve.py --daemon     dashboard, views, POST /discord
-brain-discord.service   bot/                  the gateway connection, always on
+zipper-web.service       serve.py --daemon     dashboard, views, POST /discord
+zipper-discord.service   bot/                  the gateway connection, always on
    └── claude           ttyd + tmux           only while a conversation exists
 ```
 
@@ -115,22 +115,22 @@ sender is not watching the terminal.
 ## Talking back
 
 ```bash
-python3 brain/brain.py discord send "the build finished"
-python3 brain/brain.py discord send "results" --file report.html
-python3 brain/brain.py discord read --limit 5
-python3 brain/brain.py discord status
+python3 python3 -m zipper discord send "the build finished"
+python3 python3 -m zipper discord send "results" --file report.html
+python3 python3 -m zipper discord read --limit 5
+python3 python3 -m zipper discord status
 ```
 
-Stdlib-only — `brain/` never imports `discord`, and the bot is the only process holding a
+Stdlib-only — `zipper/` never imports `discord`, and the bot is the only process holding a
 gateway connection. That split is what lets a scheduled job or a finished long-running task
 say something without owning a socket.
 
 ## Running it
 
 ```bash
-pip install -r requirements.txt        # bot only; brain/ needs nothing
-cp .env.example .env                   # fill in BRAIN_VAULT and the Discord pair
-python3 brain/serve.py --daemon        # stays up when the last tab closes
+pip install -r requirements.txt        # bot only; zipper/ needs nothing
+cp .env.example .env                   # fill in ZIPPER_VAULT and the Discord pair
+python3 python3 -m zipper.serve --daemon        # stays up when the last tab closes
 python3 -m bot.discord_bot
 ```
 
@@ -142,7 +142,7 @@ never `0.0.0.0`** — nothing in this server is authenticated, and it can start 
 ## Layout
 
 ```
-brain/          the vault engine, the dashboard, and their docs
+zipper/          the vault engine, the dashboard, and their docs
 bot/            Discord relay
 utils/          the two constants the bot needs; nothing else survived
 docs/           setup journal
@@ -151,7 +151,7 @@ docs/           setup journal
 ## Not in this repository
 
 The vault itself. The code is public; the notes are not, and the split is the point —
-`BRAIN_VAULT` is the only thing joining them. Anything host-specific (tokens, calendar
+`ZIPPER_VAULT` is the only thing joining them. Anything host-specific (tokens, calendar
 URLs, tailnet addresses) lives in the environment, never in the tree.
 
 ## Licence

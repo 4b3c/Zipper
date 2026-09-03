@@ -1,15 +1,15 @@
 # Scripts
 
-`brain.py` — stdlib-only, no pip installs. macOS ships a usable `python3`.
+`zipper` — stdlib-only, no pip installs. macOS ships a usable `python3`.
 
     cd ~/path/to/zipper
-    python3 brain/brain.py --help
+    python3 -m zipper --help
 
 Optional shell alias — add to `~/.zshrc`:
 
-    alias brain='BRAIN_VAULT=~/path/to/vault python3 ~/path/to/zipper/brain/brain.py'
+    alias zipper='ZIPPER_VAULT=~/path/to/vault python3 ~/path/to/zipper/python3 -m zipper'
 
-Then `brain today`, `brain status`, `brain lint`.
+Then `zipper today`, `zipper status`, `zipper lint`.
 
 ## Commands
 
@@ -32,12 +32,12 @@ Then `brain today`, `brain status`, `brain lint`.
 **Canvas assignments** — Canvas → Calendar → *Calendar Feed* (bottom right) → copy the
 `webcal://` URL:
 
-    python3 brain/brain.py ingest-ics "webcal://<your-canvas-host>/feeds/calendars/xxx.ics" --label canvas
+    python3 -m zipper ingest-ics "webcal://<your-canvas-host>/feeds/calendars/xxx.ics" --label canvas
 
 **Google Calendar** — Settings → *Settings for my calendars* → pick the calendar →
 *Secret address in iCal format*:
 
-    python3 brain/brain.py ingest-ics "https://calendar.google.com/calendar/ical/.../basic.ics" --label gcal
+    python3 -m zipper ingest-ics "https://calendar.google.com/calendar/ical/.../basic.ics" --label gcal
 
 That secret URL grants read access to your calendar to anyone holding it. It will sit in
 your shell history and in `Inbox/`. If that bothers you, save the `.ics` file manually and
@@ -45,14 +45,14 @@ pass a file path instead — or use the Google Calendar connector, which is the 
 
 **Budget** — export a CSV from your bank, then:
 
-    python3 brain/brain.py ingest-budget ~/Downloads/transactions.csv
+    python3 -m zipper ingest-budget ~/Downloads/transactions.csv
 
 Column detection is best-effort (looks for date/amount headers). It writes only monthly
 totals to metrics — individual transactions are never copied into the vault.
 
 ## Weekly, in one line
 
-    python3 brain/brain.py sync && python3 brain/brain.py status && python3 brain/brain.py agenda
+    python3 -m zipper sync && python3 -m zipper status && python3 -m zipper agenda
 
 ## Notes
 
@@ -65,12 +65,12 @@ totals to metrics — individual transactions are never copied into the vault.
 ## Canvas submission status
 
 `Inbox/canvas.json` is the only place the vault knows **submitted** rather than merely
-**due** — the ICS feed carries due dates alone. `brain.py canvas` fills it.
+**due** — the ICS feed carries due dates alone. `zipper canvas` fills it.
 
 With a token (unattended, works on the VPS):
 
     export CANVAS_TOKEN=...        # ASU disables self-service tokens; request via UTO
-    python3 brain/brain.py canvas
+    python3 -m zipper canvas
 
 Without one, dump the JSON from a **logged-in** browser and pass `--file`. Paste this in
 the devtools console on your Canvas host — it follows pagination, which a plain URL visit
@@ -95,18 +95,18 @@ does not, and a busy month silently truncates at 100 items without it:
 
 Then:
 
-    python3 brain/brain.py canvas --file ~/Downloads/planner.json
-    python3 brain/brain.py agenda
+    python3 -m zipper canvas --file ~/Downloads/planner.json
+    python3 -m zipper agenda
 
 The ASU session expires within the hour, so this is an **on-demand reconciliation**, not
 something launchd can drive. Only a token makes it unattended.
 
 ## Dashboard
 
-Double-click **Brain.app** on the Desktop. It fetches once, opens a tab, and quits when you
-close the tab. Rebuild the bundle with `./brain/install-app.sh`.
+Double-click **Zipper.app** on the Desktop. It fetches once, opens a tab, and quits when you
+close the tab. Rebuild the bundle with `./zipper/install-app.sh`.
 
-    python3 brain/serve.py --port 8800 [--open]     # the same thing, by hand
+    python3 -m zipper.serve --port 8800 [--open]     # the same thing, by hand
 
 Stdlib only — no Flask, no pip, no venv. The VPS needs nothing but `python3`.
 
@@ -124,7 +124,7 @@ Events with a note in `Events/` get an accent-coloured left border, a 📝, and 
 *why* inside the block — the whole thing, as much of it as the block holds, ending in a fade
 mask where it runs out. The block is a flex column and the description takes the space that
 is left, so it degrades correctly from a 45-minute slot (title and time only) to a 3-hour one
-(five lines). `brain.event_note_map()` does the `(uid, start)` lookup; see `Meta/Schema.md`
+(five lines). `events.event_note_map()` does the `(uid, start)` lookup; see `Meta/Schema.md`
 for the note format.
 
 **Click a block to expand it** — the description un-truncates and an action row appears:
@@ -132,7 +132,7 @@ for the note format.
 *join* if a Zoom/Meet/Teams URL is sitting in the location field, *calendar* for the real
 Google Calendar page, *Canvas* for a Canvas item's own URL. Escape or a click outside closes
 it. A block with **no** note gets **+ event note** instead, which POSTs to `/api/eventnote`
-and scaffolds one through `brain.cmd_event` — the same code path the CLI uses, so both
+and scaffolds one through `events.cmd_event` — the same code path the CLI uses, so both
 produce identical notes.
 
 The *calendar* link is derived, not stored. Google's `eid` is
@@ -148,7 +148,7 @@ to `/api/panels?day=YYYY-MM-DD`, so an SSE refresh mid-browse redraws the day yo
 rather than snapping back. `day_events(day)` is the fetch — `upcoming()` starts at today and
 so cannot look backwards. Nothing strikes through and no now-line is drawn off today.
 
-The grid needs `end` on every event. `brain.parse_ics` carries the master event's duration
+The grid needs `end` on every event. `ics.parse_ics` carries the master event's duration
 onto each expanded occurrence for exactly this reason — before that, every recurring meeting
 arrived without one and would have drawn as a 30-minute stub.
 
@@ -164,8 +164,8 @@ is what is still *outstanding*, not what arrived.
 The file is the interface, not just storage. The Claude session in the terminal crosses
 items off with
 
-    python3 brain/serve.py --mark <key>      # key, or any unique prefix
-    python3 brain/serve.py --queue           # print the queue, keys and all
+    python3 -m zipper.serve --mark <key>      # key, or any unique prefix
+    python3 -m zipper.serve --queue           # print the queue, keys and all
 
 and a watcher thread notices the file move and pushes the new state to every open
 dashboard within a second. That is why the queue prompt hands Claude the keys. A row is
@@ -176,7 +176,7 @@ keyed by a hash of its text, so the same fact arriving twice is one queue item, 
 vault has produced was stale data presented as current; the page states its own age.
 
 **Closing the tab stops the server.** The SSE stream doubles as the liveness signal, with
-a 4s grace window so a reload does not kill it. Note `EventSource` auto-reconnects: a Brain
+a 4s grace window so a reload does not kill it. Note `EventSource` auto-reconnects: a Zipper
 tab left open in another window will keep the server alive and silently reattach to the
 next one you start. Close them if you want a clean run.
 
@@ -189,7 +189,7 @@ your Canvas host — it pages the planner API in your logged-in session, POSTs t
 
 `brew install ttyd` (already done). After the refresh finishes, the server spawns
 
-    ttyd -p 8801 -i 127.0.0.1 -W  brain/claude-session.sh [prompt-file]
+    ttyd -p 8801 -i 127.0.0.1 -W  zipper/claude-session.sh [prompt-file]
 
 and the page mounts it in an iframe. **fullscreen** fills the window (Esc exits);
 **pop out** opens it as its own tab. The session dies with the server.
@@ -204,7 +204,7 @@ expose the ttyd port through nginx.
 **PATH.** Finder launches an app with `/usr/bin:/bin:/usr/sbin:/sbin`, where none of `ttyd`,
 `tmux`, `gh` or `claude` exist. `serve.py` appends `~/.local/bin`, `/opt/homebrew/bin` and
 `/usr/local/bin` at startup and the app launcher exports the same. Before that fix the
-terminal card said *ttyd not installed* under Brain.app and worked fine from a shell — and
+terminal card said *ttyd not installed* under Zipper.app and worked fine from a shell — and
 the same trap made `gh auth token` fail, so a launch-time fetch quietly wrote public-repo
 data over the notes.
 
@@ -226,7 +226,7 @@ A live session:
 
 The last two confirm first, because they end the running conversation.
 
-**The session survives the browser.** ttyd runs `tmux new -A -s brain`, so tmux owns the
+**The session survives the browser.** ttyd runs `tmux new -A -s zipper`, so tmux owns the
 Claude process rather than the websocket. Closing the tab *detaches*; reopening reattaches
 to the same live conversation, mid-stream. Without tmux, ttyd spawns a fresh command per
 connection and every tab close silently started a new Claude.
@@ -235,7 +235,7 @@ connection and every tab close silently started a new Claude.
 session, so the next attach starts fresh. **refresh** re-fetches on demand; the launch
 fetch still happens, this just means you do not have to relaunch to get current data.
 
-Relaunching Brain.app reattaches to the *existing* conversation, so a new run's queue is
+Relaunching Zipper.app reattaches to the *existing* conversation, so a new run's queue is
 not injected into it — attaching to a live tmux session runs no command, and the prompt
 file is never read. **new conversation with queue** is the button that means it: it kills
 the session first, so `claude-session.sh` actually runs and actually reads the prompt.
@@ -257,7 +257,7 @@ disk and paste the path instead.
 With Tailscale up, serve the tailnet rather than loopback — `tailscale ip -4` gives
 the address to bind:
 
-    python3 brain/serve.py --host "$(tailscale ip -4)" --port 8800
+    python3 -m zipper.serve --host "$(tailscale ip -4)" --port 8800
 
 The terminal stays on loopback unless you pass **both** `--term-host` and `--term-cred` —
 `serve.py` refuses to bind an unauthenticated shell off `127.0.0.1`. iOS Safari often will
@@ -265,8 +265,8 @@ not show a basic-auth prompt inside an iframe, so use **pop out** on a phone.
 
 ### Deploying to the VPS
 
-    git clone <repo> /srv/brain && cd /srv/brain
-    python3 brain/serve.py --host 127.0.0.1 --port 8800   # behind nginx
+    git clone <repo> /srv/zipper && cd /srv/zipper
+    python3 -m zipper.serve --host 127.0.0.1 --port 8800   # behind nginx
 
 Put nginx in front with TLS **and auth** — this page is coursework, projects, revenue and
 people. Basic auth is the ten-minute version; binding to a Tailscale address so it never

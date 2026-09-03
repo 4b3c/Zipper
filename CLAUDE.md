@@ -4,7 +4,7 @@ Guidance for Claude Code working in **this repository**. It describes the system
 rules. It deliberately contains nothing about whose vault it runs against.
 
 **The operator's own context — projects, people, current state, the things worth arguing
-with them about — lives in the vault, not here.** Read `$BRAIN_VAULT/CLAUDE.md` at the
+with them about — lives in the vault, not here.** Read `$ZIPPER_VAULT/CLAUDE.md` at the
 start of a session. If it is absent, you are working on the code only; do not infer facts
 about the operator from anything in this repo.
 
@@ -14,9 +14,9 @@ about the operator from anything in this repo.
 
 Two programs and a data format.
 
-- `brain/brain.py` — the engine. Reads a vault of markdown notes with YAML frontmatter,
+- `python3 -m zipper` — the engine. Reads a vault of markdown notes with YAML frontmatter,
   fetches from external sources, and writes back only facts.
-- `brain/serve.py` — a local web dashboard over what the engine wrote. Stdlib HTTP server,
+- `python3 -m zipper.serve` — a local web dashboard over what the engine wrote. Stdlib HTTP server,
   no framework.
 - `bot/` — a Discord relay. It needs an HTTP endpoint to talk to; the service that used to
   provide one was removed, so treat it as a front door looking for a house.
@@ -29,21 +29,32 @@ it that way: the deployment target is a box where `apt install python3` is the w
 
 | Path | What |
 |---|---|
-| `brain/brain.py` | the engine — all commands |
-| `brain/serve.py` | the dashboard |
-| `brain/README.md` | operational reference. **Read before touching either** |
-| `brain/claude-session.sh` | ttyd entry point for the embedded terminal |
-| `brain/install-app.sh` | builds a macOS `.app` wrapper |
+| `zipper/core.py` | vault paths, frontmatter, and the helpers everything shares |
+| `zipper/cli.py` | the argument parser — the whole command surface, in one place |
+| `zipper/lint.py` `sync.py` `status.py` | validation, evidence, the generated snapshot |
+| `zipper/ics.py` `events.py` | calendars, recurrence, event notes |
+| `zipper/gh.py` `canvas.py` `metrics.py` | the fetchers and the numbers |
+| `zipper/runqueue.py` `views.py` | the between-runs diff, and the saved queries |
+| `zipper/chat.py` | the Discord CLI |
+| `zipper/serve.py` | the dashboard |
+| `zipper/README.md` | operational reference. **Read before touching any of it** |
 | `bot/` | Discord relay — the only part of the old runtime kept |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
 | `docs/` | setup journal |
 
+Run it as a module: `python3 -m zipper <command>`, `python3 -m zipper.serve`.
+
+**`core.TODAY` is read through the module, never imported by value.** The server is
+long-running and re-reads it at midnight; a `from .core import TODAY` pins a stale
+date that only misbehaves after a rollover. Same reason `import *` from `core` is
+governed by an explicit `__all__` — the shared helpers are underscore-prefixed by
+convention, not by privacy.
 ## 3. The vault contract
 
 The engine assumes a vault laid out by note type — `Projects/`, `Areas/`, `Topics/`,
 `People/`, `Classes/`, `Tasks/`, `Decisions/`, `Events/`, `Log/`, `Metrics/`, `Meta/`,
 `Inbox/`. Every note carries frontmatter; `type` and `status` are required, and the rest
-is per-type. The enums are defined in `brain.py`, and `brain.py lint` is the authority.
+is per-type. The enums are defined in `zipper/core.py`, and `zipper lint` is the authority.
 
 Four `Meta/` files are **generated** and overwritten on every run. Never hand-edit them,
 and never teach a human to.
@@ -70,7 +81,7 @@ gitignored, and it may hold secret feed URLs. Nothing there is authoritative.
 
 ## 5. Working on the code
 
-- `brain/README.md` is the reference. Read it first; it records the traps.
+- `zipper/README.md` is the reference. Read it first; it records the traps.
 - **`serve.py` is a Python process. A page reload does not pick up a code change** —
   restart the server.
 - **Verify UI changes in a browser, not in the HTML string.** Served bytes are not rendered
@@ -89,17 +100,17 @@ exposes a small HTTP API on `BOT_URL`; nothing else imports `discord`.
 **Talking to Discord from a session.** Four verbs, no state:
 
 ```bash
-python3 brain/brain.py discord send "text"          # say something
-python3 brain/brain.py discord send "here" --file report.html
-python3 brain/brain.py discord read --limit 5       # last five messages
-python3 brain/brain.py discord status               # is the bot reachable?
+python3 python3 -m zipper discord send "text"          # say something
+python3 python3 -m zipper discord send "here" --file report.html
+python3 python3 -m zipper discord read --limit 5       # last five messages
+python3 python3 -m zipper discord status               # is the bot reachable?
 ```
 
 Use it whenever you are asked to, and whenever a task finishes that nobody is
 watching a terminal for — a long build, a scheduled run, anything triggered by
 cron. The person who started it is probably not looking at this pane.
 
-**Messages arriving from Discord.** The bot POSTs every message to Brain's
+**Messages arriving from Discord.** The bot POSTs every message to Zipper's
 `/discord`, which routes it to the one Claude session:
 
 | tmux | ttyd | what happens |
@@ -116,7 +127,7 @@ has to be sent back explicitly.
 
 ## 7. Configuration
 
-Environment only — see `.env.example`. `BRAIN_VAULT` is the one that matters: it is the
+Environment only — see `.env.example`. `ZIPPER_VAULT` is the one that matters: it is the
 seam between this code and somebody's life. Everything else (GitHub user and orgs, Canvas
 host, tokens) has an empty or generic default, and the code must stay that way. **A default
 that names a real person, school, or host is a bug in this repository.**
