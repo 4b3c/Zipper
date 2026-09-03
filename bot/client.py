@@ -67,11 +67,10 @@ async def on_message(message: discord.Message):
             await message.channel.send("⚠️ Zipper disconnected")
         return
 
-    # Message in the main channel — create a thread, then relay to zipper
+    # Message in the main channel — relay to zipper in the channel itself
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
 
-    thread = await message.create_thread(name=message.content[:50])
-    ok = await post_to_zipper(message.content, thread.id)
+    ok = await post_to_zipper(message.content, message.channel.id)
     if not ok:
-        await thread.send("⚠️ Zipper disconnected")
+        await message.channel.send("⚠️ Zipper disconnected")
