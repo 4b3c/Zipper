@@ -54,6 +54,8 @@ def main():
     s.add_argument('--limit', type=int, default=5)
     s.set_defaults(fn=chat.cmd_discord)
     s = sub.add_parser('canvas'); s.add_argument('--file'); s.add_argument('--days', type=int, default=21)
+    s.add_argument('--no-descriptions', action='store_true',
+                   help='skip the per-course assignment bodies')
     s.set_defaults(fn=canvas.cmd_canvas)
     s = sub.add_parser('score'); s.add_argument('--window', type=int, default=30)
     s.add_argument('--force', action='store_true'); s.set_defaults(fn=metrics.cmd_score)

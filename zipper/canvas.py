@@ -2,8 +2,8 @@
 
 Canvas planner items -- the only source that knows submitted vs due.
 """
-import os, re, json, datetime
-import urllib.request
+import os, re, json, datetime, html
+import urllib.request, urllib.error
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
@@ -11,6 +11,95 @@ from . import core
 
 CANVAS_JSON = os.path.join(INBOX, 'canvas.json')
 CANVAS_HOST = os.environ.get('CANVAS_HOST', 'https://canvas.instructure.com')
+DESC_CAP = 6000          # a rubric-heavy assignment body, not a whole page
+
+
+class CanvasAuthError(Exception):
+    """The credential is missing, wrong, or expired.
+
+    Kept distinct from every other failure on purpose: an expired session must
+    never be mistaken for 'nothing due', and must never leave the stale
+    canvas.json in place while reporting success.
+    """
+
+
+def _canvas_auth():
+    """Headers proving who we are. A token if the institution grants them,
+    otherwise the session cookie from a browser that already cleared MFA.
+
+    ASU does not issue access tokens, so CANVAS_SESSION is the live path here.
+    The cookie is not a way around Duo -- it is what Duo produced. It carries
+    that session's lifetime with it, which is why _canvas_get treats a login
+    redirect as an error rather than as data.
+    """
+    tok = os.environ.get('CANVAS_TOKEN', '').strip()
+    if tok:
+        return {'Authorization': 'Bearer ' + tok}, 'token'
+    sess = os.environ.get('CANVAS_SESSION', '').strip()
+    if sess:
+        # Accept either a bare canvas_session value or a whole pasted
+        # `Cookie:` header -- the browser offers both and neither is wrong.
+        cookie = sess if '=' in sess else 'canvas_session=' + sess
+        return {'Cookie': cookie}, 'cookie'
+    raise CanvasAuthError('no CANVAS_TOKEN and no CANVAS_SESSION set')
+
+
+def _canvas_get(url, headers):
+    """One authenticated GET. Returns (parsed json, next-page url).
+
+    The failure that matters: with cookie auth an expired session does not
+    return 401. Canvas 302s to the SSO login page and serves it with a cheerful
+    200, so trusting the status code alone would parse a login form as an empty
+    planner and quietly report that nothing is due. Anything that is not JSON
+    is therefore an auth error.
+    """
+    req = urllib.request.Request(url, headers=dict(headers, Accept='application/json'))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode('utf-8', 'replace').lstrip()
+            ctype = (r.headers.get('Content-Type') or '').lower()
+            link = r.headers.get('Link', '')
+            final = r.geturl()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise CanvasAuthError('Canvas returned %d -- credential rejected' % e.code)
+        raise
+    if body.startswith('while(1);'):
+        body = body[len('while(1);'):]          # Canvas' anti-JSON-hijack prefix
+    if 'json' not in ctype:
+        raise CanvasAuthError('Canvas served %s from %s -- session expired'
+                              % (ctype.split(';')[0] or 'no content-type', final))
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise CanvasAuthError('Canvas returned non-JSON -- session expired')
+    m = re.search(r'<([^>]+)>\s*;\s*rel="next"', link)
+    return data, (m.group(1) if m else None)
+
+
+def _canvas_paged(url, headers, cap=1000):
+    out = []
+    while url and len(out) < cap:
+        data, url = _canvas_get(url, headers)
+        if not isinstance(data, list):
+            break
+        out.extend(data)
+    return out
+
+
+def _html_to_text(h):
+    """Assignment bodies are HTML. Keep the prose and the list structure."""
+    if not h:
+        return ''
+    t = re.sub(r'(?is)<(script|style).*?</\1>', ' ', h)
+    t = re.sub(r'(?i)<br\s*/?>', '\n', t)
+    t = re.sub(r'(?i)</(p|div|tr|h[1-6])>', '\n\n', t)
+    t = re.sub(r'(?i)<li[^>]*>', '\n- ', t)
+    t = re.sub(r'(?s)<[^>]+>', ' ', t)
+    t = html.unescape(t)
+    t = re.sub(r'[ \t\r\f\v]+', ' ', t)
+    t = re.sub(r'\n\s*\n\s*\n+', '\n\n', t)
+    return t.strip()[:DESC_CAP]
 
 def _canvas_courses():
     """{canvas_course_id: 'CSE 423'} from Classes/ frontmatter.
@@ -26,30 +115,49 @@ def _canvas_courses():
     return out
 
 def _canvas_fetch(days):
-    """Pull planner items straight from the API. Needs CANVAS_TOKEN.
+    """Pull planner items straight from the API.
 
-    Where the institution withholds tokens this raises, and --file is the way
-    in. The parsing
-    below is identical either way, so the token is a swap of transport only.
+    The parsing below is identical whether a token or a cookie got us in, so
+    the credential is a swap of transport only.
     """
-    tok = os.environ.get('CANVAS_TOKEN')
-    if not tok:
-        raise RuntimeError('no CANVAS_TOKEN set')
+    headers, kind = _canvas_auth()
     url = ('%s/api/v1/planner/items?start_date=%s&end_date=%s&per_page=100'
            % (CANVAS_HOST, (core.TODAY - datetime.timedelta(days=7)).isoformat(),
               (core.TODAY + datetime.timedelta(days=days)).isoformat()))
-    out = []
-    while url and len(out) < 1000:
-        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            body = r.read().decode('utf-8').lstrip()
-            link = r.headers.get('Link', '')
-        out.extend(json.loads(body[9:] if body.startswith('while(1);') else body))
-        # per_page caps at 100; without following rel="next" a busy month is
-        # silently truncated and the dashboard under-reports what is due.
-        m = re.search(r'<([^>]+)>\s*;\s*rel="next"', link)
-        url = m.group(1) if m else None
+    # per_page caps at 100; without following rel="next" a busy month is
+    # silently truncated and the dashboard under-reports what is due.
+    return _canvas_paged(url, headers), kind
+
+
+def _canvas_descriptions(course_ids):
+    """{course_id: {assignment_id: text, normalized title: text}}.
+
+    What an assignment actually asks for -- the thing the ICS feed has never
+    carried. These stay in Inbox/ and are never written into a note: an
+    assignment body is a copy, and a copy goes stale in silence. Read them,
+    conclude something, write the conclusion.
+    """
+    headers, _ = _canvas_auth()
+    out = {}
+    for cid in course_ids:
+        url = ('%s/api/v1/courses/%s/assignments?per_page=100' % (CANVAS_HOST, cid))
+        try:
+            rows = _canvas_paged(url, headers)
+        except CanvasAuthError:
+            raise
+        except Exception as e:
+            print('  descriptions: course %s skipped (%s)' % (cid, e))
+            continue
+        idx = {}
+        for a in rows:
+            txt = _html_to_text(a.get('description') or '')
+            if not txt:
+                continue
+            idx[str(a.get('id'))] = txt
+            idx.setdefault(_norm_title((a.get('name') or '').strip()), txt)
+        out[str(cid)] = idx
     return out
+
 
 def _canvas_parse(items):
     codes = _canvas_courses()
@@ -67,6 +175,8 @@ def _canvas_parse(items):
             continue
         out.append({
             'course': code,
+            'course_id': str(it.get('course_id')),
+            'plannable_id': str(pl.get('id') or ''),
             'title': (pl.get('title') or '').strip(),
             'due': _utc_local(due) if due else '',
             'type': it.get('plannable_type', ''),
@@ -81,6 +191,7 @@ def _canvas_parse(items):
     return out, skipped
 
 def cmd_canvas(a):
+    kind = None
     if a.file:
         raw = open(os.path.expanduser(a.file), encoding='utf-8').read().lstrip()
         if raw.startswith('while(1);'):
@@ -89,23 +200,53 @@ def cmd_canvas(a):
         src = 'file:' + os.path.basename(a.file)
     else:
         try:
-            items = _canvas_fetch(a.days)
-            src = 'api'
-        except Exception as e:
-            print('canvas: %s' % e)
-            print('  no token yet -- dump the planner JSON from a logged-in browser and pass --file')
-            print('  %s/api/v1/planner/items?start_date=%s&end_date=%s&per_page=100'
-                  % (CANVAS_HOST, core.TODAY.isoformat(),
-                     (core.TODAY + datetime.timedelta(days=a.days)).isoformat()))
+            items, kind = _canvas_fetch(a.days)
+            src = 'api:' + kind
+        except CanvasAuthError as e:
+            # Loud, and nothing is written. The old canvas.json stays exactly as
+            # it was and keeps its old `fetched` stamp, so a stale submitted-flag
+            # can still be spotted -- what must never happen is this failing
+            # quietly and the vault claiming the data is current.
+            print('canvas: NOT FETCHED -- %s' % e)
+            print('  repaste the cookie: canvas.asu.edu -> devtools -> Application ->')
+            print('  Cookies -> canvas_session, then set CANVAS_SESSION in /opt/zipper/.env')
+            print('  (and `systemctl restart zipper-web` so running services see it)')
+            if os.path.exists(CANVAS_JSON):
+                blob = json.load(open(CANVAS_JSON, encoding='utf-8'))
+                print('  %s is unchanged, fetched %s -- treat submitted/ flags as stale'
+                      % (rel(CANVAS_JSON), blob.get('fetched', '?')))
             return 1
+        except Exception as e:
+            print('canvas: fetch failed -- %s' % e)
+            return 1
+
     rows, skipped = _canvas_parse(items)
+
+    descs = {}
+    if not a.no_descriptions and not a.file:
+        try:
+            descs = _canvas_descriptions(sorted({r['course_id'] for r in rows if r.get('course_id')}))
+        except CanvasAuthError as e:
+            print('canvas: descriptions skipped -- %s' % e)
+    got = 0
+    for r in rows:
+        idx = descs.get(r.get('course_id') or '', {})
+        # by assignment id first; a quiz's plannable id is not an assignment id,
+        # so fall back to the normalized title within the same course.
+        txt = idx.get(r.get('plannable_id') or '') or idx.get(_norm_title(r['title']))
+        if txt:
+            r['description'] = txt
+            got += 1
+
     with open(CANVAS_JSON, 'w', encoding='utf-8') as fh:
         json.dump({'fetched': datetime.datetime.now().isoformat(timespec='seconds'),
                    'source': src, 'items': rows}, fh, indent=1)
     done = sum(1 for r in rows if r['submitted'])
     late = [r for r in rows if r['missing'] or (r['late'] and not r['submitted'])]
-    print('canvas: %d graded item(s), %d submitted, %d outstanding  (%d skipped) -> %s'
+    print('canvas: %d item(s), %d submitted, %d outstanding  (%d skipped) -> %s'
           % (len(rows), done, len(rows) - done, skipped, rel(CANVAS_JSON)))
+    if descs:
+        print('  descriptions: %d of %d item(s)' % (got, len(rows)))
     if late:
         print('  MISSING: ' + '; '.join('%s %s' % (r['course'], r['title'][:40]) for r in late))
     by_day = {}
