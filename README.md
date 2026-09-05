@@ -146,7 +146,7 @@ python3 -m zipper <command>
 
 | Command | What it does |
 |---|---|
-| `catchup` | github → calendars → sync → agenda → status → views → queue. Idempotent; safe any time |
+| `catchup` | github → calendars → canvas → sync → agenda → status → views → queue. Idempotent; safe any time. Canvas runs before `agenda` because that is what strikes submitted items through, and a failed Canvas fetch is non-fatal |
 
 ### Fetching
 
@@ -156,7 +156,7 @@ python3 -m zipper <command>
 | `inspect [repos...] [--limit N]` | READMEs + 40 commits → `Inbox/repo-details.json`, so a session can write a note about a repo it has never seen |
 | `ingest-ics <url\|file> --label X [--match REGEX]` | An ICS feed → `Inbox/calendar-X.json`. A **URL** is remembered and refetched by `catchup`; a downloaded file goes stale tomorrow |
 | `calendars` | Refetch every remembered calendar URL |
-| `canvas [--file PATH] [--days N]` | Canvas planner items → `Inbox/canvas.json`. The only source that knows **submitted**, not merely **due** |
+| `canvas [--file PATH] [--days N]` | Canvas planner items → `Inbox/canvas.json`. The only source that knows **submitted**, not merely **due**. Also run hourly by `zipper-canvas.timer`, which keeps a cookie-auth session from idling out |
 | `ingest-budget <csv>` | A bank CSV reduced to monthly totals. Individual transactions never enter the vault |
 
 ### Writing to the vault

@@ -8,7 +8,7 @@ from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
 from .events import resolve_events
 from .metrics import _ledger_update
-from . import gh, ics, status, sync, views
+from . import canvas, gh, ics, status, sync, views
 
 
 STATE = os.path.join(INBOX, 'state.json')
@@ -187,6 +187,16 @@ def cmd_catchup(a):
         ics.cmd_calendars(a)
     except Exception as e:
         print('calendar step skipped: %s' % e)
+    print('\n== canvas ==')
+    try:
+        # Submitted-vs-due comes from here and nowhere else, and the cookie it
+        # runs on is short-lived, so this must happen before `agenda` strikes
+        # items through. cmd_canvas already fails loudly and writes nothing on
+        # an expired credential -- a bad fetch must not take the rest down.
+        class C: file = None; days = 21; no_descriptions = False
+        canvas.cmd_canvas(C())
+    except Exception as e:
+        print('canvas step skipped: %s' % e)
     print('\n== sync ==');   sync.cmd_sync(a)
     print('\n== agenda =='); a.days = 14; ics.cmd_agenda(a)
     print('\n== status =='); status.cmd_status(a)
