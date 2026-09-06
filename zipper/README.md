@@ -474,6 +474,14 @@ and pasting an image into one reaches the conversation. Both depend on the termi
 same-origin (above): the iframe's window is reachable from the dashboard page, and ttyd leaves
 the xterm instance on it as `window.term`.
 
+**Selecting with the mouse needs an xterm option, on macOS especially.** Claude Code turns on
+mouse reporting, so a drag is sent to the application and xterm makes no selection of its own —
+`getSelection()` returns nothing and there is simply nothing to copy. xterm's bypass is
+**Shift** everywhere except macOS, where it is **Option**, and only when
+`macOptionClickForcesSelection` is set — which is off by default. Both ttyd launches pass it,
+along with `rightClickSelectsWord`. Without it there is no way to select text with a mouse at
+all, and every clipboard fix upstream of that is invisible.
+
 **Copy only works from a secure context.** Browsers expose `navigator.clipboard` on https and
 localhost and nowhere else, so on `http://<tailnet-ip>:8800` the API is simply absent. That is
 what `tailscale serve` is for here: it puts the whole thing behind

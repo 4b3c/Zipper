@@ -314,6 +314,13 @@ def start_terminal(mode='blank', prompt=None):
              # matches the nginx location, so ttyd's own asset and websocket
              # URLs carry the prefix they are served under
              '-b', '/t/%d' % TERM['port'],
+             # Claude Code turns on mouse reporting, so a drag goes to the
+             # application and xterm makes no selection of its own. xterm's
+             # bypass is Shift everywhere except macOS, where it is Option --
+             # and only when this option is on, which it is not by default.
+             # Without it there is no way to select text with a mouse at all.
+             '-t', 'macOptionClickForcesSelection=true',
+             '-t', 'rightClickSelectsWord=true',
              '-t', 'fontSize=13', '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}'] + args,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1439,23 +1446,47 @@ function mountTerm(port){
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';
   document.getElementById('termpop').href=u;
   const f=document.querySelector('#termwrap iframe');
-  if(f) f.addEventListener('load',()=>hookTerm(f));
+  if(f){
+    // Both, because either can be missed: a cached iframe can finish loading
+    // before the listener is attached, and hookTerm is idempotent by design.
+    f.addEventListener('load',()=>hookTerm(f));
+    setTimeout(()=>hookTerm(f),1500);
+  }
 }
 // Selecting in the terminal should put the text on the real machine's clipboard,
 // and an image on the clipboard should reach the conversation. Both are only
 // possible because ttyd is served from this origin now: the iframe is
 // same-origin, so its window -- and the xterm instance ttyd leaves on it as
 // `term` -- can be reached from here.
+function clipReport(o){try{fetch('/api/clipdebug',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});}catch(e){}}
+function findTerm(win){
+  // ttyd leaves the xterm instance on `window.term`, but do not depend on the
+  // name: anything exposing getSelection + onSelectionChange is the terminal.
+  if(win.term&&win.term.getSelection) return win.term;
+  try{
+    for(const k of Object.keys(win)){
+      const v=win[k];
+      if(v&&typeof v==='object'&&typeof v.getSelection==='function'
+         &&typeof v.onSelectionChange==='function') return v;
+    }
+  }catch(e){}
+  return null;
+}
 function hookTerm(f){
   let win;
-  try{ win=f.contentWindow; }catch(e){ return; }          // not same-origin: nothing to do
+  try{ win=f.contentWindow; }catch(e){ clipReport({stage:'cross-origin'}); return; }
+  clipReport({stage:'hook-start',proto:location.protocol,secure:window.isSecureContext});
   let tries=0;
   (function wait(){
-    if(!win||!win.document) return;
-    const term=win.term;
-    if(!term){ if(tries++<40) setTimeout(wait,250); return; }
+    if(!win||!win.document){ clipReport({stage:'no-document'}); return; }
+    const term=findTerm(win);
+    if(!term){ if(tries++<40){ setTimeout(wait,250); return; }
+               clipReport({stage:'no-term-after-10s',keys:Object.keys(win).length}); return; }
     if(win.__zipperHooked) return;
     win.__zipperHooked=true;
+    clipReport({stage:'hooked',secure:!!win.isSecureContext,
+                api:!!(win.navigator.clipboard&&win.navigator.clipboard.writeText)});
 
     // copy: xterm keeps its own selection (the canvas renderer means the page
     // has none), so read it from the terminal and write it from inside the
@@ -1467,7 +1498,11 @@ function hookTerm(f){
     // continuation scheduled off the event no longer counts as one. That was
     // the bug -- the copy ran, silently did nothing, and left the old clipboard.
     const copySel=(why)=>{
-      let sel=''; try{ sel=term.getSelection(); }catch(e){}
+      // Either source: xterm keeps its own selection with the canvas renderer,
+      // but with the DOM renderer the selection is the document's and xterm may
+      // report nothing. Whichever has text is the one the user made.
+      let sel=''; try{ sel=term.getSelection()||''; }catch(e){}
+      if(!sel){ try{ sel=String(win.getSelection()||'').trim(); }catch(e){} }
       if(!sel||sel===win.__lastSel) return;
       win.__lastSel=sel;
       const secure=!!win.isSecureContext, api=!!(win.navigator.clipboard&&win.navigator.clipboard.writeText);
@@ -1487,12 +1522,34 @@ function hookTerm(f){
       }
       if(how!=='api') report({how:how,ok:ok,n:sel.length,secure:secure,api:api,why:why,
                               proto:win.location.protocol});
-      fetch('/api/copybuffer',{method:'POST',headers:{'Content-Type':'application/json'},
-                               body:JSON.stringify({text:sel,thread_id:window.__chat||null})})
-        .catch(()=>{});
-      toast('copied '+sel.length+' chars');
+      sendSel(win,sel,why);
     };
-    win.document.addEventListener('mouseup',()=>copySel('mouseup'));
+    // Report what a mouseup actually sees. The hook attaches and then nothing
+    // happens, which means the selection is coming back empty -- so the next
+    // question is whether the event fires at all and what the terminal thinks
+    // it has. Throttled, because mouseup is every click.
+    win.document.addEventListener('mouseup',()=>{
+      let sel='',err='';
+      try{ sel=term.getSelection()||''; }catch(e){ err=String(e); }
+      let has=null; try{ has=term.hasSelection?term.hasSelection():null; }catch(e){}
+      const now=Date.now();
+      if(!sel&&(now-(win.__lastReport||0))>2500){
+        win.__lastReport=now;
+        let docsel=''; try{ docsel=String(win.getSelection()||''); }catch(e){}
+        clipReport({stage:'mouseup-empty',len:sel.length,has:has,err:err,
+                    docsel:docsel.length,rows:term.rows||null,
+                    ctor:(term.constructor&&term.constructor.name)||null});
+      }
+      copySel('mouseup');
+    },true);
+    // Belt and braces: xterm's own event. It fires without a DOM event when
+    // selection is extended by keyboard or by a drag that ends outside the
+    // frame, and it is the only signal if something swallows mouseup.
+    try{ term.onSelectionChange(()=>{ if(!win.__selPending){ win.__selPending=1;
+           setTimeout(()=>{ win.__selPending=0;
+             let sel=''; try{ sel=term.getSelection(); }catch(e){}
+             if(sel&&sel!==win.__lastSel){ win.__lastSel=sel; sendSel(win,sel,'selchange'); }
+           },120); } }); }catch(e){}
     // Ctrl/Cmd+C on keydown, before xterm forwards it to the pty: on keyup the
     // gesture is spent and, worse, a bare Ctrl-C has already interrupted Claude.
     win.document.addEventListener('keydown',ev=>{
@@ -1521,6 +1578,13 @@ function hookTerm(f){
       }
     },true);
   })();
+}
+// The half that does not need a user gesture: tmux's buffer, and saying so.
+function sendSel(win,sel,why){
+  fetch('/api/copybuffer',{method:'POST',headers:{'Content-Type':'application/json'},
+                           body:JSON.stringify({text:sel,thread_id:window.__chat||null,why:why})})
+    .catch(()=>{});
+  toast('copied '+sel.length+' chars');
 }
 let __toastT=null;
 function toast(msg){

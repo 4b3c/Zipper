@@ -360,6 +360,10 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     if cred:
         args += ['-c', cred]
     args += ['-b', '/t/%d' % port,
+             # See serve.start_terminal: with mouse reporting on, macOS needs
+             # this before Option-drag can select anything.
+             '-t', 'macOptionClickForcesSelection=true',
+             '-t', 'rightClickSelectsWord=true',
              '-t', 'fontSize=%d' % font,
              '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
