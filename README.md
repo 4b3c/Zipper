@@ -156,7 +156,7 @@ python3 -m zipper <command>
 | `inspect [repos...] [--limit N]` | READMEs + 40 commits → `Inbox/repo-details.json`, so a session can write a note about a repo it has never seen |
 | `ingest-ics <url\|file> --label X [--match REGEX]` | An ICS feed → `Inbox/calendar-X.json`. A **URL** is remembered and refetched by `catchup`; a downloaded file goes stale tomorrow |
 | `calendars` | Refetch every remembered calendar URL |
-| `canvas [--file PATH] [--days N]` | Canvas planner items → `Inbox/canvas.json`. The only source that knows **submitted**, not merely **due**. Also run hourly by `zipper-canvas.timer`, which keeps a cookie-auth session from idling out |
+| `canvas [--file PATH] [--days N]` | Canvas planner items → `Inbox/canvas.json`. The only source that knows **submitted**, not merely **due**. Also run hourly as part of `zipper fetch` by `zipper-fetch.timer`, which keeps a cookie-auth session from idling out |
 | `ingest-budget <csv>` | A bank CSV reduced to monthly totals. Individual transactions never enter the vault |
 
 ### Writing to the vault
@@ -176,7 +176,7 @@ python3 -m zipper <command>
 |---|---|
 | `status` | Regenerate `Meta/Status.md` — the snapshot |
 | `agenda [--days N]` | Regenerate `Meta/Agenda.md`, opening with a `## Today` time sheet |
-| `bookkeep [--commit MSG]` | Render the brief → `Meta/Queue.md` + `Inbox/queue.json`: open queue events with targets, uncommitted note edits from git, and the flags. `--commit` ticks every row and commits |
+| `bookkeep [--commit MSG] [--no-fetch]` | Fetch every input, regenerate the derived views, then render the brief → `Meta/Queue.md` + `Inbox/queue.json`: open queue events with targets, uncommitted note edits from git, and the flags. `--commit` ticks every row and commits |
 | `views` | Recompute 21 saved queries → `Inbox/views.json` |
 | `metrics` | Print every metric series with its trend |
 | `score [--window N] [--force]` | Compute the execution metrics and append them. Weekly-rate-limited |
@@ -287,7 +287,8 @@ Stdlib only — no Flask, no venv, no build step.
 **It owns no data.** Every panel reads what the engine already wrote. A wrong number is
 fixed in the vault or the fetcher, never in the view.
 
-**One fetch per launch.** The refresh runs at startup, never on a page load; sources publish
+**No fetch at launch.** Inputs are pulled hourly by `zipper-fetch.timer` and at the start of
+every bookkeeping pass, never on a page load; sources publish
 over SSE as they land, so the page fills in live but a reload shows the same data. (An
 earlier version keyed reloads on "a refresh ran" instead of on content — an infinite loop
 that would have polled GitHub forever with a tab open.)

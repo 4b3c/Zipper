@@ -1,0 +1,12 @@
+[Unit]
+Description=Fetch every Zipper input hourly
+
+[Timer]
+OnCalendar=hourly
+# The Canvas keepalive only works if it actually runs; catch up after a reboot
+# rather than waiting for the next hour boundary.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

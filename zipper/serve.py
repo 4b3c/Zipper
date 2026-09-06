@@ -2672,7 +2672,11 @@ def main():
     print('zipper dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))
     if a.daemon:
         print('inbound: POST %sdiscord   {"content": "..."}' % url)
-    threading.Thread(target=do_refresh, daemon=True).start()
+    # No fetch at launch. Inputs are pulled on the hour by zipper-fetch.timer
+    # and at the start of every bookkeeping pass -- the two moments that mean
+    # something. Fetching here tied freshness to when a browser happened to
+    # open, which made the morning page current and a tab left open all day
+    # silently stale. The `refresh` button still forces one on demand.
     if a.open:
         import webbrowser
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

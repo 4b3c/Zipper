@@ -1,0 +1,35 @@
+[Unit]
+Description=Zipper — hourly fetch of every input (also keeps the Canvas cookie warm)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Fetching happens exactly twice: here, on the hour, and at the start of a
+# bookkeeping pass. It used to also happen when the dashboard launched, which
+# tied how fresh the data was to when a browser happened to open -- the morning
+# page was current and a tab left open all day was silently a day stale.
+#
+# This pulls github, calendars and canvas, regenerates the derived views, and
+# turns whatever changed into queue rows in Inbox/feed.json. A running
+# dashboard's feed watcher picks that file up within a second, so the queue
+# fills in without anyone reloading anything.
+#
+# The Canvas half is still also an experiment. ASU issues no API tokens, so it
+# runs on a browser session cookie, and the 2026-09-04 cookie died in under 18
+# hours untouched. Canvas' session timeout is idle-based, so exercising it
+# hourly should hold it open indefinitely -- unless the timeout is absolute, or
+# the operator's own browser rotates the session by re-authenticating through
+# SSO. The journal for this unit is the evidence: the age at which a cookie
+# dies, while being polled, tells the three apart.
+ExecStart=/usr/bin/python3 -m zipper fetch
+WorkingDirectory=/opt/zipper
+EnvironmentFile=/opt/zipper/.env
+Environment=HOME=/root
+# An expired cookie exits 1 by design and writes nothing. That is a real
+# result here, not a crash -- don't let it mark the unit failed and stop the
+# timer, or the experiment ends at the first expiry.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

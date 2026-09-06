@@ -244,8 +244,86 @@ def flags(evrecs=None):
 
 # ------------------------------------------------------------------ bookkeep
 
+def fetch_all(a, emit=True):
+    """Pull every input, regenerate everything derived from them, and turn what
+    changed into queue rows.
+
+    The emit half matters as much as the fetch: queue rows *are* the diff
+    between two fetches, so whatever fetches has to be what publishes rows, or
+    a push lands in the data with nothing in the queue pointing at it. Rows are
+    written to Inbox/feed.json, and a running dashboard's feed watcher picks the
+    file up within a second -- so this works the same from a timer, from the
+    terminal, or from inside the server.
+
+    A bookkeeping pass always starts here. The brief's whole claim is that it
+    shows what is true *now* -- open events, an unreviewed diff, live flags --
+    and rendering it over a stale fetch quietly breaks that: a push from an hour
+    ago is missing, a submitted assignment still reads as due, and a flag fires
+    or fails to fire on yesterday's data. Fetching separately made freshness a
+    thing you had to remember; making it the first step of the pass makes it a
+    thing you cannot skip.
+
+    Every source is wrapped: a dead Canvas cookie or a GitHub outage must
+    degrade the brief, never prevent it.
+    """
+    from . import serve
+    serve.feed_load()
+    before = serve.snapshot_data() if emit else None
+
+    print('== github ==')
+    class A: since_days = 30; full = False
+    try:
+        gh.cmd_github(A())
+    except Exception as e:
+        print('github step skipped: %s' % e)
+    print('\n== calendars ==')
+    try:
+        ics.cmd_calendars(a)
+    except Exception as e:
+        print('calendar step skipped: %s' % e)
+    print('\n== canvas ==')
+    try:
+        # Submitted-vs-due comes from here and nowhere else, and the cookie it
+        # runs on is short-lived, so this must happen before `agenda` strikes
+        # items through. cmd_canvas already fails loudly and writes nothing on
+        # an expired credential -- a bad fetch must not take the rest down.
+        class C: file = None; days = 21; no_descriptions = False
+        canvas.cmd_canvas(C())
+    except Exception as e:
+        print('canvas step skipped: %s' % e)
+    print('\n== sync ==');   sync.cmd_sync(a)
+    print('\n== agenda =='); a.days = getattr(a, 'days', 14) or 14; ics.cmd_agenda(a)
+    print('\n== status =='); status.cmd_status(a)
+    print('\n== views ==');  views.cmd_views(a)
+    if emit:
+        n = serve.emit_diff(before, serve.snapshot_data())
+        print('\n== queue =='); print('queue: %d new row(s)' % n)
+
+
+def cmd_fetch(a):
+    """Pull the inputs and publish what changed. The hourly timer's entry point.
+
+    Fetching happens exactly twice: on the hour, and at the start of a
+    bookkeeping pass. It used to also happen when the dashboard launched, which
+    tied how fresh the data was to when a browser happened to open -- so the
+    morning page was current and an all-day tab was a day stale.
+
+    This also carries the Canvas cookie keepalive that `zipper canvas` used to.
+    ASU issues no API tokens, the cookie is idle-timed, and exercising it hourly
+    is what holds it open.
+    """
+    fetch_all(a, emit=True)
+    return 0
+
+
 def cmd_bookkeep(a):
     os.makedirs(INBOX, exist_ok=True)
+    # Fetch first -- unless this is the closing --commit, which is the end of a
+    # pass that already fetched at its start, and would otherwise pull the whole
+    # world again to write a commit.
+    if getattr(a, 'commit', None) is None and not getattr(a, 'no_fetch', False):
+        fetch_all(a)
+        print('\n== bookkeep ==')
     # Reconcile event notes against the calendar *before* reading the working
     # tree. A rescheduled meeting rewrites its note, and doing that afterwards
     # would leave the rewrite sitting uncommitted with nothing explaining it.
@@ -411,33 +489,15 @@ def cmd_queue(a):
     return cmd_bookkeep(a)
 
 def cmd_catchup(a):
-    print('== github ==');
-    class A: since_days = 30; full = False
-    try:
-        gh.cmd_github(A())
-    except Exception as e:
-        print('github step skipped: %s' % e)
-    print('\n== calendars ==')
-    try:
-        ics.cmd_calendars(a)
-    except Exception as e:
-        print('calendar step skipped: %s' % e)
-    print('\n== canvas ==')
-    try:
-        # Submitted-vs-due comes from here and nowhere else, and the cookie it
-        # runs on is short-lived, so this must happen before `agenda` strikes
-        # items through. cmd_canvas already fails loudly and writes nothing on
-        # an expired credential -- a bad fetch must not take the rest down.
-        class C: file = None; days = 21; no_descriptions = False
-        canvas.cmd_canvas(C())
-    except Exception as e:
-        print('canvas step skipped: %s' % e)
-    print('\n== sync ==');   sync.cmd_sync(a)
-    print('\n== agenda =='); a.days = 14; ics.cmd_agenda(a)
-    print('\n== status =='); status.cmd_status(a)
-    print('\n== views ==');  views.cmd_views(a)
-    print('\n== bookkeep ==')
-    a.commit = None
-    cmd_bookkeep(a)
+    """`catchup` and `bookkeep` are the same pass, and always were.
+
+    Fetching used to be what separated them: catchup pulled the sources and
+    then rendered the brief; bookkeep only rendered. Now that a pass always
+    starts by fetching, there is nothing left to tell apart -- so this is an
+    alias, not a second command. Two names for one action is how the queue got
+    confusing in the first place.
+    """
+    a.commit = getattr(a, 'commit', None)
+    rc = cmd_bookkeep(a)
     print('\nDone. Message Claude: "bookkeep" — it reads Meta/Queue.md.')
-    return 0
+    return rc

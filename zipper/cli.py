@@ -44,11 +44,16 @@ def main():
     s = sub.add_parser('github'); s.add_argument('--since-days', type=int, default=30)
     s.add_argument('--full', action='store_true'); s.set_defaults(fn=gh.cmd_github)
 
+    s = sub.add_parser('fetch', help='pull every input and publish what changed')
+    s.add_argument('--days', type=int, default=14); s.set_defaults(fn=runqueue.cmd_fetch)
     s = sub.add_parser('bookkeep', help='the brief for a bookkeeping pass, and its commit')
     s.add_argument('--commit', metavar='MSG', nargs='?', const='bookkeep', default=None,
                    help='end the pass: tick every event and commit the notes')
     s.add_argument('--force', action='store_true',
                    help='commit even while another conversation is live')
+    s.add_argument('--no-fetch', action='store_true',
+                   help='re-render the brief without pulling the sources again')
+    s.add_argument('--days', type=int, default=14)
     s.set_defaults(fn=runqueue.cmd_bookkeep)
     s = sub.add_parser('queue', help='deprecated spelling of bookkeep')
     s.set_defaults(fn=runqueue.cmd_queue)

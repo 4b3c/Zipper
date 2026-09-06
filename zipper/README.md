@@ -108,7 +108,8 @@ something launchd can drive. Only a token makes it unattended.
 
 Stdlib only — no Flask, no pip, no venv. The VPS needs nothing but `python3`.
 
-**One fetch per launch.** The refresh runs at startup, never on a page load, so reloading
+**No fetch at launch.** Inputs are pulled hourly by `zipper-fetch.timer` and at the start of
+every bookkeeping pass. The **refresh** button forces one; a page load never does, so reloading
 the page shows the same data. To refetch, quit and relaunch. Sources publish as they land
 and the page fills in live over SSE — no reload, no spinner.
 
@@ -215,7 +216,8 @@ and the page mounts it in an iframe. **fullscreen** fills the window (Esc exits)
 
 If the run produced real changes, Claude opens with the queue as its first instruction —
 read `Meta/Queue.md`, work each row to the note it affected, review the uncommitted diff,
-flag contradictions, then `zipper bookkeep --commit`. If nothing changed, it is a blank
+flag contradictions, then `zipper bookkeep --commit`. A pass fetches every input before it
+renders, so the brief is never read over stale data. If nothing changed, it is a blank
 session in the vault.
 
 **`-W` gives out a live shell, so it is bound to `127.0.0.1` and must stay there.** Do not
