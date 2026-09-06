@@ -43,7 +43,27 @@ def session_id(thread_id):
 
 
 def tmux_name(thread_id):
-    return 'zipper-%s' % thread_id
+    """Which tmux session holds this thread.
+
+    Normally derived, like the session id. The exception is a *bound* thread:
+    an already-running conversation -- the dashboard's own terminal, say --
+    adopted by a thread so it can be carried on from a phone. Its pane is not
+    ours to name, so the registry records the real one.
+    """
+    row = load().get(str(thread_id)) or {}
+    return row.get('tmux') or 'zipper-%s' % thread_id
+
+
+def bind(thread_id, tmux, session_id=None, title=''):
+    """Point a Discord thread at a conversation that is already running.
+
+    Bound rows are pinned: the reaper must never close one, because the session
+    on the other end is something the operator is using -- closing the terminal
+    he is typing in to save a cache he isn't paying for would be a poor trade.
+    """
+    return touch(thread_id, tmux=tmux, bound=True, pinned=True,
+                 session_id=session_id or (load().get(str(thread_id)) or {}).get('session_id'),
+                 title=title, closed=False)
 
 
 def _project_dir(path=None):
@@ -51,7 +71,8 @@ def _project_dir(path=None):
 
 
 def transcript(thread_id):
-    return os.path.join(_project_dir(), session_id(thread_id) + '.jsonl')
+    row = load().get(str(thread_id)) or {}
+    return os.path.join(_project_dir(), (row.get('session_id') or session_id(thread_id)) + '.jsonl')
 
 
 def _tmux():
@@ -89,7 +110,11 @@ def touch(thread_id, **fields):
     d = load()
     row = d.setdefault(str(thread_id), {})
     row.setdefault('started', datetime.datetime.now().isoformat(timespec='seconds'))
-    row['session_id'] = session_id(thread_id)
+    # A bound row's session id belongs to the conversation it adopted, not to
+    # the thread -- overwriting it with the derived one would resume the wrong
+    # transcript if that session ever had to be restarted.
+    if not row.get('bound'):
+        row['session_id'] = session_id(thread_id)
     row['last_active'] = datetime.datetime.now().isoformat(timespec='seconds')
     row.update(fields)
     save(d)
@@ -148,7 +173,8 @@ def start(thread_id, prompt=None):
     is an error -- so the transcript on disk decides which one this is.
     """
     name = tmux_name(thread_id)
-    sid = session_id(thread_id)
+    row = load().get(str(thread_id)) or {}
+    sid = row.get('session_id') or session_id(thread_id)
     resumed = os.path.exists(transcript(thread_id))
     flag = ['--resume', sid] if resumed else ['--session-id', sid]
     inner = ' '.join(['exec', 'claude'] + flag)
@@ -222,7 +248,24 @@ def deliver(thread_id, text, source='discord'):
     return dict(r, state='resumed' if r.get('resumed') else 'new')
 
 
-def close(thread_id, reason='idle'):
+def close(thread_id, reason='idle', force=False):
+    """Kill a conversation's session.
+
+    A **bound** thread is refused unless forced. Its tmux session is not ours --
+    it is a terminal the operator is sitting in front of, adopted by a thread so
+    it could be reached from a phone. Closing it kills that conversation
+    outright, and the next thing he types starts a stranger with no context.
+    That happened once, 2026-09-06, from a cleanup command that meant to tidy a
+    test: `--close` on the bound row ran `kill-session -t zipper` and took the
+    dashboard's own pane with it. The transcript survived and could be resumed,
+    but nothing warned first, so the guard lives here rather than in the callers.
+    """
+    row = load().get(str(thread_id)) or {}
+    if (row.get('bound') or row.get('pinned')) and not force:
+        return {'ok': False, 'error': 'conversation %s is bound to tmux session %r -- '
+                                      'closing it would kill a live terminal. '
+                                      'Pass force=True if that is really what you want.'
+                                      % (thread_id, row.get('tmux'))}
     name = tmux_name(thread_id)
     try:
         subprocess.run([_tmux(), 'kill-session', '-t', name],
@@ -262,6 +305,8 @@ def reap(notify=None):
     for row in listing():
         if not row['alive'] or row.get('idle_for') is None:
             continue
+        if row.get('pinned'):
+            continue          # a bound conversation is somebody's live terminal
         if row['idle_for'] < IDLE_NOTICE:
             continue
         tid = row['thread_id']
@@ -288,7 +333,10 @@ def _ago(ts):
 def cmd_conversations(a):
     """See what is running, and close what should not be."""
     if a.close:
-        close(a.close, reason='manual')
+        r = close(a.close, reason='manual', force=a.force)
+        if not r['ok']:
+            print('conversations: %s' % r['error'])
+            return 1
         print('closed conversation %s' % a.close)
         return 0
     rows = listing()

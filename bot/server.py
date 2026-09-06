@@ -218,6 +218,36 @@ async def handle_typing(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def handle_thread(request: web.Request) -> web.Response:
+    """Open a thread on a new channel message and return its id.
+
+    Zipper's own messages never come back through on_message -- the client
+    ignores itself -- so a conversation that starts on this side has no thread
+    unless one is made deliberately. That is what this is for: adopting a
+    session that began in the terminal so it can be carried on from a phone.
+    """
+    try:
+        body = await request.json()
+        message = (body.get("message") or "").strip()
+        name = (body.get("name") or message or "conversation")[:60]
+        if not message:
+            return web.json_response({"error": "message required"}, status=400)
+        if not client.is_ready():
+            return web.json_response({"error": "discord client not ready"}, status=503)
+        import bot.client as _client_mod
+        channel = client.get_channel(_client_mod.DISCORD_CHANNEL_ID)
+        if channel is None:
+            return web.json_response({"error": "channel not found"}, status=404)
+        msg = await channel.send(smart_split(message)[0])
+        thread = await msg.create_thread(name=name, auto_archive_duration=1440)
+        for chunk in smart_split(message)[1:]:
+            await thread.send(chunk)
+        return web.json_response({"ok": True, "thread_id": str(thread.id),
+                                  "message_id": str(msg.id)})
+    except Exception as e:
+        return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+
 def setup_routes(app: web.Application):
     app.router.add_post("/send", handle_send)
     app.router.add_post("/history", handle_history)
@@ -225,3 +255,4 @@ def setup_routes(app: web.Application):
     app.router.add_post("/react", handle_react)
     app.router.add_post("/inject", handle_inject)
     app.router.add_post("/typing", handle_typing)
+    app.router.add_post("/thread", handle_thread)

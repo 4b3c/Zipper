@@ -58,6 +58,8 @@ def main():
                    help='skip the per-course assignment bodies')
     s.set_defaults(fn=canvas.cmd_canvas)
     s = sub.add_parser('conversations'); s.add_argument('--close', metavar='THREAD')
+    s.add_argument('--force', action='store_true',
+                   help='close even a bound conversation -- kills a live terminal')
     s.set_defaults(fn=conversations.cmd_conversations)
     s = sub.add_parser('score'); s.add_argument('--window', type=int, default=30)
     s.add_argument('--force', action='store_true'); s.set_defaults(fn=metrics.cmd_score)
