@@ -1003,8 +1003,11 @@ def ranked(limit=10):
         it['overdue'] = bool(it['due'] and it['due'] < core.TODAY.isoformat())
         it['key'] = override_key(it)
         it['done'] = it['key'] in ov
-    items = [i for i in items if not i['done']] + [i for i in items if i['done']]
-    items.sort(key=lambda i: (-i['score'], i['due'] or '9999', i['title']))
+    # Crossed-off work sinks, whatever it scores. The partition this replaces was undone
+    # by the sort on the very next line, so a struck-through row kept its place at the top
+    # and spent a slot in the top ten on something already handled — which reads from the
+    # browser as the cross-off not having worked.
+    items.sort(key=lambda i: (i['done'], -i['score'], i['due'] or '9999', i['title']))
     return items[:limit], items
 
 
