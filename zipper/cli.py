@@ -6,7 +6,7 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, decisions, events, gh, ics, lint, metrics,
+from . import (canvas, chat, conversations, decisions, events, gh, ics, lint, metrics,
                runqueue, status, sync, views)
 
 
@@ -57,6 +57,8 @@ def main():
     s.add_argument('--no-descriptions', action='store_true',
                    help='skip the per-course assignment bodies')
     s.set_defaults(fn=canvas.cmd_canvas)
+    s = sub.add_parser('conversations'); s.add_argument('--close', metavar='THREAD')
+    s.set_defaults(fn=conversations.cmd_conversations)
     s = sub.add_parser('score'); s.add_argument('--window', type=int, default=30)
     s.add_argument('--force', action='store_true'); s.set_defaults(fn=metrics.cmd_score)
 

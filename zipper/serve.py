@@ -14,7 +14,7 @@ No framework: stdlib only, so the VPS needs nothing but python3.
 import argparse, datetime, glob, html, json, os, shutil, subprocess, sys, tempfile, threading, time
 import base64, io, re, urllib.parse
 
-from . import core, canvas, events, gh, ics, metrics
+from . import core, canvas, chat, conversations, events, gh, ics, metrics
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1848,7 +1848,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({'error': 'content required'}),
                            'application/json')
                 return
-            res = deliver_to_claude(text, body.get('source', 'discord'))
+            tid = body.get('discord_thread_id')
+            if tid:
+                # A thread is a conversation. Its own instance gets the message,
+                # started or resumed as needed, and Discord shows the typing
+                # indicator until that instance answers -- chat.discord_send
+                # clears it, so every reply path ends the indicator exactly once.
+                chat.discord_typing(True, tid)
+                res = conversations.deliver(str(tid), _tagged(text, body.get('source', 'discord')),
+                                            body.get('source', 'discord'))
+                if res.get('ok'):
+                    publish('diff', 'terminal    %s -> thread %s (%s)'
+                            % (body.get('source', 'discord'), tid, res.get('state')))
+                else:
+                    chat.discord_typing(False, tid)
+            else:
+                res = deliver_to_claude(text, body.get('source', 'discord'))
             self._send(200 if res.get('ok') else 503, json.dumps(res),
                        'application/json')
         elif self.path == '/api/canvas':
@@ -1876,6 +1891,24 @@ BOOKMARKLET = (
     "const m=(r.headers.get('Link')||'').match(/<([^>]+)>;\\s*rel=\"next\"/);u=m?m[1]:null;}"
     "await fetch('%s/api/canvas',{method:'POST',headers:{'Content-Type':'application/json'},"
     "body:JSON.stringify(a)});alert('sent '+a.length+' items to Zipper');})()")
+
+
+def conversation_reaper():
+    """Close conversations once their prompt cache has gone cold.
+
+    The message is the point, not the kill: an idle instance costs nothing, but
+    the next message to a cold one is re-read from scratch at full price. The
+    operator asked to know that before he types, not after.
+    """
+    def notify(tid, text):
+        chat.discord_send(text, thread_id=tid)
+    while True:
+        time.sleep(120)
+        try:
+            for tid in conversations.reap(notify=notify):
+                publish('diff', 'terminal    conversation %s closed (idle)' % tid)
+        except Exception as e:
+            print('[reaper] %s' % e)
 
 
 def main():
@@ -1923,6 +1956,7 @@ def main():
     SRV['daemon'] = a.daemon
     feed_load()
     threading.Thread(target=feed_watch, daemon=True).start()
+    threading.Thread(target=conversation_reaper, daemon=True).start()
     url = 'http://%s:%d/' % (a.host, a.port)
     print('zipper dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))
     if a.daemon:

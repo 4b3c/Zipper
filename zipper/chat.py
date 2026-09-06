@@ -51,12 +51,42 @@ def _bot_multipart(path, message, file_path, thread_id=None, timeout=120):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8') or '{}')
 
+def default_thread():
+    """The thread this conversation belongs to.
+
+    Each per-thread instance is started with ZIPPER_DISCORD_THREAD in its
+    environment, so `discord send` inside it answers the thread it was spoken
+    to in, without the session having to know its own id. Unset in the
+    dashboard's own terminal, where a send goes to the main channel as before.
+    """
+    return os.environ.get('ZIPPER_DISCORD_THREAD') or None
+
+
+def discord_typing(active, thread_id=None):
+    """Show or clear Discord's typing indicator for a thread."""
+    thread_id = thread_id or default_thread()
+    if not thread_id:
+        return {'ok': False, 'error': 'no thread'}
+    try:
+        return _bot('/typing', {'thread_id': thread_id, 'active': bool(active)}, timeout=10)
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
 def discord_send(message, file_path=None, thread_id=None):
+    thread_id = thread_id or default_thread()
     if file_path:
-        return _bot_multipart('/send', message, os.path.expanduser(file_path), thread_id)
-    return _bot('/send', {'message': message, 'thread_id': thread_id})
+        r = _bot_multipart('/send', message, os.path.expanduser(file_path), thread_id)
+    else:
+        r = _bot('/send', {'message': message, 'thread_id': thread_id})
+    # Answering is the end of thinking. Clearing it here means no code path can
+    # reply and leave Discord showing that Zipper is still typing.
+    if thread_id:
+        discord_typing(False, thread_id)
+    return r
 
 def discord_history(limit=5, thread_id=None):
+    thread_id = thread_id or default_thread()
     return _bot('/history', {'limit': limit, 'thread_id': thread_id}).get('messages', [])
 
 def cmd_discord(a):

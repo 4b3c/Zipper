@@ -67,10 +67,25 @@ async def on_message(message: discord.Message):
             await message.channel.send("⚠️ Zipper disconnected")
         return
 
-    # Message in the main channel — relay to zipper in the channel itself
+    # A message in the main channel starts a *new* conversation, so it gets its
+    # own thread and Zipper answers in there. Replying inside a thread continues
+    # that conversation instead (handled above), which is what lets several run
+    # at once without their contexts touching.
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
 
-    ok = await post_to_zipper(message.content, message.channel.id)
+    title = " ".join((message.content or "new conversation").split())[:60] or "new conversation"
+    try:
+        thread = await message.create_thread(name=title, auto_archive_duration=1440)
+        target_id = thread.id
+    except Exception as e:
+        # Threads can fail for reasons that are not this message's fault --
+        # missing permission, a channel type that has none. Falling back to the
+        # channel keeps Zipper answerable rather than silent; it just means this
+        # conversation shares the channel's context like it used to.
+        print(f"[discord] thread create failed: {e}")
+        target_id = message.channel.id
+
+    ok = await post_to_zipper(message.content, target_id)
     if not ok:
-        await message.channel.send("⚠️ Zipper disconnected")
+        await client.get_channel(target_id).send("⚠️ Zipper disconnected")

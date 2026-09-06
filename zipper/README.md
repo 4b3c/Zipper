@@ -282,3 +282,50 @@ Put nginx in front with TLS **and auth** — this page is coursework, projects, 
 people. Basic auth is the ten-minute version; binding to a Tailscale address so it never
 faces the internet is better. `Inbox/` is gitignored except `canvas.json`, so the iCal
 token never leaves the laptop.
+
+## Conversations — one Claude per Discord thread
+
+A Discord thread *is* a conversation. A message in the channel opens a thread and starts a
+new one; a reply inside a thread reaches the instance already holding it. Several run at
+once, each in its own detached tmux session.
+
+| Piece | Where |
+|---|---|
+| Registry, start/resume/paste/close, the idle reaper | `zipper/conversations.py` |
+| Routing a Discord message to its thread's instance | `zipper/serve.py`, the `/discord` route |
+| Opening a thread for a channel message | `bot/client.py`, `on_message` |
+| Typing indicator on/off | `zipper/chat.py` → the bot's `/typing` |
+| `zipper conversations [--close THREAD]` | the CLI surface |
+
+**The session id is derived, not stored:** `uuid5(NS, thread_id)`. A thread finds its
+conversation again with no mapping file to fall out of sync, and losing
+`Inbox/conversations.json` costs the timers and titles, not the conversations.
+`--session-id` assigns that id on a first run and `--resume` takes it back up; they are not
+interchangeable, so the transcript on disk is what decides which one a start is.
+
+**Each instance is started with `ZIPPER_DISCORD_THREAD` in its environment**, which is how
+`zipper discord send` answers the thread it was spoken to in without the session having to
+know its own id. Unset in the dashboard's own terminal, where a send goes to the channel.
+
+**Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
+leave Discord showing that Zipper is still typing.
+
+**The idle close is a price signal, not a saving.** An idle instance costs nothing to leave
+running; what changes at the prompt-cache boundary is the price of the *next* message, which
+is re-read in full once the cache is cold. `ZIPPER_IDLE_SECONDS` (default 55 min) sets it.
+A closed conversation resumes on the next message — the transcript is on disk either way.
+
+### Traps
+
+- **A paste before the TUI is listening is lost, and the Enter after it does nothing** — the
+  message then sits in the input box looking delivered. `_wait_ready` polls for the prompt
+  character before pasting, and `paste` re-presses Enter until the text has left the box.
+  Both were real: the first cold start pasted fine and never submitted.
+- The dim text in a resumed session's input box is Claude Code's placeholder hint, **not** a
+  draft. It does not concatenate with a paste — verified, because it looks exactly like the
+  bug it isn't.
+- **Nothing stops two conversations editing the vault at once.** Deliberate (2026-09-06):
+  the locking is a lot of code for a risk one operator can hold in his head. The failure it
+  invites is real — two sessions editing one note, or committing over each other, with
+  neither able to see the other. Don't work the same project in two threads at once; if it
+  starts happening, `conversations.py` is where the lock goes.
