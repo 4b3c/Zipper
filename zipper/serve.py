@@ -460,6 +460,29 @@ def _sync_thread_name(thread_id, row, name):
         conversations.touch(thread_id, discord_name=name, renamed_at=int(time.time()))
 
 
+PASTE_DIR = os.path.join(tempfile.gettempdir(), 'zipper-pastes')
+PASTE_KEEP = 40
+
+
+def _prune_pastes():
+    """Keep the last few pastes and no more.
+
+    They are screenshots dropped into a conversation, not vault content -- they
+    live in tmp, and the only reason to keep any is that a conversation may
+    refer back to one it was shown a few minutes ago.
+    """
+    try:
+        files = sorted((os.path.getmtime(os.path.join(PASTE_DIR, f)), f)
+                       for f in os.listdir(PASTE_DIR))
+    except OSError:
+        return
+    for _, f in files[:-PASTE_KEEP]:
+        try:
+            os.remove(os.path.join(PASTE_DIR, f))
+        except OSError:
+            pass
+
+
 def conversation_rows():
     """The chat list: every conversation, with the state the page has to show."""
     conversations.sweep()
@@ -1411,6 +1434,67 @@ function mountTerm(port){
   const u=termURL(port);
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';
   document.getElementById('termpop').href=u;
+  const f=document.querySelector('#termwrap iframe');
+  if(f) f.addEventListener('load',()=>hookTerm(f));
+}
+// Selecting in the terminal should put the text on the real machine's clipboard,
+// and an image on the clipboard should reach the conversation. Both are only
+// possible because ttyd is served from this origin now: the iframe is
+// same-origin, so its window -- and the xterm instance ttyd leaves on it as
+// `term` -- can be reached from here.
+function hookTerm(f){
+  let win;
+  try{ win=f.contentWindow; }catch(e){ return; }          // not same-origin: nothing to do
+  let tries=0;
+  (function wait(){
+    if(!win||!win.document) return;
+    const term=win.term;
+    if(!term){ if(tries++<40) setTimeout(wait,250); return; }
+    if(win.__zipperHooked) return;
+    win.__zipperHooked=true;
+
+    // copy: xterm keeps its own selection (the canvas renderer means the page
+    // has none), so read it from the terminal and write it from inside the
+    // frame, where the click that just happened counts as the user gesture.
+    const copySel=()=>{
+      let sel=''; try{ sel=term.getSelection(); }catch(e){}
+      if(!sel) return;
+      try{ win.navigator.clipboard.writeText(sel).catch(()=>legacyCopy(win,sel)); }
+      catch(e){ legacyCopy(win,sel); }
+    };
+    win.document.addEventListener('mouseup',()=>setTimeout(copySel,0));
+    win.document.addEventListener('keyup',ev=>{
+      if((ev.ctrlKey||ev.metaKey)&&(ev.key==='c'||ev.key==='C')) copySel();
+    });
+
+    // paste: text is ttyd's own business and already works. An image is not
+    // text, so it is uploaded and what lands in the prompt is its path -- which
+    // is what Claude Code opens.
+    win.document.addEventListener('paste',ev=>{
+      const items=(ev.clipboardData&&ev.clipboardData.items)||[];
+      for(const it of items){
+        if(it.kind!=='file'||it.type.indexOf('image/')!==0) continue;
+        const blob=it.getAsFile(); if(!blob) return;
+        ev.preventDefault(); ev.stopPropagation();
+        fetch('/api/pasteimage',{method:'POST',headers:{'Content-Type':blob.type},body:blob})
+          .then(r=>r.json())
+          .then(d=>{ if(d.path){ try{ term.paste(d.path+' '); }catch(e){} }
+                     else if(d.error){ alert('image paste failed: '+d.error); } })
+          .catch(e=>alert('image paste failed: '+e));
+        return;
+      }
+    },true);
+  })();
+}
+function legacyCopy(win,text){
+  // clipboard.writeText needs permission and a focused document, and refuses in
+  // some browsers inside an iframe. This path asks for neither.
+  try{
+    const ta=win.document.createElement('textarea');
+    ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+    win.document.body.appendChild(ta); ta.select();
+    win.document.execCommand('copy'); ta.remove();
+  }catch(e){}
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -2057,6 +2141,32 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+        elif self.path == '/api/pasteimage':
+            # An image on the clipboard is not text and cannot be typed into a
+            # terminal. The browser can read it, so it posts the bytes here and
+            # gets back a path -- which *is* text, and which Claude Code opens.
+            n = int(self.headers.get('Content-Length', 0))
+            ctype = (self.headers.get('Content-Type') or '').split(';')[0].strip()
+            if n <= 0 or n > 16 * 1024 * 1024:
+                self._send(400, json.dumps({'error': 'empty or too large (16MB max)'}),
+                           'application/json')
+                return
+            ext = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+                   'image/webp': '.webp'}.get(ctype)
+            if not ext:
+                self._send(400, json.dumps({'error': 'unsupported type %s' % ctype}),
+                           'application/json')
+                return
+            try:
+                os.makedirs(PASTE_DIR, exist_ok=True)
+                name = datetime.datetime.now().strftime('%Y%m%d-%H%M%S') + ext
+                path = os.path.join(PASTE_DIR, name)
+                with open(path, 'wb') as fh:
+                    fh.write(self.rfile.read(n))
+                _prune_pastes()
+                self._send(200, json.dumps({'ok': True, 'path': path}), 'application/json')
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}), 'application/json')
         elif self.path == '/api/newconversation':
             self._send(200, json.dumps(new_conversation()), 'application/json')
         elif self.path == '/api/conversation':

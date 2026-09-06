@@ -466,3 +466,25 @@ now it listens on loopback and is reachable only through the same tailnet-bound 
 already serves an unauthenticated dashboard — one that can start terminals anyway. Verified
 after the change: `/t/8801/` and `/t/8810/` return 200 through nginx, `/ws` upgrades with
 101, and connecting to the tailnet address on 8801 directly is refused.
+
+### Copy and paste between the terminal and the real machine
+
+Selecting in a terminal puts the text on the clipboard of the machine running the browser,
+and pasting an image into one reaches the conversation. Both depend on the terminals being
+same-origin (above): the iframe's window is reachable from the dashboard page, and ttyd leaves
+the xterm instance on it as `window.term`.
+
+**Copy** reads `term.getSelection()` rather than the page's selection — xterm draws to a canvas,
+so the document has no selection to read — and writes it from *inside* the frame, where the
+click that just happened is the user gesture the clipboard API insists on. `execCommand('copy')`
+into a throwaway textarea is the fallback, since `clipboard.writeText` needs a permission and a
+focused document and refuses in an iframe in some browsers.
+
+**Pasting an image** cannot be done by typing: an image is not text. The bytes go to
+`/api/pasteimage`, which writes them under `<tmp>/zipper-pastes/` and returns the path, and the
+*path* is what lands in the prompt — which is a thing Claude Code opens. Text paste is
+untouched; ttyd already handles it.
+
+The paste directory is capped at the last 40 files and lives in tmp: these are screenshots
+dropped into a conversation, not vault content. Types are allowlisted (png/jpeg/gif/webp) and
+the body is capped at 16MB.
