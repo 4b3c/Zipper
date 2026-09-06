@@ -1460,24 +1460,48 @@ function hookTerm(f){
     // copy: xterm keeps its own selection (the canvas renderer means the page
     // has none), so read it from the terminal and write it from inside the
     // frame, where the click that just happened counts as the user gesture.
-    const copySel=()=>{
+    const report=o=>{try{fetch('/api/clipdebug',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});}catch(e){}};
+    // Must run *inside* the event, not in a setTimeout after it: execCommand
+    // and the clipboard API both require an active user gesture, and a
+    // continuation scheduled off the event no longer counts as one. That was
+    // the bug -- the copy ran, silently did nothing, and left the old clipboard.
+    const copySel=(why)=>{
       let sel=''; try{ sel=term.getSelection(); }catch(e){}
       if(!sel||sel===win.__lastSel) return;
       win.__lastSel=sel;
-      try{ win.navigator.clipboard.writeText(sel).catch(()=>legacyCopy(win,sel)); }
-      catch(e){ legacyCopy(win,sel); }
-      // Also into tmux's own buffer, which is a different clipboard living on
-      // the box -- that is what pastes between panes, and what prints the
-      // "copied N chars" line in the pane the way it does on his machine.
+      const secure=!!win.isSecureContext, api=!!(win.navigator.clipboard&&win.navigator.clipboard.writeText);
+      let how='none', ok=false;
+      // execCommand first when the page is not a secure context: there the
+      // async clipboard API does not exist at all, and asking for it first only
+      // wastes the gesture.
+      if(secure&&api){
+        how='api';
+        try{ win.navigator.clipboard.writeText(sel).then(()=>report({how:'api',ok:true,n:sel.length,why:why}),
+                                                        e=>{const r=legacyCopy(win,sel);
+                                                            report({how:'api->exec',ok:r,n:sel.length,err:String(e),why:why});});
+             ok=true; }
+        catch(e){ how='exec'; ok=legacyCopy(win,sel); }
+      } else {
+        how='exec'; ok=legacyCopy(win,sel);
+      }
+      if(how!=='api') report({how:how,ok:ok,n:sel.length,secure:secure,api:api,why:why,
+                              proto:win.location.protocol});
       fetch('/api/copybuffer',{method:'POST',headers:{'Content-Type':'application/json'},
                                body:JSON.stringify({text:sel,thread_id:window.__chat||null})})
         .catch(()=>{});
       toast('copied '+sel.length+' chars');
     };
-    win.document.addEventListener('mouseup',()=>setTimeout(copySel,0));
-    win.document.addEventListener('keyup',ev=>{
-      if((ev.ctrlKey||ev.metaKey)&&(ev.key==='c'||ev.key==='C')) copySel();
-    });
+    win.document.addEventListener('mouseup',()=>copySel('mouseup'));
+    // Ctrl/Cmd+C on keydown, before xterm forwards it to the pty: on keyup the
+    // gesture is spent and, worse, a bare Ctrl-C has already interrupted Claude.
+    win.document.addEventListener('keydown',ev=>{
+      if(!(ev.ctrlKey||ev.metaKey)||(ev.key!=='c'&&ev.key!=='C')) return;
+      let sel=''; try{ sel=term.getSelection(); }catch(e){}
+      if(!sel) return;                        // no selection: let Ctrl-C interrupt
+      win.__lastSel=null; copySel('key');
+      ev.preventDefault(); ev.stopPropagation();
+    },true);
 
     // paste: text is ttyd's own business and already works. An image is not
     // text, so it is uploaded and what lands in the prompt is its path -- which
@@ -1506,14 +1530,18 @@ function toast(msg){
   clearTimeout(__toastT); __toastT=setTimeout(()=>el.classList.remove('on'),1600);
 }
 function legacyCopy(win,text){
+  // returns true only if the browser says the copy actually happened
   // clipboard.writeText needs permission and a focused document, and refuses in
   // some browsers inside an iframe. This path asks for neither.
   try{
     const ta=win.document.createElement('textarea');
     ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
-    win.document.body.appendChild(ta); ta.select();
-    win.document.execCommand('copy'); ta.remove();
-  }catch(e){}
+    win.document.body.appendChild(ta);
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok=win.document.execCommand('copy');
+    ta.remove();
+    return !!ok;
+  }catch(e){ return false; }
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -2160,6 +2188,18 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+        elif self.path == '/api/clipdebug':
+            # The clipboard is the one thing here that cannot be tested from
+            # this box: whether it works depends on the browser, and on whether
+            # the page is a secure context. So the page says what happened and
+            # it lands in the journal, where it can be read instead of guessed.
+            n = int(self.headers.get('Content-Length', 0))
+            try:
+                d = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+            except Exception:
+                d = {}
+            print('[clip] %s' % json.dumps(d, sort_keys=True)[:400], flush=True)
+            self._send(200, json.dumps({'ok': True}), 'application/json')
         elif self.path == '/api/copybuffer':
             # A selection should land in the tmux paste buffer as well as the
             # browser's clipboard. They are different clipboards: the browser's

@@ -474,9 +474,24 @@ and pasting an image into one reaches the conversation. Both depend on the termi
 same-origin (above): the iframe's window is reachable from the dashboard page, and ttyd leaves
 the xterm instance on it as `window.term`.
 
+**Copy only works from a secure context.** Browsers expose `navigator.clipboard` on https and
+localhost and nowhere else, so on `http://<tailnet-ip>:8800` the API is simply absent. That is
+what `tailscale serve` is for here: it puts the whole thing behind
+`https://<machine>.<tailnet>.ts.net:8443`, a real certificate on the tailnet, proxying to nginx
+on `127.0.0.1:8899`. Port 8443 rather than 443 because nginx already owns 443 for other sites.
+The plain http address keeps working; copy will not work on it.
+
+`/api/clipdebug` exists because this is the one thing that cannot be tested from the box —
+whether it works is a fact about the browser. The page reports which path it took and whether
+it succeeded, and it lands in `journalctl -u zipper-web`.
+
 **Copy** reads `term.getSelection()` rather than the page's selection — xterm draws to a canvas,
 so the document has no selection to read — and writes it from *inside* the frame, where the
-click that just happened is the user gesture the clipboard API insists on. `execCommand('copy')`
+click that just happened is the user gesture the clipboard API insists on. It must run
+**synchronously inside the event** — a continuation scheduled with `setTimeout` no longer
+counts as a gesture, and both the API and `execCommand` then fail silently, leaving whatever
+was on the clipboard before. Ctrl/Cmd+C is handled on `keydown` (before xterm forwards it to
+the pty) and only when there is a selection, so a bare Ctrl-C still interrupts Claude. `execCommand('copy')`
 into a throwaway textarea is the fallback, since `clipboard.writeText` needs a permission and a
 focused document and refuses in an iframe in some browsers.
 
