@@ -248,6 +248,27 @@ async def handle_thread(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
 
 
+async def handle_threadinfo(request: web.Request) -> web.Response:
+    """The Discord-side name of a thread.
+
+    The list in the dashboard should read exactly like Discord does, and Discord
+    is the only thing that knows what it called a thread -- a title guessed from
+    the message that started one drifts the moment anybody renames it.
+    """
+    try:
+        body = await request.json()
+        thread_id = body.get("thread_id")
+        if thread_id is None:
+            return web.json_response({"error": "thread_id required"}, status=400)
+        thread = await resolve_thread(int(thread_id))
+        if thread is None:
+            return web.json_response({"error": "thread not found"}, status=404)
+        return web.json_response({"ok": True, "name": getattr(thread, "name", ""),
+                                  "archived": bool(getattr(thread, "archived", False))})
+    except Exception as e:
+        return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+
 def setup_routes(app: web.Application):
     app.router.add_post("/send", handle_send)
     app.router.add_post("/history", handle_history)
@@ -256,3 +277,4 @@ def setup_routes(app: web.Application):
     app.router.add_post("/inject", handle_inject)
     app.router.add_post("/typing", handle_typing)
     app.router.add_post("/thread", handle_thread)
+    app.router.add_post("/threadinfo", handle_threadinfo)

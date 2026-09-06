@@ -368,6 +368,66 @@ def stop_ttyd(thread_id):
         save(d)
 
 
+# Claude Code names its own conversations: it writes an `ai-title` line into the
+# transcript and rewrites it as the subject moves. That is the right name for
+# the list -- it describes the conversation rather than its delivery mechanism,
+# and it exists for sessions that never touched Discord at all.
+_TITLES = {}
+
+
+def title(thread_id, default=''):
+    """The conversation's own name, from the newest `ai-title` in its transcript.
+
+    Cached on the transcript's size and mtime: these files reach megabytes and
+    the list polls every few seconds, so only the tail is ever read -- the last
+    title written wins, and it is always near the end.
+    """
+    p = transcript(thread_id)
+    try:
+        st = os.stat(p)
+    except OSError:
+        return default
+    key = (st.st_mtime, st.st_size)
+    hit = _TITLES.get(str(thread_id))
+    if hit and hit[0] == key:
+        return hit[1] or default
+    found = ''
+    try:
+        with open(p, 'rb') as fh:
+            if st.st_size > 262144:
+                fh.seek(-262144, os.SEEK_END)
+                fh.readline()          # drop the partial line the seek landed in
+            for raw in fh:
+                if b'"ai-title"' not in raw:
+                    continue
+                try:
+                    d = json.loads(raw.decode('utf-8', 'replace'))
+                except ValueError:
+                    continue
+                if d.get('type') == 'ai-title' and d.get('aiTitle'):
+                    found = d['aiTitle'].strip()
+    except OSError:
+        return default
+    _TITLES[str(thread_id)] = (key, found)
+    return found or default
+
+
+def sweep():
+    """Drop the ttyd of any conversation whose session is gone.
+
+    A session can die without anything here being asked -- Ctrl-C in the pane
+    ends Claude, and the tmux session ends with it. Its ttyd stays bound to the
+    port and would happily serve `tmux new -A`, which is a *new* conversation
+    wearing the old one's name. Take the viewer down with the session.
+    """
+    gone = []
+    for tid, row in load().items():
+        if row.get('port') and not alive(tid):
+            stop_ttyd(tid)
+            gone.append(tid)
+    return gone
+
+
 def state(thread_id):
     """working | waiting | closed.
 
@@ -379,11 +439,34 @@ def state(thread_id):
     """
     if not alive(thread_id):
         return 'closed'
-    return 'working' if 'esc to interrupt' in _pane(thread_id) else 'waiting'
+    # The *status line* only -- the last non-empty line of the pane. Scanning
+    # the whole pane made any conversation that merely displayed the words "esc
+    # to interrupt" look permanently busy, which is not a hypothetical: a
+    # session discussing this very check stayed yellow after it had finished.
+    lines = [l for l in _pane(thread_id).splitlines() if l.strip()]
+    if lines and 'esc to interrupt' in lines[-1]:
+        return 'working'
+    # The marker vanishes for a moment between tool calls. Without this the dot
+    # blinks green in the gaps of a conversation that is plainly still working,
+    # which reads as finished. The transcript is being written throughout, so a
+    # write in the last few seconds means the turn is still going.
+    try:
+        if time.time() - os.path.getmtime(transcript(thread_id)) < 5:
+            return 'working'
+    except OSError:
+        pass
+    return 'waiting'
 
 
 def listing():
-    """Every conversation we know of, newest activity first."""
+    """Every conversation we know of, in a stable order.
+
+    Ordered by when it started, newest first -- *not* by activity. An order that
+    follows activity rearranges itself under the cursor: opening one row sent it
+    to the top while opening another left it where it was, depending on whether
+    that path happened to touch the registry. A list you click is a list that
+    has to hold still.
+    """
     out = []
     for tid, row in load().items():
         out.append(dict(row, thread_id=tid, alive=alive(tid), state=state(tid),
@@ -391,7 +474,7 @@ def listing():
                                  if row.get('port') else False),
                         last_active_ts=last_active(tid),
                         idle_for=int(time.time() - last_active(tid)) if last_active(tid) else None))
-    out.sort(key=lambda r: r['last_active_ts'], reverse=True)
+    out.sort(key=lambda r: (r.get('started') or ''), reverse=True)
     return out
 
 

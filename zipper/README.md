@@ -351,16 +351,39 @@ Clicking a **closed** conversation resumes it rather than replacing it -- the tr
 the conversation, and picking one out of a list must never start a stranger with the same
 name.
 
-Titles come from the first line of the message that opened the thread, so the list reads
-like Discord does. They are user text: the page escapes them (`chatEsc`), because a thread
+Titles are user-influenced text either way, so the page escapes them (`chatEsc`): a thread
 called `<img onerror=...>` is a thing a person can make.
+
+**The order never moves.** Rows are sorted by when the conversation started, newest first —
+not by activity. An activity order rearranged itself under the cursor, and worse, only
+sometimes: opening one row touched the registry and sent it to the top while opening another
+didn't. A list you click has to hold still.
+
+**A session can die without the page being told** — Ctrl-C in the pane ends Claude and takes
+the tmux session with it. `sweep()` drops the ttyd of any conversation whose session is gone,
+because that ttyd would otherwise happily serve `tmux new -A`: a *new* conversation wearing
+the old one's name. The card swaps the terminal for a **load conversation** button, which
+resumes the real one from its transcript.
 
 **A row is a name and a light.** Yellow means the instance is working, green means it is
 waiting for you, grey means closed — clicking a grey one resumes it. The state is read from
-the pane, not tracked: Claude Code prints `esc to interrupt` in its status line for exactly
-as long as it is busy, and an instance can start and finish work without this process being
-told, so any state we maintained would drift the moment it did. The list polls every 6
-seconds, because a light that lags is worse than no light.
+the pane, not tracked: an instance starts and finishes work without this process being told,
+so any state we maintained would drift the moment it did. The list polls every 6 seconds,
+because a light that lags is worse than no light.
+
+**Read the status line, not the pane.** Claude Code prints `esc to interrupt` for exactly as
+long as it is busy — but only in its last line. Scanning the whole pane made any conversation
+that merely *displayed* those words look permanently busy, and the session where this was
+being built stayed yellow after it had finished, for the obvious reason. The marker also
+blinks out for a moment between tool calls, so a transcript written in the last five seconds
+counts as working too.
+
+**Names come from Claude, not from Discord.** Claude Code writes an `ai-title` line into the
+transcript and rewrites it as the subject moves; that names the conversation rather than its
+delivery mechanism, and it exists for sessions started at the terminal that have no thread at
+all. A Discord thread name is the fallback for a conversation too young to have been titled,
+and an id is the last resort. Titles used to come from whichever path created the row — the
+opening message, a generated `Dashboard · Sun 14:26`, an id — four schemes in one list.
 
 **`new conversation` closes nothing.** It adds one, with its own Discord thread from the
 start, so a conversation begun at the keyboard can be picked up on a phone without being

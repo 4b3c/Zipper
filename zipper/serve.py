@@ -381,13 +381,48 @@ def deliver_to_claude(text, source='discord'):
 
 
 
+TITLE_TTL = 900          # seconds before a Discord thread name is looked up again
+
+
+def _row_title(thread_id, row):
+    """What to call a conversation in the list.
+
+    Claude's own `ai-title` first: it names the *conversation* rather than its
+    delivery mechanism, it updates as the subject moves, and it exists for
+    sessions started at the terminal that have no thread at all. Titles used to
+    come from whichever path created the row -- the opening message, a generated
+    'Dashboard · Sun 14:26', an id -- four schemes in one list.
+
+    A Discord thread name is the fallback, for a conversation too young to have
+    been titled yet; an id is the last resort.
+    """
+    own = conversations.title(thread_id)
+    if own:
+        return own
+    if str(thread_id).startswith('local-'):
+        return row.get('title') or 'new conversation'
+    fetched = row.get('title_at') or 0
+    if row.get('title_src') == 'discord' and (time.time() - fetched) < TITLE_TTL:
+        return row.get('title')
+    try:
+        name = (chat._bot('/threadinfo', {'thread_id': thread_id}, timeout=6).get('name') or '').strip()
+    except Exception:
+        name = ''
+    if name:
+        conversations.touch(thread_id, title=name, title_src='discord',
+                            title_at=int(time.time()))
+        return name
+    return row.get('title') or 'conversation %s' % str(thread_id)[-6:]
+
+
 def conversation_rows():
     """The chat list: every conversation, with the state the page has to show."""
+    conversations.sweep()
     rows = []
     for r in conversations.listing():
         rows.append({
             'thread_id': r['thread_id'],
-            'title': r.get('title') or 'conversation %s' % str(r['thread_id'])[-6:],
+            'title': _row_title(r['thread_id'], r),
             'alive': r['alive'],
             'bound': bool(r.get('bound')),
             'serving': r.get('serving'),
@@ -1035,6 +1070,9 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 #termwrap iframe{width:100%;height:600px;border:0;border-radius:8px;background:#171614;display:block}
 #termbody{display:flex;gap:10px;align-items:stretch}
+.termdead{height:600px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+          gap:10px;background:#171614;border-radius:8px;color:#ece8e1}
+#termcard.full .termdead{height:100%}
 #termwrap{flex:1;min-width:0}
 #chatlist{width:186px;flex:0 0 186px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:600px}
 #termcard.full #termbody{flex:1;min-height:0}
@@ -1263,8 +1301,32 @@ function drawChats(rows){
 }
 function loadChats(){
   return fetch('/api/conversations').then(r=>r.json())
-    .then(d=>{window.__chats=d.conversations||[];drawChats(window.__chats);return window.__chats;})
+    .then(d=>{window.__chats=d.conversations||[];drawChats(window.__chats);
+              checkShown(window.__chats);return window.__chats;})
     .catch(()=>[]);
+}
+// A conversation can die without the page doing anything -- Ctrl-C in the pane
+// ends Claude and takes the tmux session with it. The iframe then shows a
+// terminal that is either frozen or, worse, a fresh shell wearing the old
+// conversation's name. Swap it for a button that resumes the real one.
+function checkShown(rows){
+  if(!window.__chat) return;
+  const row=(rows||[]).find(r=>String(r.thread_id)===String(window.__chat));
+  const wrap=document.getElementById('termwrap');
+  if(!wrap||!row) return;
+  if(row.state==='closed'){
+    if(!wrap.dataset.closed){
+      wrap.dataset.closed='1';
+      wrap.innerHTML='<div class="termdead"><p>This conversation is closed.</p>'+
+        '<button class="btn" id="termreload">load conversation</button>'+
+        '<p class="sub">Its transcript is on disk \u2014 loading it resumes where it stopped.</p></div>';
+      const b=document.getElementById('termreload');
+      if(b) b.onclick=()=>{wrap.dataset.closed='';openChat(window.__chat);};
+    }
+  } else if(wrap.dataset.closed){
+    wrap.dataset.closed='';
+    openChat(window.__chat);
+  }
 }
 function openChat(tid){
   const el=document.getElementById('chatlist');
