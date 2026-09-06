@@ -301,12 +301,19 @@ def start_terminal(mode='blank', prompt=None):
         args = inner
         publish('diff', 'terminal    no tmux - the session dies with the tab')
     try:
-        cred = ['-c', TERM['cred']] if TERM['cred'] else []
+        # On loopback the terminal is reached only through nginx's /t/<port>/,
+        # which puts it on the dashboard's own origin -- and a credential there
+        # would prompt for a sign-in the dashboard has already had. Exposed
+        # directly on any other host it still must carry one.
+        cred = ['-c', TERM['cred']] if (TERM['cred'] and TERM['host'] != '127.0.0.1') else []
         if TERM['host'] != '127.0.0.1' and not TERM['cred']:
             publish('diff', 'terminal    refusing to expose an unauthenticated shell')
             return {'ok': False, 'error': 'refusing to expose an unauthenticated shell'}
         TERM['proc'] = subprocess.Popen(
             [exe, '-p', str(TERM['port']), '-i', TERM['host'], '-W'] + cred + [
+             # matches the nginx location, so ttyd's own asset and websocket
+             # URLs carry the prefix they are served under
+             '-b', '/t/%d' % TERM['port'],
              '-t', 'fontSize=13', '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}'] + args,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -446,13 +453,16 @@ def open_conversation(thread_id):
         if not r.get('ok'):
             return r
     row = conversations.load().get(str(thread_id)) or {}
-    if row.get('tmux') == TERM['session'] and terminal_up():
-        # The bound conversation is the dashboard's own terminal, and its ttyd
-        # is already serving that pane. A second one attached to the same tmux
-        # session would work but share a cursor with the first -- two views of
-        # one pane fighting over the size of the window.
-        return {'ok': True, 'port': TERM['port'], 'adopted': True}
-    res = conversations.ensure_ttyd(thread_id, host=TERM['host'], cred=TERM['cred'])
+    if row.get('tmux') == TERM['session']:
+        # The bound conversation is the dashboard's own terminal. It has its own
+        # ttyd on --term-port; bring that one back if it is down rather than
+        # giving this row a second one. Two ttyds on one tmux session both work,
+        # but they share a cursor and argue about the size of the window.
+        if terminal_up():
+            return {'ok': True, 'port': TERM['port'], 'adopted': True}
+        r = start_terminal('resume')
+        return dict(r, port=r.get('port', TERM['port'])) if r.get('ok') else r
+    res = conversations.ensure_ttyd(thread_id, host='127.0.0.1')
     if res.get('ok'):
         publish('diff', 'terminal    showing conversation %s' % thread_id)
     return res
@@ -483,7 +493,7 @@ def new_conversation():
     r = conversations.start(tid)
     if not r.get('ok'):
         return r
-    res = conversations.ensure_ttyd(tid, host=TERM['host'], cred=TERM['cred'])
+    res = conversations.ensure_ttyd(tid, host='127.0.0.1')
     return dict(res, thread_id=tid, title=title)
 
 
@@ -1273,7 +1283,10 @@ es.addEventListener('terminal',e=>{
 es.addEventListener('source',()=>panels());
 es.addEventListener('status',e=>{document.getElementById('status').textContent=JSON.parse(e.data).text;});
 es.addEventListener('done',()=>{panels();document.getElementById('status').textContent='';});
-function termURL(port){return location.protocol+'//'+location.hostname+':'+port+'/';}
+// Same origin as the dashboard, proxied by nginx to the ttyd on that port.
+// Pointing the iframe at host:port directly made every conversation its own
+// origin, so the terminal asked to sign in again each time one was opened.
+function termURL(port){return location.origin+'/t/'+port+'/';}
 // ---- the chat list: one Claude per Discord thread, switched by clicking.
 // Each conversation has its own ttyd on its own port, so switching is just
 // pointing the iframe somewhere else -- nothing is torn down, and the

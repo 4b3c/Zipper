@@ -106,7 +106,15 @@ def save(d):
     os.replace(tmp, CONV_JSON)
 
 
-def touch(thread_id, **fields):
+def touch(thread_id, active=False, **fields):
+    """Record something about a conversation.
+
+    `active` is what moves it up the list, and only a message does that. Every
+    incidental write used to bump it -- caching a title, remembering a port,
+    opening the thing to read it -- so merely looking at a conversation sent it
+    to the top, and the order the operator was navigating by rearranged itself
+    under his cursor.
+    """
     d = load()
     row = d.setdefault(str(thread_id), {})
     row.setdefault('started', datetime.datetime.now().isoformat(timespec='seconds'))
@@ -115,7 +123,10 @@ def touch(thread_id, **fields):
     # transcript if that session ever had to be restarted.
     if not row.get('bound'):
         row['session_id'] = session_id(thread_id)
-    row['last_active'] = datetime.datetime.now().isoformat(timespec='seconds')
+    now = datetime.datetime.now().isoformat(timespec='seconds')
+    row.setdefault('last_active', now)
+    if active:
+        row['last_active'] = now
     row.update(fields)
     save(d)
     return row
@@ -193,7 +204,7 @@ def start(thread_id, prompt=None):
          'export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; ' + inner],
         check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _wait_ready(thread_id)      # a paste before the TUI is listening is lost
-    touch(thread_id, resumed=resumed, closed=False)
+    touch(thread_id, active=True, resumed=resumed, closed=False)
     if prompt:
         paste(thread_id, prompt)
     return {'ok': True, 'resumed': resumed, 'session_id': sid, 'tmux': name}
@@ -233,7 +244,7 @@ def paste(thread_id, text):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         return {'ok': False, 'error': str(e)}
-    touch(thread_id)
+    touch(thread_id, active=True)
     return {'ok': True}
 
 
@@ -322,8 +333,17 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     """A ttyd serving this conversation's pane, started if it isn't already.
 
     Attaches with `tmux new -A`, so the websocket owns nothing: closing the tab
-    detaches and the conversation keeps running. Refuses to serve without a
-    credential on anything but loopback -- ttyd -W hands out a live shell.
+    detaches and the conversation keeps running.
+
+    Bound to loopback and served through nginx under `/t/<port>/`, which is what
+    makes the dashboard's origin the only one a browser ever sees. Pointed
+    straight at these ports instead, every conversation is a separate origin and
+    basic auth prompts again for each -- being signed in to the dashboard has to
+    be enough. `--base-path` is load-bearing for that: without it ttyd's own
+    asset and websocket URLs are absolute and miss the prefix.
+
+    A credential still applies if one is configured, and is *required* on any
+    host but loopback -- ttyd -W hands out a live shell.
     """
     if not alive(thread_id):
         return {'ok': False, 'error': 'conversation not running'}
@@ -340,7 +360,8 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     args = [exe, '-p', str(port), '-i', host, '-W']
     if cred:
         args += ['-c', cred]
-    args += ['-t', 'fontSize=%d' % font,
+    args += ['-b', '/t/%d' % port,
+             '-t', 'fontSize=%d' % font,
              '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
              tmux, 'new', '-A', '-s', tmux_name(thread_id)]
@@ -461,11 +482,11 @@ def state(thread_id):
 def listing():
     """Every conversation we know of, in a stable order.
 
-    Ordered by when it started, newest first -- *not* by activity. An order that
-    follows activity rearranges itself under the cursor: opening one row sent it
-    to the top while opening another left it where it was, depending on whether
-    that path happened to touch the registry. A list you click is a list that
-    has to hold still.
+    Ordered by the last *message*, newest first. Reading a conversation does not
+    move it and neither does anything else the machinery writes -- only sending
+    something does. That is the distinction the earlier version got wrong, when
+    every incidental registry write counted as activity and the order shuffled
+    depending on which code path had last touched a row.
     """
     out = []
     for tid, row in load().items():
@@ -474,7 +495,7 @@ def listing():
                                  if row.get('port') else False),
                         last_active_ts=last_active(tid),
                         idle_for=int(time.time() - last_active(tid)) if last_active(tid) else None))
-    out.sort(key=lambda r: (r.get('started') or ''), reverse=True)
+    out.sort(key=lambda r: (r.get('last_active') or r.get('started') or ''), reverse=True)
     return out
 
 

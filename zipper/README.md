@@ -354,10 +354,11 @@ name.
 Titles are user-influenced text either way, so the page escapes them (`chatEsc`): a thread
 called `<img onerror=...>` is a thing a person can make.
 
-**The order never moves.** Rows are sorted by when the conversation started, newest first —
-not by activity. An activity order rearranged itself under the cursor, and worse, only
-sometimes: opening one row touched the registry and sent it to the top while opening another
-didn't. A list you click has to hold still.
+**Order follows the last message, and nothing else.** Reading a conversation does not move
+it; only sending something does. `touch()` takes `active=` for exactly this reason — every
+incidental write (caching a title, remembering a port, opening a row to read it) used to bump
+the timestamp the list sorted on, so the order shuffled depending on which code path had last
+run.
 
 **A session can die without the page being told** — Ctrl-C in the pane ends Claude and takes
 the tmux session with it. `sweep()` drops the ttyd of any conversation whose session is gone,
@@ -389,3 +390,28 @@ opening message, a generated `Dashboard · Sun 14:26`, an id — four schemes in
 start, so a conversation begun at the keyboard can be picked up on a phone without being
 adopted after the fact. It used to kill the running session, which made sense when there was
 only ever one.
+
+### Signed in to the dashboard is signed in to the terminals
+
+Each ttyd binds **loopback** and is served through nginx at `/t/<port>/`, on the dashboard's
+own origin. Pointed straight at `host:port`, every conversation is a separate origin, and
+basic auth prompts for each one — opening four conversations meant signing in four times.
+
+Three pieces have to agree, and all three are load-bearing:
+
+- **nginx** proxies `^/t/(88[0-9][0-9])(/.*)?$` with the WebSocket upgrade headers. The port
+  range is pinned: `proxy_pass` to a variable port is a proxy to wherever the URL says, so it
+  must not be walkable onto anything else listening on loopback.
+- **ttyd** is started with `--base-path /t/<port>`, or its own asset and websocket URLs come
+  out absolute and miss the prefix.
+- **the page** builds `location.origin + '/t/' + port + '/'`.
+
+`--term-host` therefore wants to be `127.0.0.1`, and on loopback the credential is dropped —
+it would prompt for a sign-in the dashboard has already had. On any other host a credential is
+still required and still passed: `ttyd -W` hands out a live shell.
+
+The exposure is not widened by this. Before, ttyd listened on the tailnet with basic auth;
+now it listens on loopback and is reachable only through the same tailnet-bound nginx that
+already serves an unauthenticated dashboard — one that can start terminals anyway. Verified
+after the change: `/t/8801/` and `/t/8810/` return 200 through nginx, `/ws` upgrades with
+101, and connecting to the tailnet address on 8801 directly is refused.
