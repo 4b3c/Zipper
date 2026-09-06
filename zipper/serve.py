@@ -641,7 +641,7 @@ def _feed_key(text):
 
 def _feed_transient(text):
     """Status chatter, not work: shown once, never persisted, never crossed off."""
-    return text.startswith('no changes') or text.startswith('terminal ')
+    return text.startswith('terminal ')
 
 def feed_rows():
     with FEED_LOCK:
@@ -701,6 +701,29 @@ def feed_mark_all():
         return {'ok': True, 'marked': len(hits)}
 
 
+NOTES = [[], 0.0]        # last computed note changes, and when
+NOTES_TTL = 4.0
+
+def note_rows(force=False):
+    """Notes changed since the last bookkeeping pass, straight from git.
+
+    Not queue rows: they are cleared by committing, never by ticking, so they
+    render as their own section with no tick boxes. Recomputed on a short TTL
+    rather than per request -- another conversation editing the vault is the
+    normal case, and the card has to show that without waiting for a refresh.
+    """
+    now = time.time()
+    if not force and now - NOTES[1] < NOTES_TTL:
+        return NOTES[0]
+    from . import runqueue
+    try:
+        rows = runqueue.note_changes()
+    except Exception:
+        rows = NOTES[0]
+    NOTES[0], NOTES[1] = rows, now
+    return rows
+
+
 def publish(kind, text='', **extra):
     ev = {'kind': kind, 'text': text, 'at': datetime.datetime.now().strftime('%H:%M:%S')}
     ev.update(extra)
@@ -738,6 +761,25 @@ def feed_watch(interval=1.0):
             continue                        # our own write, already broadcast
         feed_load()
         publish('feed', rows=feed_rows())
+
+def notes_watch(interval=4.0):
+    """Push the changed-note list when the working tree moves.
+
+    Nothing writes a file we could watch for this -- the signal is git's own
+    view of the tree, and another conversation editing the vault produces no
+    event here at all. So it is polled, and only published when it differs."""
+    last = None
+    while True:
+        time.sleep(interval)
+        try:
+            rows = note_rows(force=True)
+        except Exception:
+            continue
+        key = [(r['state'], r['path']) for r in rows]
+        if key == last:
+            continue
+        last = key
+        publish('notes', rows=rows)
 
 def snapshot_data():
     """What the diff is measured against. Keys only — cheap to compare."""
@@ -869,8 +911,11 @@ def do_refresh():
             STATE['generation'] += 1
             STATE['last_error'] = '; '.join(err)
             STATE['last_refresh'] = datetime.datetime.now().isoformat(timespec='seconds')
-        if not total:
-            publish('diff', 'no changes  everything was already current')
+        # Nothing is not an event. A "no changes" row was a queue item that
+        # said no work had arrived, which is the one thing a queue of work
+        # should never contain -- it read as something to deal with and could
+        # be ticked off. Silence says it better.
+        publish('notes', rows=note_rows())
         publish('done', '')
 
 # ---------------------------------------------------------------- data
@@ -1191,6 +1236,12 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .qt{color:var(--dim)}
 .qrow.crossed .qx,.qrow.crossed .qt{text-decoration:line-through;color:var(--dim)}
 .qrow.crossed .tick{border-color:var(--accent)}
+.qsub{font:600 11px/1.6 inherit;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);
+  margin:14px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
+#qnotes:empty{display:none}
+.qrow.nrow{padding-left:2px}
+.qrow.nrow .qt{min-width:62px;display:inline-block}
+.qrow.nrow .qt.added{color:var(--accent)}
 .tick.ghost{border-color:transparent;cursor:default}
 .qfold{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;
   font:12px/1.9 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);padding:4px 0 0}
@@ -1299,6 +1350,22 @@ function drawQueue(rows){
   }
   q.innerHTML=h;
 }
+// Note paths are filenames, so they really can carry & and quotes -- unlike
+// the queue text, which qrowHTML escapes inline.
+function esc(x){return String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function drawNotes(rows){
+  window.__notes=rows||[];
+  const n=document.getElementById('qnotes'); if(!n) return;
+  if(!window.__notes.length){ n.innerHTML=''; return; }
+  n.innerHTML='<h3 class="qsub">Notes changed since the last pass ('
+    +window.__notes.length+')</h3>'
+    +window.__notes.map(r=>'<div class="qrow nrow"><span class="qt'
+      +(r.state==='added'?' added':'')+'">'+esc(r.state)+'</span><span class="qx">'
+      +esc(r.path)+'</span></div>').join('')
+    +'<p class="sub">Cleared by committing, not by ticking \u2014 '
+    +'<code>zipper bookkeep --commit "msg"</code></p>';
+}
 function row(e){
   const f=window.__feed||[];
   if(e.key && f.some(r=>r.key===e.key)) return;
@@ -1364,6 +1431,7 @@ async function panels(){
 const es=new EventSource('/events');
 es.addEventListener('diff',e=>row(JSON.parse(e.data)));
 es.addEventListener('feed',e=>drawQueue(JSON.parse(e.data).rows));
+es.addEventListener('notes',e=>drawNotes(JSON.parse(e.data).rows));
 document.addEventListener('click',async ev=>{
   const mk=ev.target.closest('.mknote');
   if(mk){
@@ -1935,6 +2003,24 @@ def _qrow_html(r):
             % (' crossed' if r['done'] else '', tick, esc(r['at']), esc(r['text'])))
 
 
+def _qnotes_html(rows):
+    """The changed-note section of the queue card.
+
+    No tick boxes, deliberately. These clear by committing, and offering a tick
+    would imply the same gesture works on both halves of the card when it does
+    not -- the whole confusion this design exists to end.
+    """
+    if not rows:
+        return ''
+    body = ''.join(
+        '<div class="qrow nrow"><span class="qt%s">%s</span><span class="qx">%s</span></div>'
+        % (' added' if r['state'] == 'added' else '', esc(r['state']), esc(r['path']))
+        for r in rows)
+    return ('<h3 class="qsub">Notes changed since the last pass (%d)</h3>%s'
+            '<p class="sub">Cleared by committing, not by ticking &mdash; '
+            '<code>zipper bookkeep --commit "msg"</code></p>' % (len(rows), body))
+
+
 def _item_li(it, show_score=True):
     """One task row. Title leads; everything else drops to a dim second line.
 
@@ -2112,6 +2198,7 @@ def render():
             epochs[k] = None
 
     rows = feed_rows()
+    nrows = note_rows()
     open_rows = [r for r in rows if not r['done']]
     done_rows = [r for r in rows if r['done']]
     feed = ''.join(_qrow_html(r) for r in open_rows)
@@ -2154,13 +2241,15 @@ def render():
   <div><h2>Execution</h2>%s</div>
 </div></div>
 
-<div class="card"><h2>This run &middot; <span id="qcount">%d</span></h2>
-<div id="queue"%s>%s</div></div>
+<div class="card"><h2>Queue &middot; <span id="qcount">%d</span></h2>
+<div id="queue"%s>%s</div>
+<div id="qnotes">%s</div></div>
 
 <footer><div class="fresh" id="fresh"></div>
 <div class="sub vnavbar">%s</div></footer>
 </div><script>window.__epochs=%s;window.__feed=%s;window.__session=%s;window.__mounted=false;window.__showdone=false;window.__queueready=%s;
 window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
+window.__notes=%s;
 %s%s</script></body></html>""" % (
         CSS, core.TODAY.strftime('%A %d %B %Y'),
         p['p-today'], p['p-work-canvas'], p['p-work-tasks'],
@@ -2172,12 +2261,13 @@ window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__
         len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl) or '<p class="sub">Clean.</p>',
         met, outstanding, '' if rows else ' data-empty="1"',
         feed or '<p class="sub">Waiting for this run’s fetch…</p>',
+        _qnotes_html(nrows),
         ' &middot; '.join('<a class="vnav" href="/views/%s">%s</a>'
                          % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
         json.dumps(epochs), json.dumps(rows), json.dumps(session_exists()),
         json.dumps(bool(_queue_prompt())), json.dumps(terminal_up()),
         json.dumps(TERM['port']), json.dumps(core.TODAY.isoformat()),
-        json.dumps(canvas.CANVAS_HOST), JS, TICKJS)
+        json.dumps(canvas.CANVAS_HOST), json.dumps(nrows), JS, TICKJS)
 
 
 # ---------------------------------------------------------------- http
@@ -2576,6 +2666,7 @@ def main():
     SRV['daemon'] = a.daemon
     feed_load()
     threading.Thread(target=feed_watch, daemon=True).start()
+    threading.Thread(target=notes_watch, daemon=True).start()
     threading.Thread(target=conversation_reaper, daemon=True).start()
     url = 'http://%s:%d/' % (a.host, a.port)
     print('zipper dashboard on %s%s' % (url, '  (daemon)' if a.daemon else ''))

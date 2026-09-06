@@ -150,9 +150,16 @@ The grid needs `end` on every event. `ics.parse_ics` carries the master event's 
 onto each expanded occurrence for exactly this reason — before that, every recurring meeting
 arrived without one and would have drawn as a 30-minute stub.
 
-**The queue** at the bottom — the card is titled **This run** — holds the *events* this
-launch found: new and removed calendar events, newly submitted Canvas items, repo pushes.
-`no changes` when the sources were already current.
+**The queue** at the bottom holds the *events* this launch found: new and removed calendar
+events, newly submitted Canvas items, repo pushes. When nothing turned up it shows nothing
+— a "no changes" row was a queue item announcing that no work had arrived, which is the one
+thing a queue of work must never contain: it read as something to deal with, and could be
+ticked off.
+
+Under the rows sits **Notes changed since the last pass** — the working tree, straight from
+git, with no tick boxes, because it clears by committing. It is polled every four seconds
+rather than watched: another conversation editing the vault writes no file this server
+could watch for, and the card has to show that without waiting for a refresh.
 
 **There is only one queue.** It lives in `Inbox/feed.json` and is crossed off row by row.
 `Meta/Queue.md` is not a second one — it is the *rendering* of this queue plus the

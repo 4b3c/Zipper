@@ -313,9 +313,10 @@ def _write_brief(q):
             L.append('- `%s`  %s%s' % (r['key'], r['text'], tgt))
     L.append('')
 
-    L += ['## Notes changed but not committed', '',
-          '*The working tree, whoever wrote it — him, this session, or another. '
-          'Read the diff, make sure it is right, then commit.*', '']
+    L += ['## Notes changed since the last pass', '',
+          '*Every pass ends in a commit, so this is exactly what has changed since '
+          'the last one — whoever wrote it, him or any session. Read it, make sure '
+          'it is right, then commit. Cleared by committing, never by ticking.*', '']
     if not q['notes_uncommitted']:
         L.append('- nothing; the tree is clean')
     for c in q['notes_uncommitted']:
@@ -344,10 +345,16 @@ def _write_brief(q):
 def _finish(a, rows, changes):
     """End a bookkeeping pass: tick every event and commit the notes.
 
-    Ticking and committing are one step on purpose. They are the two halves of
-    the same claim -- that everything in this pass has been looked at and its
-    consequences written down -- and doing one without the other is exactly how
-    the tree ended up eight files dirty with five sessions' conclusions in it.
+    **A pass always ends in a commit.** That is not tidiness -- it is what makes
+    the next pass's diff mean anything. The note diff is defined as "changed
+    since the last bookkeeping pass", and the only thing making that true is
+    that the last pass left the tree clean. Skip the commit once and the diff
+    silently becomes general backlog, which is how the tree came to hold five
+    sessions' conclusions with nothing marking where one ended.
+
+    Ticking and committing are therefore one step: they are two halves of the
+    same claim, that everything in this pass has been looked at and its
+    consequences written down.
     """
     from . import serve, conversations
     try:
@@ -380,6 +387,20 @@ def _finish(a, rows, changes):
              else 'nothing to commit'))
     if not ok and r.stdout.strip():
         print('  ' + r.stdout.strip().split('\n')[0])
+
+    # The invariant, checked rather than assumed. Anything still dirty here
+    # would silently widen the next pass's diff, and the whole point of the
+    # commit is that it does not.
+    left = note_changes()
+    if left:
+        print('  WARNING: %d note(s) still uncommitted — the next pass will show '
+              'them as new:' % len(left))
+        for c in left[:10]:
+            print('    %s %s' % (c['state'], c['path']))
+        return 1
+    _write_brief({'generated': datetime.datetime.now().isoformat(timespec='seconds'),
+                  'events': [], 'notes_uncommitted': [], 'tasks_dropped': [],
+                  'tasks_renamed': [], 'flags': flags()})
     return 0
 
 def cmd_queue(a):

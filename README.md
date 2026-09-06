@@ -282,7 +282,7 @@ Stdlib only — no Flask, no venv, no build step.
 | **What to work on** | Coursework and `Tasks/` lines in one ranked list, most pressing first |
 | **Claude** | A Claude Code session embedded via ttyd + tmux |
 | **Signals** | The queue's flags, and the execution metrics |
-| **This run** | The diff for this launch, from `Inbox/feed.json`. Every row has a tick box; the terminal crosses one off with `python3 -m zipper.serve --mark <key>`, and a watcher pushes either side's change to every open tab |
+| **Queue** | The events this launch found, from `Inbox/feed.json`. Every row has a tick box; the terminal crosses one off with `python3 -m zipper.serve --mark <key>`, and a watcher pushes either side's change to every open tab. Underneath, the notes changed since the last bookkeeping pass — read from git, no tick boxes, cleared by committing |
 
 **It owns no data.** Every panel reads what the engine already wrote. A wrong number is
 fixed in the vault or the fetcher, never in the view.
