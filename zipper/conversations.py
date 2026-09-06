@@ -433,6 +433,50 @@ def title(thread_id, default=''):
     return found or default
 
 
+def detect_session(thread_id):
+    """Work out which transcript a *bound* conversation is actually writing.
+
+    A bound row adopted a session that was already running, and nothing tells us
+    its id: the pane's process carries no --session-id, and Claude appends and
+    closes the file rather than holding it open. So the id is inferred -- the
+    newest transcript in this vault's project directory that no other
+    conversation has claimed.
+
+    It matters more than it sounds. The id decides which file `last_active`
+    reads, so a wrong one leaves the conversation being typed in looking idle
+    and stuck at the bottom of the list; and it decides what `--resume` would
+    reopen if that pane ever died. This was wrong once: the terminal was bound
+    to the session that started when its predecessor was killed, while the pane
+    had gone on to resume the older conversation, and everything downstream read
+    a file that had stopped moving forty minutes earlier.
+    """
+    row = load().get(str(thread_id)) or {}
+    if not row.get('bound') or not alive(thread_id):
+        return row.get('session_id')
+    claimed = {r.get('session_id') for t, r in load().items()
+               if str(t) != str(thread_id) and r.get('session_id')}
+    best, best_m = row.get('session_id'), -1
+    try:
+        names = os.listdir(_project_dir())
+    except OSError:
+        return best
+    for n in names:
+        if not n.endswith('.jsonl'):
+            continue
+        sid = n[:-6]
+        if sid in claimed:
+            continue
+        try:
+            m = os.path.getmtime(os.path.join(_project_dir(), n))
+        except OSError:
+            continue
+        if m > best_m:
+            best, best_m = sid, m
+    if best and best != row.get('session_id'):
+        touch(thread_id, session_id=best)
+    return best
+
+
 def sweep():
     """Drop the ttyd of any conversation whose session is gone.
 
@@ -442,6 +486,9 @@ def sweep():
     wearing the old one's name. Take the viewer down with the session.
     """
     gone = []
+    for tid, row in list(load().items()):
+        if row.get('bound'):
+            detect_session(tid)
     for tid, row in load().items():
         if row.get('port') and not alive(tid):
             stop_ttyd(tid)
@@ -482,11 +529,13 @@ def state(thread_id):
 def listing():
     """Every conversation we know of, in a stable order.
 
-    Ordered by the last *message*, newest first. Reading a conversation does not
-    move it and neither does anything else the machinery writes -- only sending
-    something does. That is the distinction the earlier version got wrong, when
-    every incidental registry write counted as activity and the order shuffled
-    depending on which code path had last touched a row.
+    Ordered by the last *message*, newest first -- measured from the transcript,
+    which is the only record that sees a message typed straight into a terminal
+    as well as one delivered from Discord. Reading a conversation does not move
+    it, and neither does anything else the machinery writes: an earlier version
+    sorted on a registry stamp that every incidental write bumped, and a later
+    one stopped bumping it at all, which left the conversation being typed in
+    sitting at the bottom of the list.
     """
     out = []
     for tid, row in load().items():
@@ -495,7 +544,11 @@ def listing():
                                  if row.get('port') else False),
                         last_active_ts=last_active(tid),
                         idle_for=int(time.time() - last_active(tid)) if last_active(tid) else None))
-    out.sort(key=lambda r: (r.get('last_active') or r.get('started') or ''), reverse=True)
+    # last_active_ts is the newest of the registry stamp and the transcript's
+    # mtime. The registry only sees messages this process delivered, so sorting
+    # on it alone left out everything typed straight into a terminal -- which is
+    # every message in the conversation the operator is actually sitting in.
+    out.sort(key=lambda r: r['last_active_ts'] or 0, reverse=True)
     return out
 
 

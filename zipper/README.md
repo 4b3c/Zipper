@@ -354,11 +354,21 @@ name.
 Titles are user-influenced text either way, so the page escapes them (`chatEsc`): a thread
 called `<img onerror=...>` is a thing a person can make.
 
-**Order follows the last message, and nothing else.** Reading a conversation does not move
-it; only sending something does. `touch()` takes `active=` for exactly this reason — every
-incidental write (caching a title, remembering a port, opening a row to read it) used to bump
-the timestamp the list sorted on, so the order shuffled depending on which code path had last
-run.
+**Order follows the last message, measured from the transcript.** Reading a conversation does
+not move it; only a message does. The registry stamp alone is not enough — it sees what this
+process delivered, and nothing typed straight into a terminal, which is every message in the
+conversation the operator is actually sitting in. Sorting on it left that one pinned to the
+bottom of the list.
+
+**A bound row has to work out which transcript it is writing.** It adopted a session that was
+already running, and nothing states its id: the pane's process carries no `--session-id`, and
+Claude appends and closes the file rather than holding it open. `detect_session()` infers it —
+the newest transcript in the project directory that no other conversation has claimed — and
+re-checks on every listing. Getting this wrong is quiet and wide: the id decides which file
+`last_active` reads *and* what `--resume` would reopen if the pane died. It was wrong once,
+pointing at the session that started when its predecessor was killed while the pane had gone
+on to resume the older conversation. Everything downstream read a file that had stopped moving
+forty minutes earlier.
 
 **A session can die without the page being told** — Ctrl-C in the pane ends Claude and takes
 the tmux session with it. `sweep()` drops the ttyd of any conversation whose session is gone,
@@ -390,6 +400,23 @@ opening message, a generated `Dashboard · Sun 14:26`, an id — four schemes in
 start, so a conversation begun at the keyboard can be picked up on a phone without being
 adopted after the fact. It used to kill the running session, which made sense when there was
 only ever one.
+
+### Discord threads for conversations that started at the keyboard
+
+`new conversation` opens a Discord thread immediately, before anyone knows what the
+conversation is about, so that carrying it on from a phone needs no forethought. The thread is
+therefore born as `Dashboard · Sun 14:26`, and once Claude has titled the conversation the
+thread is renamed to match — otherwise the phone shows a list of timestamps and finding the
+right one means opening all of them.
+
+**Only a thread we named is ever renamed** (`auto_named`). A thread opened from a message in
+the channel is named by Discord from what the operator typed, and one he renames himself is a
+deliberate act; a generated title is not always better than the words a person chose. This
+guard was added after the rename overwrote a descriptive thread name with an `ai-title` — the
+wrong one, as it happened, from the wrong transcript.
+
+Discord rate-limits renames, and the title moves as the subject does, so a rename fires only
+when the name actually changed and at most once every ten minutes per thread.
 
 ### Signed in to the dashboard is signed in to the terminals
 

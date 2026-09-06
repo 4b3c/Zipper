@@ -269,6 +269,30 @@ async def handle_threadinfo(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
 
 
+async def handle_threadrename(request: web.Request) -> web.Response:
+    """Rename a thread.
+
+    A conversation started from the dashboard opens its thread before anyone
+    knows what it is about, so the thread is born with a placeholder name. Once
+    Claude has titled the conversation, the thread should say the same thing --
+    otherwise the phone shows a list of timestamps and finding the right one
+    means opening all of them.
+    """
+    try:
+        body = await request.json()
+        thread_id = body.get("thread_id")
+        name = (body.get("name") or "").strip()[:100]
+        if thread_id is None or not name:
+            return web.json_response({"error": "thread_id and name required"}, status=400)
+        thread = await resolve_thread(int(thread_id))
+        if thread is None:
+            return web.json_response({"error": "thread not found"}, status=404)
+        await thread.edit(name=name)
+        return web.json_response({"ok": True, "name": name})
+    except Exception as e:
+        return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+
 def setup_routes(app: web.Application):
     app.router.add_post("/send", handle_send)
     app.router.add_post("/history", handle_history)
@@ -278,3 +302,4 @@ def setup_routes(app: web.Application):
     app.router.add_post("/typing", handle_typing)
     app.router.add_post("/thread", handle_thread)
     app.router.add_post("/threadinfo", handle_threadinfo)
+    app.router.add_post("/threadrename", handle_threadrename)

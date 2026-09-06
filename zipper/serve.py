@@ -405,6 +405,7 @@ def _row_title(thread_id, row):
     """
     own = conversations.title(thread_id)
     if own:
+        _sync_thread_name(thread_id, row, own)
         return own
     if str(thread_id).startswith('local-'):
         return row.get('title') or 'new conversation'
@@ -420,6 +421,43 @@ def _row_title(thread_id, row):
                             title_at=int(time.time()))
         return name
     return row.get('title') or 'conversation %s' % str(thread_id)[-6:]
+
+
+RENAME_EVERY = 600       # Discord rate-limits thread renames; twice per 10 min
+
+
+def _sync_thread_name(thread_id, row, name):
+    """Give the Discord thread the name Claude gave the conversation.
+
+    A conversation started from the dashboard opens its thread before anyone
+    knows what it is about, so it is born as "Dashboard · Sun 14:26". Leaving it
+    that way means the phone shows a list of timestamps -- the whole point of
+    opening the thread up front is being able to find the conversation later
+    without having planned to.
+
+    Renaming is rate-limited by Discord and the title moves as the subject does,
+    so this only fires when the name actually changed and at most once every ten
+    minutes per thread.
+    """
+    if str(thread_id).startswith('local-') or not name:
+        return
+    # Only ever rename a thread whose name we wrote. A thread opened from a
+    # message in the channel is named by Discord from what he typed, and a
+    # thread he renames himself is a deliberate act -- overwriting either with
+    # a generated title would be taking something away, and the titles are not
+    # always better than the words a person chose.
+    if not row.get('auto_named'):
+        return
+    if row.get('discord_name') == name:
+        return
+    if time.time() - (row.get('renamed_at') or 0) < RENAME_EVERY:
+        return
+    try:
+        r = chat._bot('/threadrename', {'thread_id': thread_id, 'name': name}, timeout=8)
+    except Exception:
+        return
+    if r.get('ok'):
+        conversations.touch(thread_id, discord_name=name, renamed_at=int(time.time()))
 
 
 def conversation_rows():
@@ -489,7 +527,7 @@ def new_conversation():
         tid = 'local-%d' % int(time.time())
     if not tid:
         return {'ok': False, 'error': 'could not open a Discord thread'}
-    conversations.touch(tid, title=title)
+    conversations.touch(tid, title=title, auto_named=True, discord_name=title)
     r = conversations.start(tid)
     if not r.get('ok'):
         return r
