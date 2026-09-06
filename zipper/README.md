@@ -480,6 +480,12 @@ click that just happened is the user gesture the clipboard API insists on. `exec
 into a throwaway textarea is the fallback, since `clipboard.writeText` needs a permission and a
 focused document and refuses in an iframe in some browsers.
 
+A selection also goes into **tmux's own paste buffer** (`/api/copybuffer`), which is a
+different clipboard from the browser's: the browser's is the operator's own machine, tmux's
+lives on the box and is what pastes between panes. tmux prints `copied N chars to tmux buffer`
+in its status line, the way it does in a terminal on his laptop, and the dashboard shows a
+small toast of its own — the status line is a row the iframe can cut off.
+
 **Pasting an image** cannot be done by typing: an image is not text. The bytes go to
 `/api/pasteimage`, which writes them under `<tmp>/zipper-pastes/` and returns the path, and the
 *path* is what lands in the prompt — which is a thing Claude Code opens. Text paste is

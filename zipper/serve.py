@@ -1141,6 +1141,10 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 #termwrap iframe{width:100%;height:600px;border:0;border-radius:8px;background:#171614;display:block}
 #termbody{display:flex;gap:10px;align-items:stretch}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);
+       background:#171614;color:#ece8e1;padding:7px 13px;border-radius:7px;font-size:12px;
+       opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;z-index:200}
+#toast.on{opacity:.94;transform:translateX(-50%) translateY(0)}
 .termdead{height:600px;display:flex;flex-direction:column;align-items:center;justify-content:center;
           gap:10px;background:#171614;border-radius:8px;color:#ece8e1}
 #termcard.full .termdead{height:100%}
@@ -1458,9 +1462,17 @@ function hookTerm(f){
     // frame, where the click that just happened counts as the user gesture.
     const copySel=()=>{
       let sel=''; try{ sel=term.getSelection(); }catch(e){}
-      if(!sel) return;
+      if(!sel||sel===win.__lastSel) return;
+      win.__lastSel=sel;
       try{ win.navigator.clipboard.writeText(sel).catch(()=>legacyCopy(win,sel)); }
       catch(e){ legacyCopy(win,sel); }
+      // Also into tmux's own buffer, which is a different clipboard living on
+      // the box -- that is what pastes between panes, and what prints the
+      // "copied N chars" line in the pane the way it does on his machine.
+      fetch('/api/copybuffer',{method:'POST',headers:{'Content-Type':'application/json'},
+                               body:JSON.stringify({text:sel,thread_id:window.__chat||null})})
+        .catch(()=>{});
+      toast('copied '+sel.length+' chars');
     };
     win.document.addEventListener('mouseup',()=>setTimeout(copySel,0));
     win.document.addEventListener('keyup',ev=>{
@@ -1485,6 +1497,13 @@ function hookTerm(f){
       }
     },true);
   })();
+}
+let __toastT=null;
+function toast(msg){
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('on');
+  clearTimeout(__toastT); __toastT=setTimeout(()=>el.classList.remove('on'),1600);
 }
 function legacyCopy(win,text){
   // clipboard.writeText needs permission and a focused document, and refuses in
@@ -2141,6 +2160,33 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+        elif self.path == '/api/copybuffer':
+            # A selection should land in the tmux paste buffer as well as the
+            # browser's clipboard. They are different clipboards: the browser's
+            # is the operator's own machine, tmux's is inside the box, and
+            # pasting from one pane into another wants the second.
+            n = int(self.headers.get('Content-Length', 0))
+            try:
+                d = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+            except Exception:
+                d = {}
+            text = d.get('text') or ''
+            if not text:
+                self._send(400, json.dumps({'error': 'text required'}), 'application/json')
+                return
+            sess = conversations.tmux_name(str(d['thread_id'])) if d.get('thread_id') else TERM['session']
+            try:
+                tmux = shutil.which('tmux')
+                subprocess.run([tmux, 'load-buffer', '-b', 'zipper-copy', '-'],
+                               input=text.encode('utf-8'), check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run([tmux, 'display-message', '-t', sess,
+                                'copied %d chars to tmux buffer' % len(text)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self._send(200, json.dumps({'ok': True, 'chars': len(text)}),
+                           'application/json')
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}), 'application/json')
         elif self.path == '/api/pasteimage':
             # An image on the clipboard is not text and cannot be typed into a
             # terminal. The browser can read it, so it posts the bytes here and
