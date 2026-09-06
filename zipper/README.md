@@ -383,8 +383,15 @@ forty minutes earlier.
 **A session can die without the page being told** — Ctrl-C in the pane ends Claude and takes
 the tmux session with it. `sweep()` drops the ttyd of any conversation whose session is gone,
 because that ttyd would otherwise happily serve `tmux new -A`: a *new* conversation wearing
-the old one's name. The card swaps the terminal for a **load conversation** button, which
-resumes the real one from its transcript.
+the old one's name. It also ends a session Claude has *left* — tmux alive with a bare shell in
+it is not a conversation. The card swaps the terminal for a **load conversation** button.
+
+**Ask the pane's process, not `pane_current_command`.** That field reports whatever is in the
+foreground, which during a tool call is `bash` or `python3`. Trusting it, the sweep read two
+working conversations as exited and killed them — the transcripts survived, but the sessions
+did not. `running_claude()` now reads the pane's pid (and its children) from `/proc`, and the
+sweep takes a second reading a beat later before ending anything: it is the one function here
+that destroys something, so a cheap double-check is worth the second it costs.
 
 **A row is a name and a light.** Yellow means the instance is working, green means it is
 waiting for you, grey means closed — clicking a grey one resumes it. The state is read from
@@ -397,8 +404,12 @@ long as it is busy — but only in its last line. Scanning the whole pane made a
 that merely *displayed* those words look permanently busy, and the session where this was
 being built stayed yellow after it had finished, for the obvious reason.
 
-The marker blinks out between tool calls, so it is **sticky for five seconds after it was last
-seen**. It is deliberately not inferred from the transcript being written: that was the first
+The footer is rewritten several times a second and a capture lands on a blank frame often
+enough to matter, which made a long turn flicker green and read as finished. So the check
+looks at the bottom fourteen lines, counts the spinner line too (during a long tool call it is
+the only thing on screen saying work is happening), and is **sticky for 25 seconds after the
+marker was last seen**. Both tests are anchored on how those lines *start*, so a conversation
+that merely prints the words is not mistaken for a busy one. It is deliberately not inferred from the transcript being written: that was the first
 attempt, and it lit the dot yellow for a conversation that had done nothing but come back from
 the dead, since resuming writes to the file.
 

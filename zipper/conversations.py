@@ -540,11 +540,67 @@ def sweep():
     for tid, row in list(load().items()):
         if row.get('bound'):
             detect_session(tid)
-    for tid, row in load().items():
-        if row.get('port') and not alive(tid):
+    for tid, row in list(load().items()):
+        dead = not alive(tid)
+        if not dead and row.get('port') and not running_claude(tid):
+            # Claude was quit inside the pane. End the session too, or ttyd
+            # serves the empty shell tmux leaves behind as if it were the
+            # conversation.
+            #
+            # Checked twice, a beat apart. This sweep kills things, and it
+            # already killed two working conversations once by trusting a
+            # single reading -- a cheap second look is worth more than the
+            # second it costs.
+            time.sleep(0.4)
+            if not running_claude(tid):
+                close(tid, reason='exited')
+                dead = True
+        if row.get('port') and dead:
             stop_ttyd(tid)
             gone.append(tid)
     return gone
+
+
+def running_claude(thread_id):
+    """Is Claude still the process in this session's pane?
+
+    tmux staying alive is not the same as the conversation being alive. Ctrl-C
+    ends Claude, and ttyd -- which attaches with `tmux new -A` -- will happily
+    recreate the session on the next connection with a plain shell in it. The
+    session then exists, the name matches, and the dashboard shows a terminal
+    that is not the conversation it is labelled with.
+
+    Read the pane's *process*, not `pane_current_command`. That field reports
+    whatever is in the foreground, which during a tool call is bash or python --
+    so it reported "not Claude" for two conversations that were merely working,
+    and the sweep below closed them. The pane's own pid is claude (the launcher
+    execs it), and checking its descendants covers a session someone started by
+    hand.
+    """
+    try:
+        r = subprocess.run([_tmux(), 'list-panes', '-t', tmux_name(thread_id),
+                            '-F', '#{pane_pid}'], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    pids = [p for p in r.stdout.split() if p.isdigit()]
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            with open('/proc/%s/comm' % pid) as fh:
+                if 'claude' in fh.read():
+                    return True
+        except OSError:
+            continue
+        try:
+            kids = subprocess.run(['pgrep', '-P', pid], capture_output=True, text=True, timeout=5)
+            for k in kids.stdout.split():
+                with open('/proc/%s/comm' % k) as fh:
+                    if 'claude' in fh.read():
+                        return True
+        except Exception:
+            continue
+    return False
 
 
 def state(thread_id):
@@ -556,22 +612,34 @@ def state(thread_id):
     finish work without this process being told, and a state we maintained would
     drift the moment it did.
     """
-    if not alive(thread_id):
+    if not alive(thread_id) or not running_claude(thread_id):
         return 'closed'
     # The *status line* only -- the last non-empty line of the pane. Scanning
     # the whole pane made any conversation that merely displayed the words "esc
     # to interrupt" look permanently busy, which is not a hypothetical: a
     # session discussing this very check stayed yellow after it had finished.
-    lines = [l for l in _pane(thread_id).splitlines() if l.strip()]
-    if lines and 'esc to interrupt' in lines[-1]:
+    # Look at the bottom of the pane, not just its last line: the footer is
+    # rewritten several times a second and a capture lands on a blank frame
+    # often enough to matter -- which is what made a long turn flicker to green
+    # and read as finished. The spinner line counts too; during a long tool call
+    # it is the only thing on screen that says work is happening.
+    #
+    # Both tests are anchored to how those lines *start*, so a conversation that
+    # merely prints the words "esc to interrupt" -- this one, constantly -- is
+    # not mistaken for a busy one.
+    lines = [l.strip() for l in _pane(thread_id).splitlines() if l.strip()][-14:]
+    busy = any((l.startswith('\u23f5\u23f5') and 'esc to interrupt' in l)
+               or (l.startswith('\u273b') and ('tokens' in l or 'esc to interrupt' in l))
+               for l in lines)
+    if busy:
         _SEEN[str(thread_id)] = time.time()
         return 'working'
-    # The marker vanishes for a moment between tool calls, so it is sticky for a
-    # few seconds after it was last actually seen. It is deliberately *not*
+    # Sticky for 25 seconds after the marker was last actually seen: a long tool
+    # call can leave nothing on screen that says "busy" for a while. It is deliberately *not*
     # inferred from the transcript being written: resuming a conversation writes
     # to it, which lit the dot yellow for a session that had done nothing but
     # come back.
-    if time.time() - _SEEN.get(str(thread_id), 0) < 5:
+    if time.time() - _SEEN.get(str(thread_id), 0) < 25:
         return 'working'
     return 'waiting'
 
