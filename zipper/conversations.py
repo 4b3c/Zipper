@@ -368,11 +368,25 @@ def stop_ttyd(thread_id):
         save(d)
 
 
+def state(thread_id):
+    """working | waiting | closed.
+
+    Claude Code prints "esc to interrupt" in its status line for exactly as long
+    as it is doing something, so the pane itself answers the question. Read from
+    the terminal rather than tracked in the registry: an instance can start and
+    finish work without this process being told, and a state we maintained would
+    drift the moment it did.
+    """
+    if not alive(thread_id):
+        return 'closed'
+    return 'working' if 'esc to interrupt' in _pane(thread_id) else 'waiting'
+
+
 def listing():
     """Every conversation we know of, newest activity first."""
     out = []
     for tid, row in load().items():
-        out.append(dict(row, thread_id=tid, alive=alive(tid),
+        out.append(dict(row, thread_id=tid, alive=alive(tid), state=state(tid),
                         serving=(_port_open(row.get('host') or '127.0.0.1', int(row['port']))
                                  if row.get('port') else False),
                         last_active_ts=last_active(tid),

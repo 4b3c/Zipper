@@ -354,3 +354,15 @@ name.
 Titles come from the first line of the message that opened the thread, so the list reads
 like Discord does. They are user text: the page escapes them (`chatEsc`), because a thread
 called `<img onerror=...>` is a thing a person can make.
+
+**A row is a name and a light.** Yellow means the instance is working, green means it is
+waiting for you, grey means closed — clicking a grey one resumes it. The state is read from
+the pane, not tracked: Claude Code prints `esc to interrupt` in its status line for exactly
+as long as it is busy, and an instance can start and finish work without this process being
+told, so any state we maintained would drift the moment it did. The list polls every 6
+seconds, because a light that lags is worse than no light.
+
+**`new conversation` closes nothing.** It adds one, with its own Discord thread from the
+start, so a conversation begun at the keyboard can be picked up on a phone without being
+adopted after the fact. It used to kill the running session, which made sense when there was
+only ever one.

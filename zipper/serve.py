@@ -392,7 +392,7 @@ def conversation_rows():
             'bound': bool(r.get('bound')),
             'serving': r.get('serving'),
             'port': r.get('port'),
-            'idle': ago(r.get('last_active')),
+            'state': r.get('state'),
         })
     return rows
 
@@ -421,6 +421,35 @@ def open_conversation(thread_id):
     if res.get('ok'):
         publish('diff', 'terminal    showing conversation %s' % thread_id)
     return res
+
+
+
+def new_conversation():
+    """Start another conversation, closing none.
+
+    It gets a Discord thread of its own straight away, so a conversation begun
+    at the keyboard can be picked up from a phone without being adopted after
+    the fact -- which is the awkward path that binding exists to patch.
+    """
+    title = 'Dashboard \u00b7 %s' % datetime.datetime.now().strftime('%a %H:%M')
+    try:
+        r = chat._bot('/thread', {'name': title,
+                                  'message': 'New conversation started from the dashboard.'})
+        tid = str(r.get('thread_id') or '')
+    except Exception as e:
+        # No Discord, no thread -- but the conversation should still start. A
+        # local id keeps it addressable in the list; it just cannot be reached
+        # from a phone until someone opens a thread for it.
+        publish('diff', 'terminal    no Discord thread for this conversation: %s' % e)
+        tid = 'local-%d' % int(time.time())
+    if not tid:
+        return {'ok': False, 'error': 'could not open a Discord thread'}
+    conversations.touch(tid, title=title)
+    r = conversations.start(tid)
+    if not r.get('ok'):
+        return r
+    res = conversations.ensure_ttyd(tid, host=TERM['host'], cred=TERM['cred'])
+    return dict(res, thread_id=tid, title=title)
 
 
 def stop_terminal():
@@ -1014,9 +1043,14 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
       cursor:pointer;color:inherit;font:inherit;line-height:1.25;display:block;width:100%}
 .chat:hover{background:rgba(127,127,127,.10)}
 .chat.on{border-color:var(--accent);background:rgba(127,127,127,.07)}
-.chat .ct{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chat .cs{display:block;font-size:11px;opacity:.62;margin-top:1px}
-.chat.dead .ct{opacity:.55}
+.chat{display:flex;align-items:center;gap:7px}
+.chat .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat .dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:#8a8a8a}
+.chat.waiting .dot{background:#4caf72}
+.chat.working .dot{background:#e0a52b;animation:chatpulse 1.4s ease-in-out infinite}
+.chat.closed .dot{background:#8a8a8a}
+.chat.closed .ct{opacity:.55}
+@keyframes chatpulse{0%,100%{opacity:1}50%{opacity:.35}}
 #termcard.full{position:fixed;inset:0;z-index:99;margin:0;border-radius:0;display:flex;flex-direction:column}
 #termcard.full #termwrap{flex:1}
 #termcard.full #termwrap iframe{height:100%}
@@ -1218,10 +1252,13 @@ function drawChats(rows){
   el.hidden=false;
   el.innerHTML=rows.map(r=>{
     const on=(String(r.thread_id)===String(window.__chat))?' on':'';
-    const dead=r.alive?'':' dead';
-    const state=r.alive?(r.bound?'terminal':(r.idle||'')):'closed \u00b7 resumes';
-    return '<button class="chat'+on+dead+'" data-tid="'+r.thread_id+'">'+
-           '<span class="ct">'+chatEsc(r.title)+'</span><span class="cs">'+chatEsc(state)+'</span></button>';
+    const st=r.state||(r.alive?'waiting':'closed');
+    // yellow working, green waiting, grey closed. The dot carries the state on
+    // its own -- the row is a name and a light, and a line of small print under
+    // every one of them made the list harder to read, not easier.
+    return '<button class="chat '+st+on+'" data-tid="'+r.thread_id+'" title="'+
+           chatEsc(r.title)+' \u2014 '+st+'"><span class="dot"></span>'+
+           '<span class="ct">'+chatEsc(r.title)+'</span></button>';
   }).join('');
 }
 function loadChats(){
@@ -1251,7 +1288,10 @@ function mountTerm(port){
 
 document.addEventListener('DOMContentLoaded',()=>{
   drawFresh(); drawTerm(); drawQueue(window.__feed);
-  loadChats(); setInterval(loadChats, 20000);
+  // 6s, not 20: the dot is the only thing saying whether Claude is working,
+  // and a light that lags twenty seconds behind is worse than none. Each poll
+  // is a capture-pane per conversation, which is cheap.
+  loadChats(); setInterval(loadChats, 6000);
   // ttyd already serving: attach straight to it. Before this the page offered to
   // resume a conversation it could simply have shown.
   if(window.__termup){ window.__mounted=true; mountTerm(window.__termport); drawTerm(); }
@@ -1282,19 +1322,21 @@ document.addEventListener('DOMContentLoaded',()=>{
   });
   const nb=document.getElementById('termnew');
   if(nb) nb.onclick=async()=>{
-    if(!confirm('Start a new Claude conversation? The current one is closed.')) return;
-    await fetch('/api/newsession',{method:'POST'});
-    document.getElementById('termwrap').innerHTML='';
-    window.__session=false;
-    if(window.__termup){
-      // ttyd is still serving; reconnecting respawns `tmux new -A`, which is a
-      // fresh conversation. Remount rather than dropping back to start buttons.
-      window.__mounted=true;
-      const st=document.getElementById('termstate'); st.dataset.said='1';
-      st.textContent='new conversation';
-      mountTerm(window.__termport);
-    } else { window.__mounted=false; }
-    drawTerm();
+    // Adds a conversation; closes nothing. Several run at once now, so starting
+    // one is no longer a decision about the one you were in -- it opens its own
+    // Discord thread and joins the list beside the others.
+    nb.disabled=true;
+    const old=nb.textContent; nb.textContent='starting\u2026';
+    try{
+      const r=await fetch('/api/newconversation',{method:'POST'}).then(x=>x.json());
+      if(r.ok&&r.port){
+        window.__chat=r.thread_id; window.__session=true; window.__mounted=true;
+        const st=document.getElementById('termstate'); st.dataset.said='1';
+        st.textContent='new conversation';
+        mountTerm(r.port); drawTerm();
+      } else if(r.error){ alert('could not start a conversation: '+r.error); }
+      await loadChats();
+    } finally { nb.disabled=false; nb.textContent=old; }
   };
   const c=document.getElementById('termcard'), b=document.getElementById('termfull');
   if(b){b.onclick=()=>{c.classList.toggle('full'); b.textContent=c.classList.contains('full')?'exit':'fullscreen';};}
@@ -1888,6 +1930,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+        elif self.path == '/api/newconversation':
+            self._send(200, json.dumps(new_conversation()), 'application/json')
         elif self.path == '/api/conversation':
             n = int(self.headers.get('Content-Length', 0))
             try:
