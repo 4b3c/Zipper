@@ -267,6 +267,7 @@ def close(thread_id, reason='idle', force=False):
                                       'Pass force=True if that is really what you want.'
                                       % (thread_id, row.get('tmux'))}
     name = tmux_name(thread_id)
+    stop_ttyd(thread_id)
     try:
         subprocess.run([_tmux(), 'kill-session', '-t', name],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -281,11 +282,99 @@ def close(thread_id, reason='idle', force=False):
     return {'ok': True}
 
 
+
+# ---------------------------------------------------------------- viewing
+#
+# ttyd serves exactly one command per port, and ours attaches one tmux session,
+# so watching several conversations means one ttyd each. Ports are handed out
+# from a base and remembered in the registry; the process is not, because a
+# serve.py restart must be able to adopt the ttyd it left behind rather than
+# fight it for the port. Whether the port answers is the only durable truth.
+
+TTYD_BASE = int(os.environ.get('ZIPPER_TTYD_BASE', 8810))
+TTYD_SPAN = 20
+PROCS = {}
+
+
+def _port_open(host, port, timeout=0.3):
+    import socket
+    c = socket.socket()
+    c.settimeout(timeout)
+    try:
+        return c.connect_ex((host, port)) == 0
+    finally:
+        c.close()
+
+
+def _pick_port(thread_id, host):
+    row = load().get(str(thread_id)) or {}
+    if row.get('port'):
+        return int(row['port'])
+    taken = {int(r['port']) for r in load().values() if r.get('port')}
+    for p in range(TTYD_BASE, TTYD_BASE + TTYD_SPAN):
+        if p in taken or _port_open(host, p):
+            continue
+        return p
+    raise RuntimeError('no free ttyd port in %d-%d' % (TTYD_BASE, TTYD_BASE + TTYD_SPAN))
+
+
+def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
+    """A ttyd serving this conversation's pane, started if it isn't already.
+
+    Attaches with `tmux new -A`, so the websocket owns nothing: closing the tab
+    detaches and the conversation keeps running. Refuses to serve without a
+    credential on anything but loopback -- ttyd -W hands out a live shell.
+    """
+    if not alive(thread_id):
+        return {'ok': False, 'error': 'conversation not running'}
+    port = _pick_port(thread_id, host)
+    if _port_open(host, port):
+        touch(thread_id, port=port, host=host)
+        return {'ok': True, 'port': port, 'adopted': True}
+    exe = shutil.which('ttyd')
+    if not exe:
+        return {'ok': False, 'error': 'ttyd not installed'}
+    if host != '127.0.0.1' and not cred:
+        return {'ok': False, 'error': 'refusing to expose an unauthenticated shell'}
+    tmux = _tmux()
+    args = [exe, '-p', str(port), '-i', host, '-W']
+    if cred:
+        args += ['-c', cred]
+    args += ['-t', 'fontSize=%d' % font,
+             '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
+             '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
+             tmux, 'new', '-A', '-s', tmux_name(thread_id)]
+    PROCS[str(thread_id)] = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL)
+    end = time.time() + 6
+    while time.time() < end:
+        if _port_open(host, port):
+            touch(thread_id, port=port, host=host)
+            return {'ok': True, 'port': port}
+        time.sleep(0.15)
+    return {'ok': False, 'error': 'ttyd did not come up on port %d' % port}
+
+
+def stop_ttyd(thread_id):
+    proc = PROCS.pop(str(thread_id), None)
+    if proc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    d = load()
+    if str(thread_id) in d:
+        d[str(thread_id)].pop('port', None)
+        save(d)
+
+
 def listing():
     """Every conversation we know of, newest activity first."""
     out = []
     for tid, row in load().items():
         out.append(dict(row, thread_id=tid, alive=alive(tid),
+                        serving=(_port_open(row.get('host') or '127.0.0.1', int(row['port']))
+                                 if row.get('port') else False),
                         last_active_ts=last_active(tid),
                         idle_for=int(time.time() - last_active(tid)) if last_active(tid) else None))
     out.sort(key=lambda r: r['last_active_ts'], reverse=True)

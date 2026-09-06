@@ -329,3 +329,28 @@ A closed conversation resumes on the next message — the transcript is on disk 
   invites is real — two sessions editing one note, or committing over each other, with
   neither able to see the other. Don't work the same project in two threads at once; if it
   starts happening, `conversations.py` is where the lock goes.
+
+### The chat list
+
+The Claude card has a conversation list down its left side. Each row is a Discord thread;
+clicking one points the iframe at that conversation's terminal. Nothing is torn down when
+you switch -- the conversation you were reading keeps running while you read another, which
+is the whole reason for one instance per thread rather than one that resumes.
+
+**One ttyd per conversation.** ttyd serves a single command per port, and ours attaches one
+tmux session, so each live conversation gets its own port from `ZIPPER_TTYD_BASE` (8810).
+The port is remembered in the registry; the process is not, because a `serve.py` restart has
+to be able to adopt the ttyd it left behind rather than lose the port to it. Whether the port
+answers is the only durable truth.
+
+**The bound conversation is the exception**: its pane is the dashboard's own terminal, which
+already has a ttyd on `--term-port`. Opening it reuses that one. Two ttyds on one tmux
+session both work, but they share a cursor and fight over the window size.
+
+Clicking a **closed** conversation resumes it rather than replacing it -- the transcript is
+the conversation, and picking one out of a list must never start a stranger with the same
+name.
+
+Titles come from the first line of the message that opened the thread, so the list reads
+like Discord does. They are user text: the page escapes them (`chatEsc`), because a thread
+called `<img onerror=...>` is a thing a person can make.

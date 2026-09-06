@@ -380,6 +380,49 @@ def deliver_to_claude(text, source='discord'):
     return dict(r, state='cold')
 
 
+
+def conversation_rows():
+    """The chat list: every conversation, with the state the page has to show."""
+    rows = []
+    for r in conversations.listing():
+        rows.append({
+            'thread_id': r['thread_id'],
+            'title': r.get('title') or 'conversation %s' % str(r['thread_id'])[-6:],
+            'alive': r['alive'],
+            'bound': bool(r.get('bound')),
+            'serving': r.get('serving'),
+            'port': r.get('port'),
+            'idle': ago(r.get('last_active')),
+        })
+    return rows
+
+
+def open_conversation(thread_id):
+    """Show a conversation in the dashboard: revive it if closed, then serve it.
+
+    A conversation closed by the reaper is resumed rather than replaced -- the
+    transcript is the conversation, and picking one out of the list must never
+    mean starting a stranger with the same name.
+    """
+    if not thread_id:
+        return {'ok': False, 'error': 'thread_id required'}
+    if not conversations.alive(thread_id):
+        r = conversations.start(thread_id)
+        if not r.get('ok'):
+            return r
+    row = conversations.load().get(str(thread_id)) or {}
+    if row.get('tmux') == TERM['session'] and terminal_up():
+        # The bound conversation is the dashboard's own terminal, and its ttyd
+        # is already serving that pane. A second one attached to the same tmux
+        # session would work but share a cursor with the first -- two views of
+        # one pane fighting over the size of the window.
+        return {'ok': True, 'port': TERM['port'], 'adopted': True}
+    res = conversations.ensure_ttyd(thread_id, host=TERM['host'], cred=TERM['cred'])
+    if res.get('ok'):
+        publish('diff', 'terminal    showing conversation %s' % thread_id)
+    return res
+
+
 def stop_terminal():
     if TERM['proc']:
         try:
@@ -962,6 +1005,18 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
   background:none;border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:1px 8px;cursor:pointer;text-decoration:none}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 #termwrap iframe{width:100%;height:600px;border:0;border-radius:8px;background:#171614;display:block}
+#termbody{display:flex;gap:10px;align-items:stretch}
+#termwrap{flex:1;min-width:0}
+#chatlist{width:186px;flex:0 0 186px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:600px}
+#termcard.full #termbody{flex:1;min-height:0}
+#termcard.full #chatlist{max-height:none}
+.chat{text-align:left;background:none;border:1px solid transparent;border-radius:7px;padding:6px 8px;
+      cursor:pointer;color:inherit;font:inherit;line-height:1.25;display:block;width:100%}
+.chat:hover{background:rgba(127,127,127,.10)}
+.chat.on{border-color:var(--accent);background:rgba(127,127,127,.07)}
+.chat .ct{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat .cs{display:block;font-size:11px;opacity:.62;margin-top:1px}
+.chat.dead .ct{opacity:.55}
 #termcard.full{position:fixed;inset:0;z-index:99;margin:0;border-radius:0;display:flex;flex-direction:column}
 #termcard.full #termwrap{flex:1}
 #termcard.full #termwrap iframe{height:100%}
@@ -1147,6 +1202,47 @@ es.addEventListener('source',()=>panels());
 es.addEventListener('status',e=>{document.getElementById('status').textContent=JSON.parse(e.data).text;});
 es.addEventListener('done',()=>{panels();document.getElementById('status').textContent='';});
 function termURL(port){return location.protocol+'//'+location.hostname+':'+port+'/';}
+// ---- the chat list: one Claude per Discord thread, switched by clicking.
+// Each conversation has its own ttyd on its own port, so switching is just
+// pointing the iframe somewhere else -- nothing is torn down, and the
+// conversation you were reading keeps running while you read another.
+window.__chat=null;
+// Thread titles are whatever was typed into Discord, so they are escaped here
+// rather than trusted. `esc` on the server is Python's; this is the page's own.
+function chatEsc(t){return String(t==null?'':t).replace(/[&<>"]/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function drawChats(rows){
+  const el=document.getElementById('chatlist');
+  if(!el) return;
+  if(!rows||!rows.length){el.hidden=true;el.innerHTML='';return;}
+  el.hidden=false;
+  el.innerHTML=rows.map(r=>{
+    const on=(String(r.thread_id)===String(window.__chat))?' on':'';
+    const dead=r.alive?'':' dead';
+    const state=r.alive?(r.bound?'terminal':(r.idle||'')):'closed \u00b7 resumes';
+    return '<button class="chat'+on+dead+'" data-tid="'+r.thread_id+'">'+
+           '<span class="ct">'+chatEsc(r.title)+'</span><span class="cs">'+chatEsc(state)+'</span></button>';
+  }).join('');
+}
+function loadChats(){
+  return fetch('/api/conversations').then(r=>r.json())
+    .then(d=>{window.__chats=d.conversations||[];drawChats(window.__chats);return window.__chats;})
+    .catch(()=>[]);
+}
+function openChat(tid){
+  const el=document.getElementById('chatlist');
+  if(el) el.querySelectorAll('.chat').forEach(b=>b.disabled=true);
+  return fetch('/api/conversation',{method:'POST',headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({thread_id:tid})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok&&d.port){window.__chat=tid;window.__mounted=true;mountTerm(d.port);drawTerm();}
+      return loadChats();
+    }).catch(()=>loadChats());
+}
+document.addEventListener('click',ev=>{
+  const b=ev.target.closest?ev.target.closest('.chat'):null;
+  if(b&&b.dataset.tid) openChat(b.dataset.tid);
+});
 function mountTerm(port){
   const u=termURL(port);
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';
@@ -1155,6 +1251,7 @@ function mountTerm(port){
 
 document.addEventListener('DOMContentLoaded',()=>{
   drawFresh(); drawTerm(); drawQueue(window.__feed);
+  loadChats(); setInterval(loadChats, 20000);
   // ttyd already serving: attach straight to it. Before this the page offered to
   // resume a conversation it could simply have shown.
   if(window.__termup){ window.__mounted=true; mountTerm(window.__termport); drawTerm(); }
@@ -1614,7 +1711,7 @@ def render():
 <button id="termfull" class="btn" hidden>fullscreen</button>
 <a id="termpop" class="btn" href="#" target="_blank" rel="noopener" hidden>pop out</a></h2>
 <div id="termstart">%s</div>
-<div id="termwrap"></div></div>
+<div id="termbody"><aside id="chatlist" hidden></aside><div id="termwrap"></div></div></div>
 
 <div class="card"><h2>Next actions <a class="more" href="/views/now">see all</a></h2>%s</div>
 
@@ -1702,6 +1799,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render())
         elif self.path == '/events':
             self._events()
+        elif self.path == '/api/conversations':
+            self._send(200, json.dumps({'conversations': conversation_rows()}),
+                       'application/json')
         elif self.path.split('?')[0] == '/api/panels':
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             day = (q.get('day') or [''])[0]
@@ -1788,6 +1888,14 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+        elif self.path == '/api/conversation':
+            n = int(self.headers.get('Content-Length', 0))
+            try:
+                d = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+            except Exception:
+                d = {}
+            self._send(200, json.dumps(open_conversation(str(d.get('thread_id') or ''))),
+                       'application/json')
         elif self.path == '/api/eventnote':
             n = int(self.headers.get('Content-Length', 0))
             try:
@@ -1855,6 +1963,11 @@ class Handler(BaseHTTPRequestHandler):
                 # indicator until that instance answers -- chat.discord_send
                 # clears it, so every reply path ends the indicator exactly once.
                 chat.discord_typing(True, tid)
+                if not (conversations.load().get(str(tid)) or {}).get('title'):
+                    # The thread's name in Discord is the first line of the
+                    # message that opened it; the chat list should read the same
+                    # rather than showing an id nobody recognises.
+                    conversations.touch(str(tid), title=' '.join(text.split())[:60])
                 res = conversations.deliver(str(tid), _tagged(text, body.get('source', 'discord')),
                                             body.get('source', 'discord'))
                 if res.get('ok'):
