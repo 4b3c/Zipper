@@ -96,15 +96,18 @@ def _queue_prompt():
             if not r['done'] and not r['text'].startswith('error')]
     if not real:
         return ''
-    return ("Zipper just refreshed the vault. This run's queue:\n\n"
+    return ("Zipper just refreshed the vault. Open in the queue:\n\n"
             + '\n'.join('  [%s] %s' % (r['key'], r['text']) for r in real)
-            + "\n\nRead Meta/Queue.md and Inbox/queue.json, work out which notes and tasks "
-              "these changes affect, and update the vault to match. Flag anything that looks "
-              "contradictory rather than guessing. Then tell me what you changed.\n\n"
-              "Cross each item off as you finish it, using the key in brackets:\n"
+            + "\n\nRead Meta/Queue.md — it has these rows with their targets, the "
+              "uncommitted note diff, and the flags. For each row work out what it "
+              "affected and update that note; read the diff to see what another "
+              "session already changed. Flag anything contradictory rather than "
+              "guessing. Then tell me what you changed.\n\n"
+              "Cross a single row off with its key:\n"
               "  python3 -m zipper.serve --mark <key>\n"
-              "An open dashboard picks that up within a second, so the card shows what is "
-              "actually left rather than what arrived.")
+              "Or end the whole pass — ticks every row and commits the notes:\n"
+              "  python3 -m zipper bookkeep --commit \"<message>\"\n"
+              "An open dashboard picks either up within a second.")
 
 def _wait_port(host, port, timeout=6.0):
     """Block until ttyd is actually accepting.
@@ -815,8 +818,11 @@ def emit_diff(before, after):
     for name, ts in sorted(after['repos'].items()):
         if before['repos'].get(name, '') != ts and before['repos'].get(name) is not None:
             publish('diff', 'pushed      %s  %s' % (name, ts[:16])); n += 1
-    for fl in sorted(after['flags'] - before['flags']):
-        publish('diff', 'flag        %s' % fl); n += 1
+    # Flags deliberately do NOT become queue rows. A flag is a condition derived
+    # fresh from current state, not an event: ticking one off is meaningless
+    # because it re-fires on the next run, and worse, it reads as handled while
+    # the project it names goes on stalling. They surface on Signals, which
+    # renders whatever is true right now. See zipper/runqueue.py.
     return n
 
 def do_refresh():

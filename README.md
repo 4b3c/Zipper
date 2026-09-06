@@ -176,7 +176,7 @@ python3 -m zipper <command>
 |---|---|
 | `status` | Regenerate `Meta/Status.md` — the snapshot |
 | `agenda [--days N]` | Regenerate `Meta/Agenda.md`, opening with a `## Today` time sheet |
-| `queue` | Diff the vault against the last run → `Meta/Queue.md` + `Inbox/queue.json` |
+| `bookkeep [--commit MSG]` | Render the brief → `Meta/Queue.md` + `Inbox/queue.json`: open queue events with targets, uncommitted note edits from git, and the flags. `--commit` ticks every row and commits |
 | `views` | Recompute 21 saved queries → `Inbox/views.json` |
 | `metrics` | Print every metric series with its trend |
 | `score [--window N] [--force]` | Compute the execution metrics and append them. Weekly-rate-limited |
@@ -201,11 +201,17 @@ anybody's data.
 
 ---
 
-## The run queue and the flags
+## The queue and the flags
 
-`zipper queue` diffs the whole vault against the last run and writes `Meta/Queue.md`. The
-raw diff — notes changed, tasks done, tasks added, repos pushed, metric rows — is the boring
-half. The interesting half is the **flags**, which are derived observations:
+`zipper bookkeep` writes `Meta/Queue.md`, the brief for a bookkeeping pass. It has three
+parts, and keeping them apart is the whole design:
+
+1. **The queue** — `Inbox/feed.json`, typed events that happened outside the vault (`push`,
+   `canvas`, `calendar`), each with a `target` note where one resolves. Ticked off one by
+   one, never re-appearing.
+2. **Uncommitted note edits** — read straight from `git status`, excluding
+   `view_kind: generated`. Git is the baseline; there is no second one. Committing clears it.
+3. **The flags** — derived observations, re-computed every run, never tickable:
 
 - **repo pushed but never logged** — work happened that the vault didn't record
 - **active with no `last_touched`** — a project claiming to be alive with no evidence

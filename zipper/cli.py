@@ -44,7 +44,14 @@ def main():
     s = sub.add_parser('github'); s.add_argument('--since-days', type=int, default=30)
     s.add_argument('--full', action='store_true'); s.set_defaults(fn=gh.cmd_github)
 
-    s = sub.add_parser('queue');  s.set_defaults(fn=runqueue.cmd_queue)
+    s = sub.add_parser('bookkeep', help='the brief for a bookkeeping pass, and its commit')
+    s.add_argument('--commit', metavar='MSG', nargs='?', const='bookkeep', default=None,
+                   help='end the pass: tick every event and commit the notes')
+    s.add_argument('--force', action='store_true',
+                   help='commit even while another conversation is live')
+    s.set_defaults(fn=runqueue.cmd_bookkeep)
+    s = sub.add_parser('queue', help='deprecated spelling of bookkeep')
+    s.set_defaults(fn=runqueue.cmd_queue)
     s = sub.add_parser('views');  s.set_defaults(fn=views.cmd_views)
     s = sub.add_parser('discord', help='talk to the always-on Discord bot')
     s.add_argument('action', choices=['send', 'read', 'status'])

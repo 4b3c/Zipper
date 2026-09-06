@@ -150,16 +150,18 @@ The grid needs `end` on every event. `ics.parse_ics` carries the master event's 
 onto each expanded occurrence for exactly this reason — before that, every recurring meeting
 arrived without one and would have drawn as a 30-minute stub.
 
-**The run queue** at the bottom — the card is titled **This run** — is the diff for *this
-launch*: new and removed calendar events, newly submitted Canvas items, repo pushes, new
-flags. `no changes` when the sources were already current.
+**The queue** at the bottom — the card is titled **This run** — holds the *events* this
+launch found: new and removed calendar events, newly submitted Canvas items, repo pushes.
+`no changes` when the sources were already current.
 
-**It is not `Meta/Queue.md`.** Two separate things are called the queue: this one, which
-lives in `Inbox/feed.json` and is crossed off row by row, and the *vault* queue in
-`Meta/Queue.md`, which is the diff of the notes since the last `python3 -m zipper queue`.
-When Abram says "clear the queue" unqualified he means **this** one — the rows in front of
-him. Running `zipper queue` instead resets the vault baseline and leaves every row here
-still open.
+**There is only one queue.** It lives in `Inbox/feed.json` and is crossed off row by row.
+`Meta/Queue.md` is not a second one — it is the *rendering* of this queue plus the
+uncommitted note diff and the flags, written by `zipper bookkeep`. "Clear the queue" means
+working each row: find what it affected, update that note, tick it off.
+
+**Flags never enter the queue.** They are conditions derived fresh from current state, so
+ticking one is meaningless — it re-fires next run while reading as handled. They go to
+**Signals**. Until 2026-09-06 `emit_diff` published them as rows; that was the bug.
 
 It lives in `Inbox/feed.json`, so it survives a restart of the server — it used to be
 in-memory only, and a queue you were halfway through vanished with the app. Every row
@@ -205,8 +207,9 @@ and the page mounts it in an iframe. **fullscreen** fills the window (Esc exits)
 **pop out** opens it as its own tab. The session dies with the server.
 
 If the run produced real changes, Claude opens with the queue as its first instruction —
-read `Meta/Queue.md` and `Inbox/queue.json`, update whatever the changes affect, flag
-contradictions. If nothing changed, it is a blank session in the vault.
+read `Meta/Queue.md`, work each row to the note it affected, review the uncommitted diff,
+flag contradictions, then `zipper bookkeep --commit`. If nothing changed, it is a blank
+session in the vault.
 
 **`-W` gives out a live shell, so it is bound to `127.0.0.1` and must stay there.** Do not
 expose the ttyd port through nginx.
@@ -224,10 +227,9 @@ conversation is already alive, and it asks the server rather than guessing.
 No live session:
 
 * **start blank session** — Claude in the vault, no opening instruction
-* **start session to clear queue** — Claude opened on the **vault** queue: read
-  `Meta/Queue.md` and `Inbox/queue.json`, update what the changes affect, flag
-  contradictions. The button's wording is older than the two-queue split — it does *not*
-  touch the run queue above, whose rows stay open until something calls `--mark`
+* **start session to clear queue** — Claude opened on `Meta/Queue.md`: work each open row
+  to the note it affected, review the uncommitted diff, flag contradictions. Rows stay open
+  until something calls `--mark` or `zipper bookkeep --commit`
 
 A live session:
 
