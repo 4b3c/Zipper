@@ -145,9 +145,7 @@ def last_active(thread_id):
             stamps.append(datetime.datetime.fromisoformat(row['last_active']).timestamp())
         except ValueError:
             pass
-    p = transcript(thread_id)
-    if os.path.exists(p):
-        stamps.append(os.path.getmtime(p))
+    stamps.append(last_message_at(thread_id))
     return max(stamps) if stamps else 0.0
 
 
@@ -204,7 +202,8 @@ def start(thread_id, prompt=None):
          'export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; ' + inner],
         check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _wait_ready(thread_id)      # a paste before the TUI is listening is lost
-    touch(thread_id, active=True, resumed=resumed, closed=False)
+    # Reopening is not saying something: it must not reorder the list.
+    touch(thread_id, resumed=resumed, closed=False)
     if prompt:
         paste(thread_id, prompt)
     return {'ok': True, 'resumed': resumed, 'session_id': sid, 'tmux': name}
@@ -433,6 +432,58 @@ def title(thread_id, default=''):
     return found or default
 
 
+_MSGTIME = {}
+_SEEN = {}          # thread -> when the busy marker was last seen
+
+
+def last_message_at(thread_id):
+    """When this conversation last exchanged a message.
+
+    The file's mtime is not that. Resuming a conversation appends bookkeeping --
+    cost-state, bridge-session, a session header -- and rewrites the mtime
+    without anything having been said, which sent a conversation to the top of
+    the list for being reopened. Those entries carry no timestamp; user and
+    assistant messages do, so the newest of those is the honest answer.
+    """
+    p = transcript(thread_id)
+    try:
+        st = os.stat(p)
+    except OSError:
+        return 0.0
+    key = (st.st_mtime, st.st_size)
+    hit = _MSGTIME.get(str(thread_id))
+    if hit and hit[0] == key:
+        return hit[1]
+    newest = ''
+    try:
+        with open(p, 'rb') as fh:
+            if st.st_size > 262144:
+                fh.seek(-262144, os.SEEK_END)
+                fh.readline()
+            for raw in fh:
+                if b'"timestamp"' not in raw:
+                    continue
+                if b'"type":"user"' not in raw and b'"type":"assistant"' not in raw:
+                    continue
+                try:
+                    d = json.loads(raw.decode('utf-8', 'replace'))
+                except ValueError:
+                    continue
+                ts = d.get('timestamp') or ''
+                if ts > newest:
+                    newest = ts
+    except OSError:
+        return 0.0
+    out = 0.0
+    if newest:
+        try:
+            out = datetime.datetime.fromisoformat(newest.replace('Z', '+00:00')).timestamp()
+        except ValueError:
+            out = 0.0
+    _MSGTIME[str(thread_id)] = (key, out)
+    return out
+
+
 def detect_session(thread_id):
     """Work out which transcript a *bound* conversation is actually writing.
 
@@ -513,16 +564,15 @@ def state(thread_id):
     # session discussing this very check stayed yellow after it had finished.
     lines = [l for l in _pane(thread_id).splitlines() if l.strip()]
     if lines and 'esc to interrupt' in lines[-1]:
+        _SEEN[str(thread_id)] = time.time()
         return 'working'
-    # The marker vanishes for a moment between tool calls. Without this the dot
-    # blinks green in the gaps of a conversation that is plainly still working,
-    # which reads as finished. The transcript is being written throughout, so a
-    # write in the last few seconds means the turn is still going.
-    try:
-        if time.time() - os.path.getmtime(transcript(thread_id)) < 5:
-            return 'working'
-    except OSError:
-        pass
+    # The marker vanishes for a moment between tool calls, so it is sticky for a
+    # few seconds after it was last actually seen. It is deliberately *not*
+    # inferred from the transcript being written: resuming a conversation writes
+    # to it, which lit the dot yellow for a session that had done nothing but
+    # come back.
+    if time.time() - _SEEN.get(str(thread_id), 0) < 5:
+        return 'working'
     return 'waiting'
 
 

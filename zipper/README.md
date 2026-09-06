@@ -361,11 +361,14 @@ message, say -- because remounting something already running is free and resumin
 Titles are user-influenced text either way, so the page escapes them (`chatEsc`): a thread
 called `<img onerror=...>` is a thing a person can make.
 
-**Order follows the last message, measured from the transcript.** Reading a conversation does
-not move it; only a message does. The registry stamp alone is not enough — it sees what this
-process delivered, and nothing typed straight into a terminal, which is every message in the
-conversation the operator is actually sitting in. Sorting on it left that one pinned to the
-bottom of the list.
+**Order follows the last message, read from the transcript's timestamps.** Reading a
+conversation does not move it, and neither does reopening one; only a message does. Two
+near-misses on the way here: the registry stamp alone sees what this process delivered and
+nothing typed straight into a terminal, which pinned the conversation being sat in to the
+bottom; and the file's *mtime* counts resuming as activity, because reopening appends
+bookkeeping — `cost-state`, `bridge-session`, a session header — without a word being said.
+Those entries carry no timestamp and `user`/`assistant` messages do, so the newest of those is
+the honest answer.
 
 **A bound row has to work out which transcript it is writing.** It adopted a session that was
 already running, and nothing states its id: the pane's process carries no `--session-id`, and
@@ -392,9 +395,12 @@ because a light that lags is worse than no light.
 **Read the status line, not the pane.** Claude Code prints `esc to interrupt` for exactly as
 long as it is busy — but only in its last line. Scanning the whole pane made any conversation
 that merely *displayed* those words look permanently busy, and the session where this was
-being built stayed yellow after it had finished, for the obvious reason. The marker also
-blinks out for a moment between tool calls, so a transcript written in the last five seconds
-counts as working too.
+being built stayed yellow after it had finished, for the obvious reason.
+
+The marker blinks out between tool calls, so it is **sticky for five seconds after it was last
+seen**. It is deliberately not inferred from the transcript being written: that was the first
+attempt, and it lit the dot yellow for a conversation that had done nothing but come back from
+the dead, since resuming writes to the file.
 
 **Names come from Claude, not from Discord.** Claude Code writes an `ai-title` line into the
 transcript and rewrites it as the subject moves; that names the conversation rather than its
