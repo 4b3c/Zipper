@@ -490,6 +490,49 @@ def _prune_pastes():
             pass
 
 
+BUFFER_MAX = 200000
+
+
+def newest_buffer(seen=''):
+    """The most recent tmux paste buffer, if it is not the one already seen.
+
+    Buffers are named bufferNN and numbered upwards, so the highest is newest.
+    The name and size together are the identity -- a re-copy of the same text
+    makes a new buffer, and the operator expects that to reach the clipboard
+    again.
+    """
+    tmux = shutil.which('tmux')
+    if not tmux:
+        return {'ok': False, 'error': 'tmux not installed'}
+    try:
+        r = subprocess.run([tmux, 'list-buffers', '-F', '#{buffer_name}\t#{buffer_size}'],
+                           capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    best, best_n, size = None, -1, 0
+    for line in r.stdout.splitlines():
+        name, _, sz = line.partition('\t')
+        if not name.startswith('buffer'):
+            continue          # zipper-copy is ours; it is not a new selection
+        try:
+            n = int(name[6:])
+        except ValueError:
+            continue
+        if n > best_n:
+            best, best_n, size = name, n, int(sz or 0)
+    if not best:
+        return {'ok': True, 'id': ''}
+    ident = '%s:%d' % (best, size)
+    if ident == seen or size > BUFFER_MAX:
+        return {'ok': True, 'id': ident, 'unchanged': True}
+    try:
+        text = subprocess.run([tmux, 'show-buffer', '-b', best],
+                              capture_output=True, text=True, timeout=5).stdout
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+    return {'ok': True, 'id': ident, 'text': text}
+
+
 def conversation_rows():
     """The chat list: every conversation, with the state the page has to show."""
     conversations.sweep()
@@ -1487,6 +1530,7 @@ function hookTerm(f){
     win.__zipperHooked=true;
     clipReport({stage:'hooked',secure:!!win.isSecureContext,
                 api:!!(win.navigator.clipboard&&win.navigator.clipboard.writeText)});
+    watchBuffer(win);
 
     // copy: xterm keeps its own selection (the canvas renderer means the page
     // has none), so read it from the terminal and write it from inside the
@@ -1579,6 +1623,39 @@ function hookTerm(f){
     },true);
   })();
 }
+// Claude Code selects with the mouse itself -- xterm never sees a selection --
+// and copies what was highlighted into a tmux buffer on the box. So the text to
+// put on the clipboard comes from there, not from the terminal widget. Poll for
+// a new buffer and write it from inside the iframe, which is the focused
+// document; a write from the parent is refused for exactly that reason.
+function watchBuffer(win){
+  if(win.__bufWatch) return;
+  win.__bufWatch=1;
+  let seen='', pending=null, reported=false;
+  const flush=()=>{
+    if(!pending) return;
+    const text=pending;
+    let p=null;
+    try{ p=win.navigator.clipboard.writeText(text); }catch(e){ p=null; }
+    if(p&&p.then){
+      p.then(()=>{ pending=null; toast('copied '+text.length+' chars');
+                   if(!reported){reported=true;clipReport({stage:'buffer-copy',ok:true,n:text.length});} },
+             e=>{ if(legacyCopy(win,text)){ pending=null; toast('copied '+text.length+' chars'); }
+                  if(!reported){reported=true;clipReport({stage:'buffer-copy',ok:false,err:String(e)});} });
+    } else if(legacyCopy(win,text)){
+      pending=null; toast('copied '+text.length+' chars');
+    }
+  };
+  // Any interaction is a user gesture, which is what a refused write needs.
+  ['mouseup','keydown','mousedown'].forEach(ev=>win.document.addEventListener(ev,flush,true));
+  setInterval(()=>{
+    fetch('/api/tmuxbuffer?seen='+encodeURIComponent(seen)).then(r=>r.json()).then(d=>{
+      if(!d||!d.ok||d.unchanged||!d.text) return;
+      seen=d.id; pending=d.text; flush();
+    }).catch(()=>{});
+  },800);
+}
+
 // The half that does not need a user gesture: tmux's buffer, and saying so.
 function sendSel(win,sel,why){
   fetch('/api/copybuffer',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2163,6 +2240,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render())
         elif self.path == '/events':
             self._events()
+        elif self.path.split('?')[0] == '/api/tmuxbuffer':
+            # Claude Code does its own mouse selection -- that is why xterm sees
+            # none -- and copies what you highlight into a *tmux* buffer, saying
+            # "copied N chars to tmux buffer". That text lives on the box. This
+            # hands the newest one to the page so it can put it on the operator's
+            # actual clipboard, which is the thing he asked for.
+            q = urllib.parse.parse_qs(self.path.partition('?')[2])
+            seen = (q.get('seen') or [''])[0]
+            self._send(200, json.dumps(newest_buffer(seen)), 'application/json')
         elif self.path == '/api/conversations':
             self._send(200, json.dumps({'conversations': conversation_rows()}),
                        'application/json')
