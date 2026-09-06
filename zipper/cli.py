@@ -44,18 +44,20 @@ def main():
     s = sub.add_parser('github'); s.add_argument('--since-days', type=int, default=30)
     s.add_argument('--full', action='store_true'); s.set_defaults(fn=gh.cmd_github)
 
-    s = sub.add_parser('fetch', help='pull every input and publish what changed')
+    # A bookkeeping pass is fetch -> reasoning -> commit. Only the ends are
+    # commands; the middle is an agent reading the brief against the vault, so
+    # there is deliberately no `bookkeep` subcommand to imply otherwise.
+    s = sub.add_parser('fetch', help='start a pass: pull every input, write the brief')
     s.add_argument('--days', type=int, default=14); s.set_defaults(fn=runqueue.cmd_fetch)
-    s = sub.add_parser('bookkeep', help='the brief for a bookkeeping pass, and its commit')
-    s.add_argument('--commit', metavar='MSG', nargs='?', const='bookkeep', default=None,
-                   help='end the pass: tick every event and commit the notes')
+    s = sub.add_parser('brief', help='rewrite the brief without pulling anything')
+    s.add_argument('--days', type=int, default=14); s.set_defaults(fn=runqueue.cmd_brief)
+    s = sub.add_parser('commit', help='close a pass: tick every event, commit the notes')
+    s.add_argument('message')
     s.add_argument('--force', action='store_true',
                    help='commit even while another conversation is live')
-    s.add_argument('--no-fetch', action='store_true',
-                   help='re-render the brief without pulling the sources again')
+    s.set_defaults(fn=runqueue.cmd_commit)
+    s = sub.add_parser('queue', help='deprecated spelling of fetch')
     s.add_argument('--days', type=int, default=14)
-    s.set_defaults(fn=runqueue.cmd_bookkeep)
-    s = sub.add_parser('queue', help='deprecated spelling of bookkeep')
     s.set_defaults(fn=runqueue.cmd_queue)
     s = sub.add_parser('views');  s.set_defaults(fn=views.cmd_views)
     s = sub.add_parser('discord', help='talk to the always-on Discord bot')
@@ -86,10 +88,6 @@ def main():
     s.add_argument('--limit', type=int, default=12)
     s.add_argument('--readme-chars', type=int, default=6000)
     s.set_defaults(fn=gh.cmd_inspect)
-
-    s = sub.add_parser('catchup'); s.add_argument('--days', type=int, default=14)
-    s.add_argument('--apply', action='store_true', default=True)
-    s.set_defaults(fn=runqueue.cmd_catchup)
 
     a = ap.parse_args()
     if not getattr(a, 'fn', None):

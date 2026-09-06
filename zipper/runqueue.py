@@ -301,7 +301,13 @@ def fetch_all(a, emit=True):
 
 
 def cmd_fetch(a):
-    """Pull the inputs and publish what changed. The hourly timer's entry point.
+    """Pull the inputs, publish what changed, and write the brief.
+
+    **This is the first step of a bookkeeping pass, not the pass.** Bookkeeping
+    is fetch -> reasoning -> commit, and only the two ends are commands. The
+    middle needs an agent: deciding that a push to `pantry` means the Pantry
+    note's `next_action` is now wrong is a judgement about the vault's contents,
+    and nothing here can make it. So this stops at handing over a brief.
 
     Fetching happens exactly twice: on the hour, and at the start of a
     bookkeeping pass. It used to also happen when the dashboard launched, which
@@ -313,17 +319,12 @@ def cmd_fetch(a):
     is what holds it open.
     """
     fetch_all(a, emit=True)
-    return 0
+    print()
+    return cmd_brief(a)
 
 
-def cmd_bookkeep(a):
+def cmd_brief(a):
     os.makedirs(INBOX, exist_ok=True)
-    # Fetch first -- unless this is the closing --commit, which is the end of a
-    # pass that already fetched at its start, and would otherwise pull the whole
-    # world again to write a commit.
-    if getattr(a, 'commit', None) is None and not getattr(a, 'no_fetch', False):
-        fetch_all(a)
-        print('\n== bookkeep ==')
     # Reconcile event notes against the calendar *before* reading the working
     # tree. A rescheduled meeting rewrites its note, and doing that afterwards
     # would leave the rewrite sitting uncommitted with nothing explaining it.
@@ -357,10 +358,8 @@ def cmd_bookkeep(a):
     if os.path.exists(STATE):
         os.remove(STATE)
 
-    if getattr(a, 'commit', None) is not None:
-        return _finish(a, rows, changes)
     _write_brief(q)
-    print('bookkeep: %d open event(s), %d uncommitted note(s), %d flag(s)'
+    print('brief: %d open event(s), %d uncommitted note(s), %d flag(s)'
           % (len(rows), len(changes), len(fl)))
     print('  -> Meta/Queue.md  +  Inbox/queue.json')
     return 0
@@ -415,13 +414,20 @@ def _write_brief(q):
           'not before.*', '']
     L.extend(['- %s' % f for f in q['flags']] or ['- none firing'])
     L += ['', '---', '',
-          'Hand this to Claude with: *"bookkeep"* — it works the events, reviews '
-          'the diff, updates what they affect, and commits.', '',
+          '**This is a brief, not a report.** `zipper fetch` wrote it and stopped; '
+          'the middle step of a bookkeeping pass is reasoning, and it needs an agent. '
+          'Work each row to the note it affected, read the diff, then close the pass '
+          'with `python3 -m zipper commit "<message>"`.', '',
           'Related: [[Status]] · [[Now]] · [[Review]] · [[Home]]', '']
     open(os.path.join(METADIR, 'Queue.md'), 'w', encoding='utf-8').write('\n'.join(L))
 
-def _finish(a, rows, changes):
-    """End a bookkeeping pass: tick every event and commit the notes.
+def cmd_commit(a):
+    """Close a bookkeeping pass: tick every event and commit the notes.
+
+    The last of the pass's three steps -- fetch, reason, commit -- and the only
+    other one that is a command. What happens in between is an agent reading
+    the brief against the vault, which is why there is no `bookkeep` command:
+    naming one would suggest the machine does the part it cannot do.
 
     **A pass always ends in a commit.** That is not tidiness -- it is what makes
     the next pass's diff mean anything. The note diff is defined as "changed
@@ -434,6 +440,7 @@ def _finish(a, rows, changes):
     same claim, that everything in this pass has been looked at and its
     consequences written down.
     """
+    changes = note_changes()
     from . import serve, conversations
     try:
         # Anyone else with a live terminal may be mid-edit. Nothing locks the
@@ -445,7 +452,7 @@ def _finish(a, rows, changes):
     except Exception:
         live = []
     if live and not getattr(a, 'force', False):
-        print('bookkeep: %d other conversation(s) live — committing now would '
+        print('commit: %d other conversation(s) live — committing now would '
               'sweep up their half-finished edits.' % len(live))
         print('  check with `python3 -m zipper conversations`, then re-run with --force')
         return 1
@@ -457,10 +464,10 @@ def _finish(a, rows, changes):
     subprocess.run(['git', '-C', VAULT, 'add', '--'] +
                    [os.path.join('Meta', f) for f in
                     ('Status.md', 'Agenda.md', 'Queue.md', 'Repos.md')], check=False)
-    r = subprocess.run(['git', '-C', VAULT, 'commit', '-m', a.commit],
+    r = subprocess.run(['git', '-C', VAULT, 'commit', '-m', a.message],
                        capture_output=True, text=True)
     ok = r.returncode == 0
-    print('bookkeep: %d event(s) ticked, %s'
+    print('commit: %d event(s) ticked, %s'
           % (marked, 'committed %d note(s)' % len(paths) if ok
              else 'nothing to commit'))
     if not ok and r.stdout.strip():
@@ -482,22 +489,7 @@ def _finish(a, rows, changes):
     return 0
 
 def cmd_queue(a):
-    """Deprecated spelling. It used to reset a baseline that no longer exists."""
-    print('note: `queue` is now `bookkeep` — there is only one queue, and this '
-          'no longer resets anything.\n')
-    a.commit = getattr(a, 'commit', None)
-    return cmd_bookkeep(a)
-
-def cmd_catchup(a):
-    """`catchup` and `bookkeep` are the same pass, and always were.
-
-    Fetching used to be what separated them: catchup pulled the sources and
-    then rendered the brief; bookkeep only rendered. Now that a pass always
-    starts by fetching, there is nothing left to tell apart -- so this is an
-    alias, not a second command. Two names for one action is how the queue got
-    confusing in the first place.
-    """
-    a.commit = getattr(a, 'commit', None)
-    rc = cmd_bookkeep(a)
-    print('\nDone. Message Claude: "bookkeep" — it reads Meta/Queue.md.')
-    return rc
+    """Deprecated spelling. A pass is `fetch` -> reasoning -> `commit` now."""
+    print('note: `queue` is now `fetch` — it pulls the inputs and writes the '
+          'brief. Close the pass with `zipper commit "msg"`.\n')
+    return cmd_fetch(a)

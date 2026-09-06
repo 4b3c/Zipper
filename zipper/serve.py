@@ -1236,6 +1236,8 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .qt{color:var(--dim)}
 .qrow.crossed .qx,.qrow.crossed .qt{text-decoration:line-through;color:var(--dim)}
 .qrow.crossed .tick{border-color:var(--accent)}
+.qfresh{font-weight:400;margin-left:8px}
+#qrefetch{float:right}
 .qsub{font:600 11px/1.6 inherit;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);
   margin:14px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
 #qnotes:empty{display:none}
@@ -1310,6 +1312,14 @@ function fmt(t){
   return Math.round(s/86400)+'d ago';
 }
 function drawFresh(){
+  // With no fetch at launch, how old the data is stopped being obvious -- the
+  // page used to be current by definition. The footer chips still break it down
+  // per source; this is the one number worth reading without looking for it.
+  const hd=document.getElementById('qfresh');
+  if(hd){
+    const ks=['calendars','github','canvas'].map(k=>window.__epochs[k]).filter(x=>x!=null);
+    hd.textContent = ks.length ? 'fetched '+fmt(Math.min.apply(null,ks)) : 'never fetched';
+  }
   const el=document.getElementById('fresh'); if(!el) return;
   el.innerHTML=['vault','calendars','github','canvas'].map(k=>{
     const x = k==='canvas' ? ' <a href="'+window.__canvashost+'" target="_blank" rel="noopener">open Canvas</a>' : '';
@@ -1756,6 +1766,15 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(rb) rb.onclick=async()=>{
     document.getElementById('status').textContent='refreshing…';
     await fetch('/api/refresh',{method:'POST'});
+  };
+  // Same action, beside the thing it affects. The queue is the card whose
+  // contents go stale between hourly fetches, so the button belongs here too.
+  const qb=document.getElementById('qrefetch');
+  if(qb) qb.onclick=async()=>{
+    qb.disabled=true; qb.textContent='fetching…';
+    document.getElementById('status').textContent='refreshing…';
+    await fetch('/api/refresh',{method:'POST'});
+    setTimeout(()=>{qb.disabled=false; qb.textContent='refetch';},1500);
   };
   const box=document.getElementById('termstart');
   if(box) box.addEventListener('click',async ev=>{
@@ -2241,7 +2260,9 @@ def render():
   <div><h2>Execution</h2>%s</div>
 </div></div>
 
-<div class="card"><h2>Queue &middot; <span id="qcount">%d</span></h2>
+<div class="card"><h2>Queue &middot; <span id="qcount">%d</span>
+<span class="sub qfresh" id="qfresh"></span>
+<button id="qrefetch" class="btn">refetch</button></h2>
 <div id="queue"%s>%s</div>
 <div id="qnotes">%s</div></div>
 

@@ -146,7 +146,9 @@ python3 -m zipper <command>
 
 | Command | What it does |
 |---|---|
-| `catchup` | github → calendars → canvas → sync → agenda → status → views → queue. Idempotent; safe any time. Canvas runs before `agenda` because that is what strikes submitted items through, and a failed Canvas fetch is non-fatal |
+| `fetch` | Starts a pass: github → calendars → canvas → sync → agenda → status → views → queue rows → brief. Idempotent; safe any time. Canvas runs before `agenda` because that is what strikes submitted items through, and a failed Canvas fetch is non-fatal |
+| `brief` | Rewrite `Meta/Queue.md` without pulling anything |
+| `commit "<msg>" [--force]` | Closes a pass: ticks every queue row, commits the notes, and fails if the tree is not clean afterwards |
 
 ### Fetching
 
@@ -154,7 +156,7 @@ python3 -m zipper <command>
 |---|---|
 | `github [--full] [--since-days N]` | Repos + commits → `last_push`, `commits_recent`, `commits_mine`, `last_touched`, and `Meta/Repos.md`. Skips repos whose `pushed_at` hasn't moved unless `--full` |
 | `inspect [repos...] [--limit N]` | READMEs + 40 commits → `Inbox/repo-details.json`, so a session can write a note about a repo it has never seen |
-| `ingest-ics <url\|file> --label X [--match REGEX]` | An ICS feed → `Inbox/calendar-X.json`. A **URL** is remembered and refetched by `catchup`; a downloaded file goes stale tomorrow |
+| `ingest-ics <url\|file> --label X [--match REGEX]` | An ICS feed → `Inbox/calendar-X.json`. A **URL** is remembered and refetched by every `fetch`; a downloaded file goes stale tomorrow |
 | `calendars` | Refetch every remembered calendar URL |
 | `canvas [--file PATH] [--days N]` | Canvas planner items → `Inbox/canvas.json`. The only source that knows **submitted**, not merely **due**. Also run hourly as part of `zipper fetch` by `zipper-fetch.timer`, which keeps a cookie-auth session from idling out |
 | `ingest-budget <csv>` | A bank CSV reduced to monthly totals. Individual transactions never enter the vault |
@@ -203,7 +205,9 @@ anybody's data.
 
 ## The queue and the flags
 
-`zipper bookkeep` writes `Meta/Queue.md`, the brief for a bookkeeping pass. It has three
+`zipper fetch` writes `Meta/Queue.md`, the brief for a bookkeeping pass -- which is a
+pass, not a command: **fetch -> reasoning -> commit**, and only the two ends are things this
+code can do. The brief has three
 parts, and keeping them apart is the whole design:
 
 1. **The queue** — `Inbox/feed.json`, typed events that happened outside the vault (`push`,
@@ -381,7 +385,7 @@ exists to get things *out* of. Plain `-` bullets only.
 cp .env.example .env                    # fill in ZIPPER_VAULT and whatever you use
 pip install -r requirements.txt         # bot/ only — the engine needs nothing
 
-python3 -m zipper catchup               # fetch and regenerate
+python3 -m zipper fetch                 # fetch, regenerate, write the brief
 python3 -m zipper.serve --daemon        # dashboard; --daemon = stay up when tabs close
 python3 -m bot.discord_bot              # the relay
 ```

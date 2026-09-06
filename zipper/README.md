@@ -164,7 +164,7 @@ could watch for, and the card has to show that without waiting for a refresh.
 
 **There is only one queue.** It lives in `Inbox/feed.json` and is crossed off row by row.
 `Meta/Queue.md` is not a second one — it is the *rendering* of this queue plus the
-uncommitted note diff and the flags, written by `zipper bookkeep`. "Clear the queue" means
+uncommitted note diff and the flags, written by `zipper fetch`. "Clear the queue" means
 working each row: find what it affected, update that note, tick it off.
 
 **Flags never enter the queue.** They are conditions derived fresh from current state, so
@@ -216,7 +216,7 @@ and the page mounts it in an iframe. **fullscreen** fills the window (Esc exits)
 
 If the run produced real changes, Claude opens with the queue as its first instruction —
 read `Meta/Queue.md`, work each row to the note it affected, review the uncommitted diff,
-flag contradictions, then `zipper bookkeep --commit`. A pass fetches every input before it
+flag contradictions, then `zipper commit "<msg>"`. A pass fetches every input before it
 renders, so the brief is never read over stale data. If nothing changed, it is a blank
 session in the vault.
 
@@ -238,7 +238,7 @@ No live session:
 * **start blank session** — Claude in the vault, no opening instruction
 * **start session to clear queue** — Claude opened on `Meta/Queue.md`: work each open row
   to the note it affected, review the uncommitted diff, flag contradictions. Rows stay open
-  until something calls `--mark` or `zipper bookkeep --commit`
+  until something calls `--mark` or `zipper commit "<msg>"`
 
 A live session:
 
