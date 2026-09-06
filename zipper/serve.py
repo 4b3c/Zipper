@@ -1366,17 +1366,12 @@ function checkShown(rows){
   const wrap=document.getElementById('termwrap');
   if(!wrap||!row) return;
   if(row.state==='closed'){
-    if(!wrap.dataset.closed){
-      wrap.dataset.closed='1';
-      wrap.innerHTML='<div class="termdead"><p>This conversation is closed.</p>'+
-        '<button class="btn" id="termreload">load conversation</button>'+
-        '<p class="sub">Its transcript is on disk \u2014 loading it resumes where it stopped.</p></div>';
-      const b=document.getElementById('termreload');
-      if(b) b.onclick=()=>{wrap.dataset.closed='';openChat(window.__chat);};
-    }
-  } else if(wrap.dataset.closed){
+    if(!wrap.dataset.closed) showClosed(row);
+  } else if(wrap.dataset.closed && row.serving){
+    // It came back by some other route (a Discord message, say). Only then is
+    // remounting free -- never resume one just because the page is looking.
     wrap.dataset.closed='';
-    openChat(window.__chat);
+    mountTerm(row.port);
   }
 }
 function openChat(tid){
@@ -1391,8 +1386,27 @@ function openChat(tid){
 }
 document.addEventListener('click',ev=>{
   const b=ev.target.closest?ev.target.closest('.chat'):null;
-  if(b&&b.dataset.tid) openChat(b.dataset.tid);
+  if(!b||!b.dataset.tid) return;
+  const tid=b.dataset.tid;
+  const row=(window.__chats||[]).find(r=>String(r.thread_id)===String(tid));
+  // Selecting a closed conversation costs nothing; *resuming* one re-reads the
+  // whole transcript at full price, because its prompt cache has expired. That
+  // is a decision, not a side effect of clicking a name to see what it was.
+  if(row&&row.state==='closed'){ window.__chat=tid; drawChats(window.__chats); showClosed(row); return; }
+  openChat(tid);
 });
+function showClosed(row){
+  const wrap=document.getElementById('termwrap');
+  if(!wrap) return;
+  wrap.dataset.closed='1';
+  wrap.innerHTML='<div class="termdead"><p><b>'+chatEsc(row.title)+'</b> is closed.</p>'+
+    '<button class="btn" id="termreload">reload conversation</button>'+
+    '<p class="sub">Resuming re-reads the whole conversation \u2014 its prompt cache has '+
+    'expired, so this one costs full price.</p></div>';
+  const b=document.getElementById('termreload');
+  if(b) b.onclick=()=>{b.disabled=true;b.textContent='resuming\u2026';
+                       wrap.dataset.closed='';openChat(row.thread_id);};
+}
 function mountTerm(port){
   const u=termURL(port);
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';

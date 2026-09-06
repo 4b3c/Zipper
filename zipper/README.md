@@ -347,9 +347,16 @@ answers is the only durable truth.
 already has a ttyd on `--term-port`. Opening it reuses that one. Two ttyds on one tmux
 session both work, but they share a cursor and fight over the window size.
 
-Clicking a **closed** conversation resumes it rather than replacing it -- the transcript is
-the conversation, and picking one out of a list must never start a stranger with the same
-name.
+Clicking a **closed** conversation selects it and offers a **reload conversation** button; it
+does not resume it. Selecting costs nothing, but resuming re-reads the whole transcript at
+full price -- the prompt cache is exactly what expired when the conversation was closed -- and
+that should be a decision rather than a side effect of clicking a name to see what it was.
+The panel says so.
+
+When it does resume, it resumes: the transcript is the conversation, and picking one out of a
+list must never start a stranger with the same name. The card also swaps back to a live
+terminal on its own only when the conversation came back by some other route -- a Discord
+message, say -- because remounting something already running is free and resuming is not.
 
 Titles are user-influenced text either way, so the page escapes them (`chatEsc`): a thread
 called `<img onerror=...>` is a thing a person can make.
