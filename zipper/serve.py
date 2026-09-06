@@ -765,7 +765,7 @@ def ranked(limit=10):
     for r in canvas_outstanding():
         items.append({'source': 'canvas', 'title': r['title'], 'due': r['due'][:10],
                       'tag': r['course'], 'url': r['url'], 'points': r.get('points'),
-                      'next': False})
+                      'next': False, 'elsewhere': r.get('elsewhere', '')})
     for t in open_tasks():
         items.append({'source': 'task', 'title': t['text'], 'due': t['due'],
                       'tag': t['project'], 'url': '', 'points': 0, 'next': t['next']})
@@ -935,6 +935,7 @@ li.crossed .rowtitle,li.crossed .rowtitle a{text-decoration:line-through;color:v
 .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}
 .od{color:var(--warn);font-weight:600}
 .pri{font-variant-numeric:tabular-nums;color:var(--accent)}
+.elsewhere{opacity:.75;font-style:italic}
 .src{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border-radius:3px;padding:0 4px;border:1px solid var(--line);color:var(--dim)}
 .src.canvas{border-color:var(--accent);color:var(--accent)}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
@@ -1424,6 +1425,12 @@ def _item_li(it, show_score=True):
         meta.append('<span class="%s">%s</span>' % ('od' if it['overdue'] else '', it['due'][5:]))
     if it['tag']:
         meta.append(esc(it['tag']))
+    if it.get('elsewhere'):
+        # Canvas keeps only a grade column for these, so its "not submitted" is
+        # silence, not a fact. Say which platform actually holds the work rather
+        # than nagging about something already handed in.
+        meta.append('<span class="elsewhere">on %s &mdash; Canvas can\'t tell</span>'
+                    % esc(it['elsewhere']))
     return ('<li class="row %s" title="priority %d">'
             '<button class="tick" data-key="%s" aria-label="cross off">%s</button>'
             '<span class="rowbody"><span class="rowtitle">%s</span>'

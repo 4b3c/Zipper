@@ -190,6 +190,34 @@ def _canvas_parse(items):
     out.sort(key=lambda x: (x['due'] or '9999', x['course'], x['title']))
     return out, skipped
 
+# Platforms that host the actual work while Canvas keeps only a grade column.
+# Canvas cannot see a submission made on one of these, so `submitted` stays
+# false on a finished assignment until the instructor enters a score -- and a
+# false there is not evidence of anything. Verified on CSE 434 HW 01,
+# 2026-09-06: description "HW1 is available on PrairieLearn", submissions/self
+# unsubmitted with a null submitted_at, hours after the work was handed in.
+EXTERNAL_PLATFORMS = ('PrairieLearn', 'Gradescope', 'zyBooks', 'zyLabs', 'Codio',
+                      'WebAssign', 'MyLab', 'Mastering', 'Pearson', 'HackerRank',
+                      'Cengage', 'MindTap', 'Top Hat', 'Perusall')
+
+
+def _elsewhere(text):
+    """The platform a description points at, if the assignment lives off Canvas.
+
+    Deliberately dumb: a name in the body is the signal, because that one line
+    is all these shells ever contain. It only ever adds a caveat to a `submitted:
+    false` -- it never marks anything done -- so a false positive costs a note,
+    not a missed deadline.
+    """
+    if not text:
+        return ''
+    low = text.lower()
+    for name in EXTERNAL_PLATFORMS:
+        if name.lower() in low:
+            return name
+    return ''
+
+
 def cmd_canvas(a):
     kind = None
     if a.file:
@@ -237,16 +265,26 @@ def cmd_canvas(a):
         if txt:
             r['description'] = txt
             got += 1
+        # Only meaningful while it is not submitted; once Canvas has a grade it
+        # knows more than the description does.
+        where = _elsewhere(r.get('description', ''))
+        if where and not r['submitted']:
+            r['elsewhere'] = where
 
     with open(CANVAS_JSON, 'w', encoding='utf-8') as fh:
         json.dump({'fetched': datetime.datetime.now().isoformat(timespec='seconds'),
                    'source': src, 'items': rows}, fh, indent=1)
     done = sum(1 for r in rows if r['submitted'])
+    ext = [r for r in rows if r.get('elsewhere')]
     late = [r for r in rows if r['missing'] or (r['late'] and not r['submitted'])]
     print('canvas: %d item(s), %d submitted, %d outstanding  (%d skipped) -> %s'
           % (len(rows), done, len(rows) - done, skipped, rel(CANVAS_JSON)))
     if descs:
         print('  descriptions: %d of %d item(s)' % (got, len(rows)))
+    if ext:
+        print('  graded elsewhere -- Canvas cannot see these submitted:')
+        for r in ext:
+            print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
     if late:
         print('  MISSING: ' + '; '.join('%s %s' % (r['course'], r['title'][:40]) for r in late))
     by_day = {}
