@@ -474,13 +474,26 @@ and pasting an image into one reaches the conversation. Both depend on the termi
 same-origin (above): the iframe's window is reachable from the dashboard page, and ttyd leaves
 the xterm instance on it as `window.term`.
 
-**Selecting with the mouse needs an xterm option, on macOS especially.** Claude Code turns on
-mouse reporting, so a drag is sent to the application and xterm makes no selection of its own —
-`getSelection()` returns nothing and there is simply nothing to copy. xterm's bypass is
-**Shift** everywhere except macOS, where it is **Option**, and only when
-`macOptionClickForcesSelection` is set — which is off by default. Both ttyd launches pass it,
-along with `rightClickSelectsWord`. Without it there is no way to select text with a mouse at
-all, and every clipboard fix upstream of that is invisible.
+**The selection belongs to Claude Code, not to xterm.** It turns on mouse reporting and does
+its own highlighting, then copies what you selected into a **tmux buffer**, saying `copied N
+chars to tmux buffer`. So `term.getSelection()` is empty by design, and reading it was the
+wrong layer — the text was already on the box the whole time, in `tmux list-buffers`.
+
+The clipboard text therefore comes from tmux: `/api/tmuxbuffer` returns the newest buffer, the
+page polls it, and the write happens **inside the iframe**, which is the focused document the
+clipboard API demands — a write from the parent page is refused for that reason alone. If a
+write is refused for want of a gesture, the text is held and written on the next click or
+keypress.
+
+The xterm path is kept for panes where Claude Code is *not* what is running. There a drag does
+make an xterm selection — except on macOS, where mouse reporting means the bypass is Option and
+only with `macOptionClickForcesSelection`, which is off by default. Both ttyd launches set it,
+with `rightClickSelectsWord`. Either route ends at the same clipboard.
+
+`/api/clipdebug` is what settled all of this: the browser is the one thing this box cannot test,
+so the page reports failures into `journalctl -u zipper-web`. It stays, quiet unless something
+breaks. Three fixes were shipped before it existed, each correct and each invisible, because the
+layer underneath them was never producing what they were built on.
 
 **Copy only works from a secure context.** Browsers expose `navigator.clipboard` on https and
 localhost and nowhere else, so on `http://<tailnet-ip>:8800` the API is simply absent. That is

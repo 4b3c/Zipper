@@ -1519,17 +1519,14 @@ function findTerm(win){
 function hookTerm(f){
   let win;
   try{ win=f.contentWindow; }catch(e){ clipReport({stage:'cross-origin'}); return; }
-  clipReport({stage:'hook-start',proto:location.protocol,secure:window.isSecureContext});
   let tries=0;
   (function wait(){
-    if(!win||!win.document){ clipReport({stage:'no-document'}); return; }
+    if(!win||!win.document) return;
     const term=findTerm(win);
     if(!term){ if(tries++<40){ setTimeout(wait,250); return; }
-               clipReport({stage:'no-term-after-10s',keys:Object.keys(win).length}); return; }
+               clipReport({stage:'no-term-after-10s'}); return; }
     if(win.__zipperHooked) return;
     win.__zipperHooked=true;
-    clipReport({stage:'hooked',secure:!!win.isSecureContext,
-                api:!!(win.navigator.clipboard&&win.navigator.clipboard.writeText)});
     watchBuffer(win);
 
     // copy: xterm keeps its own selection (the canvas renderer means the page
@@ -1568,24 +1565,8 @@ function hookTerm(f){
                               proto:win.location.protocol});
       sendSel(win,sel,why);
     };
-    // Report what a mouseup actually sees. The hook attaches and then nothing
-    // happens, which means the selection is coming back empty -- so the next
-    // question is whether the event fires at all and what the terminal thinks
-    // it has. Throttled, because mouseup is every click.
-    win.document.addEventListener('mouseup',()=>{
-      let sel='',err='';
-      try{ sel=term.getSelection()||''; }catch(e){ err=String(e); }
-      let has=null; try{ has=term.hasSelection?term.hasSelection():null; }catch(e){}
-      const now=Date.now();
-      if(!sel&&(now-(win.__lastReport||0))>2500){
-        win.__lastReport=now;
-        let docsel=''; try{ docsel=String(win.getSelection()||''); }catch(e){}
-        clipReport({stage:'mouseup-empty',len:sel.length,has:has,err:err,
-                    docsel:docsel.length,rows:term.rows||null,
-                    ctor:(term.constructor&&term.constructor.name)||null});
-      }
-      copySel('mouseup');
-    },true);
+    win.document.addEventListener('mouseup',()=>copySel('mouseup'),true);
+
     // Belt and braces: xterm's own event. It fires without a DOM event when
     // selection is extended by keyboard or by a drag that ends outside the
     // frame, and it is the only signal if something swallows mouseup.
