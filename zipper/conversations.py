@@ -60,10 +60,18 @@ def target(thread_id):
     tmux resolves a bare `-t` by prefix, so a bound row naming its session
     `zipper` matches `zipper-<any thread>`. Every `-t` here therefore has to be
     anchored, not just the liveness check: unanchored, `close()` killed a live
-    conversation and `deliver()` pasted into one. Only for `-t` -- the `-t`
-    flags passed to ttyd are its own option, not tmux's.
+    conversation and `deliver()` pasted into one.
+
+    The trailing colon matters: `=name` is a *session* target, and the commands
+    that actually carry a message -- `capture-pane`, `send-keys`,
+    `paste-buffer` -- want a **pane** target and refuse it ("can't find pane").
+    `=name:` is a pane target with the session part still exact, and every
+    session-target command takes it as well, so one form covers all of them.
+
+    Only for `-t` -- the `-t` flags passed to ttyd are its own option, not
+    tmux's.
     """
-    return '=' + tmux_name(thread_id)
+    return '=%s:' % tmux_name(thread_id)
 
 
 def bind(thread_id, tmux, session_id=None, title=''):

@@ -155,10 +155,19 @@ def _t(name):
     returns early and never cleans up), a Discord message pastes into the wrong
     pane, and `new_session()`'s kill-session takes down a live conversation.
 
+    The trailing colon is not cosmetic. `=name` anchors a *session* target, but
+    `capture-pane`, `send-keys` and `paste-buffer` take a **pane** target and
+    reject it outright -- "can't find pane: =zipper". Anchoring without it broke
+    the whole delivery path: a Discord message could not be pasted, the
+    readiness probe never saw a prompt, and the bot gave up at its 10s timeout
+    and answered "Zipper disconnected". `=name:` is a pane target whose session
+    part is still exact, and the session-target commands accept it too, so one
+    form serves every call site.
+
     Only for `-t`. `new-session -s` is a name, not a target, and the `-t` flags
     handed to ttyd are its own option, nothing to do with tmux.
     """
-    return '=' + name
+    return '=%s:' % name
 
 
 def session_exists():
