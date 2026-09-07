@@ -462,8 +462,8 @@ Each of these cost real time once. They are here so they cost it only once.
   your numbers.
 - **`Inbox/` is gitignored, so a bad `ingest-ics` overwrites a calendar with no undo.**
   Verify a refetch against a known event before trusting it.
-- **`serve.py` is Python: a page reload will not pick up a code change.** Restart the
-  service.
+- **The dashboard is a Python process: a page reload will not pick up a code change.**
+  Restart the service (`systemctl restart zipper-web`); the conversations survive it.
 - **Verify dashboard changes in a browser, not in the HTML string.** A clipped block and a
   missing now-line were both invisible in the served markup and obvious in a screenshot.
 - **Don't size text in a block by counting lines from font metrics.** That arithmetic cut
@@ -490,11 +490,24 @@ zipper/          the engine and the dashboard
   gh.py canvas.py metrics.py     the fetchers and the numbers
   runqueue.py views.py           the between-runs diff, and the saved queries
   chat.py        the Discord CLI
-  serve.py       the dashboard
+  conversations.py convcore.py convstate.py ttyd.py
+                 one Claude per Discord thread: registry, tmux, ttyd
+  serve.py       entry point for the dashboard — re-exports web/
+  web/           the dashboard server, one module per concern. They import in
+                 one direction, so read only the one you need:
+                   base    imports, PATH, freshness
+                   data    panel data
+                   feed    the queue and its SSE stream
+                   conv    conversations, terminal, paste/copy
+                   css js  the static literals
+                   render  markup
+                   http    routing, main()
   README.md      operational reference — read before changing any of it
 bot/             the Discord relay: gateway client, HTTP surface
 utils/           the two modules the bot depends on
+hooks/           forward_reply.py — the Stop hook that posts replies to Discord
 deploy/          systemd units and an nginx vhost
+HISTORY.md       finished changes, and why. Not how anything works today
 ```
 
 `CLAUDE.md` governs how an agent should work in this repo. It deliberately contains nothing

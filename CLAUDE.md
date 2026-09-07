@@ -41,6 +41,7 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `zipper/conversations.py` | front door over `convcore.py` (identity, registry, paste), `ttyd.py` (a ttyd per conversation) and `convstate.py` (liveness, listing, reaper) |
 | `hooks/forward_reply.py` | the `Stop` hook that posts a reply back to its Discord thread |
 | `zipper/README.md` | operational reference. **Read before touching any of it** |
+| `HISTORY.md` | finished changes and the reasoning behind them. Never how anything works today |
 | `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
 
@@ -84,8 +85,13 @@ gitignored, and it may hold secret feed URLs. Nothing there is authoritative.
 ## 5. Working on the code
 
 - `zipper/README.md` is the reference. Read it first; it records the traps.
-- **`serve.py` is a Python process. A page reload does not pick up a code change** —
-  restart the server.
+- **The dashboard is a Python process. A page reload does not pick up a code change** —
+  `systemctl restart zipper-web`. The conversations survive it (`KillMode=process`);
+  confirm with `tmux ls` that the creation times did not change.
+- **Comments state why the code is the way it is, in the present tense.** When a change
+  removes something, the reasoning goes in `HISTORY.md` — not into a comment next to code
+  that no longer has any trace of it. A comment whose subject is an absent function is a
+  comment nobody can check.
 - **Verify UI changes in a browser, not in the HTML string.** Served bytes are not rendered
   pixels. Several bugs here were invisible in the markup and obvious in a screenshot.
 - Timestamps from APIs are UTC; the vault dates everything local. Convert, never slice.

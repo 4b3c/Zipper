@@ -101,11 +101,10 @@ async def on_message(message: discord.Message):
     try:
         thread = await message.create_thread(name=title, auto_archive_duration=1440)
     except Exception as e:
-        # No thread, no conversation. This used to fall back to the channel id,
-        # which kept Zipper answerable by starting a conversation with nowhere
-        # to reply to: every conversation is keyed on a thread, and the reply
-        # forwarding posts to one. Say so instead of opening a session whose
-        # answers cannot get back out.
+        # No thread, no conversation -- say so rather than falling back to the
+        # channel id. Every conversation is keyed on a thread and the reply
+        # forwarding posts to one, so a session started without a thread is one
+        # whose answers cannot get back out.
         print(f"[discord] thread create failed: {e}")
         await message.channel.send(f"⚠️ Couldn't open a thread for that: {e}")
         return

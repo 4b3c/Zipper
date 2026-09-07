@@ -206,9 +206,9 @@ def _startbtns(live, ready):
     A page load is never the `mounted` state: the iframe is only ever attached by
     a click, so the choices here are the live pair or the cold pair.
 
-    The four modes are Path B operations: blank/queue open a new conversation,
-    resume/catchup return to the current one, and within each pair the only
-    difference is whether the run queue is handed over. See `start_session`.
+    Four modes: blank/queue open a new conversation, resume/catchup return to
+    the current one, and within each pair the only difference is whether the run
+    queue is handed over. See `start_session`.
     """
     qd = '' if ready else ' disabled title="nothing in this run&#39;s queue to consume"'
     if live:

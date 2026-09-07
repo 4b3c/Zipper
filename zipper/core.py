@@ -26,9 +26,8 @@ import os, sys, re, csv, json, argparse, datetime, urllib.request, glob, uuid
 import subprocess, hashlib
 
 HERE    = os.path.dirname(os.path.abspath(__file__))
-# The code no longer has to live inside the data. ZIPPER_VAULT points at the
-# notes; without it we fall back to the parent dir, which is the layout you get
-# when this is dropped in as `<vault>/Scripts/`.
+# The code does not live inside the data: ZIPPER_VAULT points at the notes. The
+# parent-dir fallback is for running out of a checkout sitting beside the vault.
 VAULT   = os.environ.get('ZIPPER_VAULT') or os.path.dirname(HERE)
 LOGDIR  = os.path.join(VAULT, 'Log')
 METDIR  = os.path.join(VAULT, 'Metrics')
@@ -39,7 +38,7 @@ METADIR = os.path.join(VAULT, 'Meta')
 METCSV  = os.path.join(METDIR, 'metrics.csv')
 TODAY   = datetime.date.today()
 
-SKIP_DIRS = {'.obsidian', '.git', 'Scripts', 'Inbox', 'Log'}
+SKIP_DIRS = {'.obsidian', '.git', 'Inbox', 'Log'}
 SKIP_FILES = {'CLAUDE.md', 'README.md'}
 
 ENUMS = {

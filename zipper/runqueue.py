@@ -9,20 +9,18 @@ note, so working through it is a matter of reading rather than inference. Rows
 are ticked off individually and never re-appear.
 
 Note edits are *not* rows. They are the working tree, read straight out of git
-at bookkeeping time and cleared by committing. Until 2026-09-06 a second,
-hand-rolled baseline in `state.json` hashed every note to answer the same
-question git already answers, and its reset was a separate command -- which is
-what made "clear the queue" mean two incompatible things. Git is the baseline
-now.
+at bookkeeping time and cleared by committing -- git is the baseline, and there
+is no second one. (There was, once: HISTORY.md, 2026-09-06.)
 
 Flags are neither. They are conditions derived fresh from current state on every
 run, so ticking one off is meaningless: it re-fires next run, and worse, looks
 handled while the project it names keeps stalling. They are reported, never
 queued.
 
-`cmd_bookkeep` renders all three into `Meta/Queue.md` -- the brief for a
-bookkeeping pass -- and `--commit` ends that pass by ticking the rows and
-committing the notes.
+`cmd_brief` renders all three into `Meta/Queue.md` -- the brief for a
+bookkeeping pass; `cmd_fetch` pulls every input and ends by calling it. The
+reading in between is not a command and cannot be one. `cmd_commit` ends the
+pass by ticking the rows and committing the notes.
 """
 import os, re, json, datetime, glob, subprocess
 
@@ -35,7 +33,6 @@ from . import canvas, gh, ics, status, sync, views
 
 QUEUE_JSON = os.path.join(INBOX, 'queue.json')
 FEED_JSON = os.path.join(INBOX, 'feed.json')
-STATE = os.path.join(INBOX, 'state.json')      # legacy; removed on first run
 
 # ------------------------------------------------------------------ git
 
@@ -395,11 +392,6 @@ def cmd_brief(a):
          'tasks_dropped': dropped, 'tasks_renamed': renamed, 'flags': fl}
     with open(QUEUE_JSON, 'w', encoding='utf-8') as fh:
         json.dump(q, fh, indent=1)
-    # The old note/task/repo baseline. Git answers all three now, and leaving
-    # the file behind invites someone to trust it.
-    if os.path.exists(STATE):
-        os.remove(STATE)
-
     _write_brief(q)
     print('brief: %d open event(s), %d uncommitted note(s), %d flag(s)'
           % (len(rows), len(changes), len(fl)))

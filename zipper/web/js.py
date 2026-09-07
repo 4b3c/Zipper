@@ -104,12 +104,9 @@ function row(e){
 // conversation to replace, so starting over never depends on finding the box.
 function drawTerm(){
   const box=document.getElementById('termstart'); if(!box) return;
-  // `on` means the terminal is viewable right now — either this page mounted it,
-  // or ttyd is already serving one (a reload, or a freshly opened tab). Either
-  // way there is nothing to resume, so no start buttons.
-  // `on` means the iframe is showing a conversation. There is no longer a
-  // second way to be "already serving": every ttyd belongs to a conversation,
-  // and focusRecent() mounts the most recent one at load.
+  // `on` means the iframe is showing a conversation, so there is nothing to
+  // resume and no start buttons. Every ttyd belongs to a conversation, and
+  // focusRecent() mounts the most recent one at load.
   const on=window.__mounted, live=window.__session, ready=window.__queueready;
   const qd = ready ? '' : ' disabled title="nothing in this run&#39;s queue to consume"';
   box.hidden = !!on;
@@ -552,9 +549,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   loadChats().then(focusRecent); setInterval(loadChats, 6000);
   loadUsage(); setInterval(loadUsage, 300000);
   // Attaching to whatever is already serving is focusRecent()'s job, called
-  // above with the chat list. It used to be done twice: once from the list, and
-  // once from a `__termup` flag describing the single fixed ttyd that no longer
-  // exists.
+  // above with the chat list -- the one place that does it.
   const rb=document.getElementById('dorefresh');
   if(rb) rb.onclick=async()=>{
     document.getElementById('status').textContent='refreshing…';

@@ -41,8 +41,8 @@ def tmux_name(thread_id):
     Normally derived, like the session id. The exception is a *bound* thread: an
     already-running conversation adopted by a thread so it can be carried on
     from a phone. Its pane is not ours to name, so the registry records the real
-    one. Binding used to be how the dashboard's own fixed terminal got a thread
-    at all; that terminal is gone, and every conversation now starts with one.
+    one. Every conversation starts with a thread, so binding is only ever the
+    adoption case.
     """
     row = load().get(str(thread_id)) or {}
     return row.get('tmux') or 'zipper-%s' % thread_id
@@ -337,11 +337,10 @@ def note_delivery(thread_id, text):
     """Remember that *this* text reached the conversation from Discord.
 
     **This is the only record of where a message came from, and it lives here
-    rather than in the message.** The prompt used to be stamped `[via discord]`
-    so the session could see its own provenance and reply the same way -- but a
-    reply is now forwarded automatically, so the session no longer needs to
-    know, and a tag would just be a fact about the past sitting in the context
-    window forever.
+    rather than in the message.** Replies are forwarded automatically, so the
+    session never needs to know its own provenance -- and a tag in the prompt
+    would be a fact about one past turn sitting in the context window forever,
+    misrouting every later turn. (It did: HISTORY.md, 2026-09-06.)
 
     Something still has to know, because the terminal is the other input and it
     produces no event anyone can observe: Abram typing into the pane is invisible

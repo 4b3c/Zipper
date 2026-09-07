@@ -1,15 +1,14 @@
-# Scripts
+# The engine — operational reference
 
-`zipper` — stdlib-only, no pip installs. macOS ships a usable `python3`.
+`zipper` — stdlib-only, no pip installs, no venv. The VPS needs nothing but `python3`.
 
-    cd ~/path/to/zipper
+    cd /opt/zipper
     python3 -m zipper --help
 
-Optional shell alias — add to `~/.zshrc`:
+`ZIPPER_VAULT=/opt/vault` is set in `/opt/zipper/.env` and by the systemd units, so the
+engine finds the notes from anywhere. Then `zipper today`, `zipper status`, `zipper lint`.
 
-    alias zipper='ZIPPER_VAULT=~/path/to/vault python3 ~/path/to/zipper/python3 -m zipper'
-
-Then `zipper today`, `zipper status`, `zipper lint`.
+Finished changes and the reasoning behind them are in `../HISTORY.md`, not here.
 
 ## Commands
 
@@ -56,8 +55,8 @@ totals to metrics — individual transactions are never copied into the vault.
 
 ## Notes
 
-- `Inbox/` and `Scripts/` are excluded from vault scans, so ingested JSON never pollutes
-  queries or lint.
+- `Inbox/` and `Log/` are excluded from vault scans, so ingested JSON and daily notes never
+  pollute queries or lint. `Tasks/` is **not** excluded.
 - `status` and `agenda` write **generated** files. Anything you hand-edit there is lost on
   the next run — put durable thinking in the real notes.
 - `sync` only ever moves `last_touched` forward from log evidence. It never invents dates.
@@ -99,7 +98,7 @@ Then:
     python3 -m zipper agenda
 
 The browser session expires within the hour, so this is an **on-demand reconciliation**, not
-something launchd can drive. Only a token makes it unattended.
+something the fetch timer can drive. Only a token makes it unattended.
 
 ## Dashboard
 
@@ -230,12 +229,16 @@ your Canvas host — it pages the planner API in your logged-in session, POSTs t
 
 ### The embedded Claude session
 
-`brew install ttyd` (already done). After the refresh finishes, the server spawns
+Each conversation gets its own ttyd, allocated from `ZIPPER_TTYD_BASE` (8810) upwards and
+remembered in the registry:
 
-    ttyd -p 8801 -i 127.0.0.1 -W  zipper/claude-session.sh [prompt-file]
+    ttyd -p <port> -i 127.0.0.1 -W --base-path /t/<port>  zipper/claude-session.sh [prompt-file]
 
-and the page mounts it in an iframe. **fullscreen** fills the window (Esc exits);
-**pop out** opens it as its own tab. The session dies with the server.
+The page mounts it in an iframe. **fullscreen** fills the window (Esc exits); **pop out**
+opens it as its own tab. **The session outlives the server** — `zipper-web.service` sets
+`KillMode=process`, so a `systemctl restart` leaves ttyd and the tmux server up and the
+conversation is still there. Verify with `tmux ls`: an unchanged creation time means it
+lived.
 
 If the run produced real changes, Claude opens with the queue as its first instruction —
 read `Meta/Queue.md`, work each row to the note it affected, review the uncommitted diff,
@@ -246,11 +249,10 @@ session in the vault.
 **`-W` gives out a live shell, so it is bound to `127.0.0.1` and must stay there.** Do not
 expose the ttyd port through nginx.
 
-**PATH.** Finder launches an app with `/usr/bin:/bin:/usr/sbin:/sbin`, where none of `ttyd`,
-`tmux`, `gh` or `claude` exist. `serve.py` appends `~/.local/bin`, `/opt/homebrew/bin` and
-`/usr/local/bin` at startup and the app launcher exports the same. Before that fix the
-the same trap made `gh auth token` fail, so a launch-time fetch quietly wrote public-repo
-data over the notes.
+**PATH.** systemd starts a service with a minimal PATH, where none of `ttyd`, `tmux`, `gh`
+or `claude` exist. `zipper/web/base.py` prepends `~/.local/bin` and `/usr/local/bin` at
+import and `claude-session.sh` exports the same. Without it every shell-out fails silently —
+including `gh auth token`, which makes a fetch write public-repo data over the notes.
 
 **Nothing starts on its own.** Opening the dashboard spawns no ttyd, no tmux and no Claude
 — looking at the day must not cost tokens. What the card offers depends on whether a
@@ -292,10 +294,9 @@ its markdown file, so the vault stays the source of truth and the ledger sees th
 **Canvas** cannot be written to, so those go in `Inbox/overrides.json` and are a display
 override only — Canvas remains authoritative for what was actually submitted.
 
-**Paste:** text paste works. Image paste is unverified — Claude Code reads the macOS
-pasteboard itself, and the process runs locally, so `ctrl+v` may work through xterm.js; it
-may equally be swallowed by the browser. If it does not work, drop the image anywhere on
-disk and paste the path instead.
+**Paste:** text paste works. Image paste stores the bytes on the VPS and types the *path*,
+which Claude Code opens — the browser and the session are on different machines, so the
+pasteboard itself never crosses.
 
 ### Reaching it from another device
 
@@ -605,8 +606,8 @@ still required and still passed: `ttyd -W` hands out a live shell.
 The exposure is not widened by this. Before, ttyd listened on the tailnet with basic auth;
 now it listens on loopback and is reachable only through the same tailnet-bound nginx that
 already serves an unauthenticated dashboard — one that can start terminals anyway. Verified
-after the change: `/t/8801/` and `/t/8810/` return 200 through nginx, `/ws` upgrades with
-101, and connecting to the tailnet address on 8801 directly is refused.
+after the change: `/t/8810/` and `/t/8811/` return 200 through nginx, `/ws` upgrades with
+101, and connecting to the tailnet address on 8810 directly is refused.
 
 ### Copy and paste between the terminal and the real machine
 

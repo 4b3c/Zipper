@@ -14,25 +14,15 @@ from .feed import feed_rows, publish
 
 # ---------------------------------------------------------------- terminal
 #
-# **One kind of conversation.** Until 2026-09-06 there were two, side by side:
-# this module owned a single fixed one -- tmux session `zipper`, ttyd on 8801,
-# held in a module-level TERM dict -- while `conversations.py` owned one per
-# Discord thread on 8810-8829. The fixed one predated threads; it was never
-# removed when they arrived.
+# **Every conversation is keyed on a Discord thread**, which is what the reply
+# forwarding posts to -- a conversation without one is a conversation whose
+# answers cannot get back out. There is exactly one kind, named
+# `zipper-<thread>`, and the dashboard shows *a conversation*: by default the
+# most recently active live one, and any other by picking it from the list.
 #
-# Keeping both cost more than the duplication. tmux resolves `-t` by prefix, so
-# a bare `-t zipper` matched `zipper-<any thread>`, and both files carried
-# anchoring workarounds for it: a dead terminal reported as alive, a reaper
-# aimed at somebody else's pane, and a bound row that read as live forever and
-# blocked `zipper commit` on every pass. One naming scheme makes that
-# unrepresentable rather than defended against twice.
-#
-# It also could not answer. Every conversation is keyed on a Discord thread,
-# which is what the reply forwarding posts to, so a conversation without one is
-# a conversation whose answers cannot get back out.
-#
-# What the dashboard now shows is simply *a conversation* -- by default the most
-# recently active live one, and any other by picking it from the list.
+# The single naming scheme is load-bearing, not tidiness. tmux resolves `-t` by
+# prefix, so any session name that is a prefix of another's matches it silently.
+# See HISTORY.md, 2026-09-06.
 
 def _queue_prompt():
     """The queue as an opening instruction — only what is still outstanding."""
@@ -56,10 +46,9 @@ def _queue_prompt():
 
 
 TTYD = {'enabled': True, 'host': '127.0.0.1', 'cred': ''}
-# What was TERM. The fixed port and the fixed tmux session name went with Path A;
-# host and cred survive because they still govern every ttyd -- `ttyd -W` hands
-# out a live shell, so binding one off loopback without a credential is refused
-# in `conversations.ensure_ttyd`.
+# How every ttyd is bound. `ttyd -W` hands out a live shell, so binding one off
+# loopback without a credential is refused in `conversations.ensure_ttyd`. Ports
+# are not here -- each conversation is allocated its own (see `ttyd.py`).
 
 
 def current_conversation():
@@ -122,7 +111,7 @@ def resume_conversation(prompt=None):
 
 
 def start_session(mode='blank'):
-    """The terminal card's start buttons, in Path B terms.
+    """The terminal card's start buttons.
 
     `blank`/`queue` open a new conversation; `resume`/`catchup` return to the
     current one. The only difference within each pair is whether the run queue
@@ -137,8 +126,8 @@ def start_session(mode='blank'):
 # ---------------------------------------------------------------- inbound
 #
 # A message that arrives from outside the dashboard -- today that means Discord,
-# tomorrow a cron trigger or a webhook. There is exactly one Claude session, and
-# these are the three states it can be in:
+# tomorrow a cron trigger or a webhook. It is addressed to one conversation, and
+# these are the three states that conversation can be in:
 #
 #   live      ttyd is serving and tmux holds a conversation  -> paste into it
 #   detached  tmux still holds the conversation, ttyd is not serving
@@ -151,35 +140,16 @@ def start_session(mode='blank'):
 # ready-file before exec'ing claude, so the message becomes the conversation's
 # opening prompt -- no race against a TUI that has not drawn yet.
 
-# A message is delivered **verbatim**. There used to be a `_tagged()` here that
-# prefixed `[via discord]` and appended an instruction to reply by running
-# `zipper discord send`, on the reasoning that the session had to know where a
-# message came from because the reply went back the same way.
+# A message is delivered **verbatim** -- no provenance tag, nothing prepended.
+# Routing is per-turn and is never inferred from the prompt: the reply is
+# forwarded by the Stop hook (`hooks/forward_reply.py`), and provenance is
+# recorded at delivery (`conversations.note_delivery`) and read back from the
+# registry, where the bot can look it up rather than it sitting in the context
+# window forever. Putting it in the prompt instead is what HISTORY.md,
+# 2026-09-06 is about; don't.
 #
-# Both halves of that are now wrong. The reply is forwarded by the Stop hook
-# (`hooks/forward_reply.py`), so the session neither sends nor needs to know:
-# provenance is recorded at delivery (`conversations.note_delivery`) and read
-# back from the registry, where it is a fact the bot can look up rather than a
-# fact sitting in the context window forever.
-#
-# Removing it also removed a real failure. The tag only ever landed on the
-# message that *started* a conversation, so a session that began on a phone and
-# continued at the keyboard still looked like Discord -- and on 2026-09-06 that
-# produced eight replies posted to Discord for messages typed at the terminal.
-# Routing is per-turn now, and nothing about it is inferred from the prompt.
-
-
-# `deliver_to_claude` used to live here: it took a Discord message with no
-# thread and pasted it into the dashboard's own single terminal, starting that
-# one conversation if it was cold. Deleted 2026-09-06 along with its last
-# caller.
-#
-# It was the Discord half of a second, older way of having a conversation --
-# one fixed tmux session named `zipper` on one fixed ttyd port, from when the
-# dashboard had a single embedded Claude. Every conversation is now keyed on a
-# Discord thread, which is what the reply forwarding posts to, so a conversation
-# with no thread is one whose answers cannot get back out. The bot opens a
-# thread before it posts, and `/discord` refuses a message without one.
+# A message with no thread is refused rather than delivered somewhere -- the bot
+# opens a thread before it posts, and `/discord` requires one.
 
 
 TITLE_TTL = 900          # seconds before a Discord thread name is looked up again
@@ -190,9 +160,8 @@ def _row_title(thread_id, row):
 
     Claude's own `ai-title` first: it names the *conversation* rather than its
     delivery mechanism, it updates as the subject moves, and it exists for
-    sessions started at the terminal that have no thread at all. Titles used to
-    come from whichever path created the row -- the opening message, a generated
-    'Dashboard · Sun 14:26', an id -- four schemes in one list.
+    sessions started at the terminal that have no thread at all. One scheme for
+    every row, rather than one per way a row can be created.
 
     A Discord thread name is the fallback, for a conversation too young to have
     been titled yet; an id is the last resort.
@@ -350,8 +319,6 @@ def open_conversation(thread_id):
         r = conversations.start(thread_id)
         if not r.get('ok'):
             return r
-    # Every conversation is served the same way now. This used to special-case
-    # the one bound to the dashboard's own tmux session, which had its own ttyd
-    # on a fixed port -- so picking it from the list had to reuse that rather
-    # than hand it a second one. With Path A gone there is no such conversation.
+    # Every conversation is served the same way: no special cases, no fixed
+    # ports. `ensure_ttyd` is idempotent, so this is also the resume path.
     return conversations.ensure_ttyd(thread_id, host=TTYD['host'], cred=TTYD['cred'])

@@ -199,12 +199,9 @@ class Handler(BaseHTTPRequestHandler):
             if not tid:
                 self._send(400, json.dumps({'error': 'no conversation'}), 'application/json')
                 return
-            # `conversations.target()` rather than a session name plus a local
-            # anchoring helper: it is the one place that knows how to name a
-            # pane exactly. serve.py used to carry its own `_t()` for this,
-            # which existed only because the dashboard's fixed `zipper` session
-            # was a prefix of every `zipper-<thread>` -- a collision Path A took
-            # with it.
+            # Always `conversations.target()`, never a hand-built session name:
+            # it is the one place that knows how to name a pane exactly, and
+            # tmux would otherwise resolve `-t` by prefix onto a neighbour.
             try:
                 tmux = shutil.which('tmux')
                 subprocess.run([tmux, 'load-buffer', '-b', 'zipper-copy', '-'],

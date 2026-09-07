@@ -18,13 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(HERE))
 
-# A desktop launcher hands a process PATH=/usr/bin:/bin:/usr/sbin:/sbin, and systemd
-# gives it even less. ttyd, tmux and
-# gh all live in Homebrew's bin, so under the app every shell-out failed silently:
-# the terminal card said "ttyd not installed", and worse, the fetcher's `gh auth token`
-# found no gh, fell back to public repos, and rewrote note frontmatter from a partial
-# fetch -- last_push moving BACKWARDS as the private repos vanished. Restore a real
-# PATH before anything shells out. claude-session.sh does the same for `claude`.
+# systemd starts a service with a minimal PATH, and ttyd, tmux and gh are not on it.
+# Every shell-out then fails *silently*: the terminal card says "ttyd not installed",
+# and worse, the fetcher's `gh auth token` finds no gh, falls back to public repos, and
+# rewrites note frontmatter from a partial fetch -- last_push moving BACKWARDS as the
+# private repos vanish. Restore a real PATH before anything shells out.
+# claude-session.sh does the same for `claude`.
 for _dir in (os.path.expanduser('~/.local/bin'), '/opt/homebrew/bin', '/usr/local/bin'):
     if os.path.isdir(_dir) and _dir not in os.environ.get('PATH', '').split(os.pathsep):
         os.environ['PATH'] = os.environ.get('PATH', '') + os.pathsep + _dir
