@@ -459,20 +459,28 @@ def start_terminal(mode='blank', prompt=None):
 # ready-file before exec'ing claude, so the message becomes the conversation's
 # opening prompt -- no race against a TUI that has not drawn yet.
 
-def _tagged(text, source):
-    """Claude needs to know where this came from, because the reply goes back the
-    same way. The instruction is part of the message rather than the system
-    prompt so it survives into a conversation that started some other way."""
-    return ('[via %s] %s\n\n'
-            '(Reply to this by running: %s discord send "your reply".'
-            ' The sender is not watching this terminal.)'
-            % (source, text, 'python3 -m zipper'))
+# A message is delivered **verbatim**. There used to be a `_tagged()` here that
+# prefixed `[via discord]` and appended an instruction to reply by running
+# `zipper discord send`, on the reasoning that the session had to know where a
+# message came from because the reply went back the same way.
+#
+# Both halves of that are now wrong. The reply is forwarded by the Stop hook
+# (`hooks/forward_reply.py`), so the session neither sends nor needs to know:
+# provenance is recorded at delivery (`conversations.note_delivery`) and read
+# back from the registry, where it is a fact the bot can look up rather than a
+# fact sitting in the context window forever.
+#
+# Removing it also removed a real failure. The tag only ever landed on the
+# message that *started* a conversation, so a session that began on a phone and
+# continued at the keyboard still looked like Discord -- and on 2026-09-06 that
+# produced eight replies posted to Discord for messages typed at the terminal.
+# Routing is per-turn now, and nothing about it is inferred from the prompt.
 
 
 def deliver_to_claude(text, source='discord'):
     if not TERM['enabled']:
         return {'ok': False, 'error': 'terminal disabled'}
-    body = _tagged(text, source)
+    body = text
 
     if session_exists():
         state = 'live' if terminal_up() else 'detached'
@@ -2913,7 +2921,7 @@ class Handler(BaseHTTPRequestHandler):
                     # message that opened it; the chat list should read the same
                     # rather than showing an id nobody recognises.
                     conversations.touch(str(tid), title=' '.join(text.split())[:60])
-                res = conversations.deliver(str(tid), _tagged(text, body.get('source', 'discord')),
+                res = conversations.deliver(str(tid), text,
                                             body.get('source', 'discord'))
                 if res.get('ok'):
                     publish('status', 'terminal    %s -> thread %s (%s)'

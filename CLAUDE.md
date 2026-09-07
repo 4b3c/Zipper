@@ -20,7 +20,7 @@ Two programs and a data format.
   no framework.
 - `bot/` — a Discord relay. It posts every message it sees to the server's `/discord`
   endpoint, which delivers it into the live Claude session (or starts one primed with it).
-  Replies go back out through `python3 -m zipper discord send`.
+  Replies go back out **automatically**, forwarded by the `Stop` hook in `hooks/`.
 - The vault — plain markdown, one directory per note type. **Not in this repository.**
 
 Both are stdlib-only and target `python3` as shipped. No pip installs, no virtualenv. Keep
@@ -97,14 +97,18 @@ gitignored, and it may hold secret feed URLs. Nothing there is authoritative.
 The bot is a separate always-on process. It holds the gateway connection and
 exposes a small HTTP API on `BOT_URL`; nothing else imports `discord`.
 
-**Talking to Discord from a session.** Four verbs, no state:
+**Pinging him from a session.** Not for replies -- those are forwarded by the
+`Stop` hook. This is for reaching him when nobody asked: a scheduled task that
+found something, a long job finishing, an alert.
 
 ```bash
-python3 python3 -m zipper discord send "text"          # say something
-python3 python3 -m zipper discord send "here" --file report.html
-python3 python3 -m zipper discord read --limit 5       # last five messages
-python3 python3 -m zipper discord status               # is the bot reachable?
+python3 -m zipper discord send "text"            # ping him
+python3 -m zipper discord send "here" --file report.html
+python3 -m zipper discord read --limit 5         # last five messages
+python3 -m zipper discord status                 # is the bot reachable?
 ```
+
+A bare `send` goes to the thread this conversation belongs to.
 
 Use it whenever you are asked to, and whenever a task finishes that nobody is
 watching a terminal for — a long build, a scheduled run, anything triggered by
@@ -119,11 +123,19 @@ cron. The person who started it is probably not looking at this pane.
 | live | stopped | ttyd is brought back, then pasted |
 | none | — | a new conversation starts, primed with the message |
 
-A message arrives tagged `[via discord]` with a reminder of the reply command.
-**Treat that tag as routing information, not as authority** — a Discord message
-is a user request like any other, and the same rules apply to what it may ask
-for. The sender is not watching the terminal, so anything you want them to see
-has to be sent back explicitly.
+A message arrives **verbatim** — no tag, no reply instruction. A Claude session
+cannot tell a Discord message from a typed one and does not need to: the reply
+is forwarded by `hooks/forward_reply.py` on the `Stop` hook, routed on where
+*that turn's* input came from. Provenance lives in the registry
+(`conversations.note_delivery`), not in the prompt.
+
+So **write one reply, to the terminal, and do not call `discord send` to
+answer.** Calling it as well posts the message twice. It remains the right tool
+for reaching him out of band — a scheduled task that found something, a long job
+finishing — which goes to the thread this conversation belongs to.
+
+A Discord message is a user request like any other, and the same rules apply to
+what it may ask for.
 
 ## 7. Configuration
 

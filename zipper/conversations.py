@@ -15,7 +15,7 @@ one note, or committing over each other, produce conflicts and lost edits that
 neither instance can see. If that starts happening, this is where the lock
 goes; until then, don't work the same project in two threads at once.
 """
-import os, re, json, time, uuid, shutil, signal, subprocess, datetime
+import os, re, json, time, uuid, shutil, signal, hashlib, subprocess, datetime
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
@@ -276,8 +276,48 @@ def paste(thread_id, text):
     return {'ok': True}
 
 
+def delivery_key(text):
+    """A stable fingerprint of a message, for matching it later.
+
+    Whitespace-collapsed because the same text does not survive the trip
+    byte-identical: it is pasted into a terminal at one end and read back out
+    of a JSONL transcript at the other, and line wrapping is not information.
+    """
+    return hashlib.sha1(' '.join((text or '').split()).encode('utf-8')).hexdigest()
+
+
+def note_delivery(thread_id, text):
+    """Remember that *this* text reached the conversation from Discord.
+
+    **This is the only record of where a message came from, and it lives here
+    rather than in the message.** The prompt used to be stamped `[via discord]`
+    so the session could see its own provenance and reply the same way -- but a
+    reply is now forwarded automatically, so the session no longer needs to
+    know, and a tag would just be a fact about the past sitting in the context
+    window forever.
+
+    Something still has to know, because the terminal is the other input and it
+    produces no event anyone can observe: Abram typing into the pane is invisible
+    to the bot, to this process, and to systemd. So provenance is recorded at the
+    one moment it is unambiguous -- delivery -- and the Stop hook answers "did
+    this turn come from Discord?" by comparing the transcript's last user message
+    against this. A match means the bot put it there; anything else means he
+    typed it.
+    """
+    touch(thread_id, last_delivered={'key': delivery_key(text),
+                                     'at': datetime.datetime.now().isoformat(timespec='seconds')})
+
+
+def delivered(thread_id, text):
+    """Was `text` the message this conversation was last handed from Discord?"""
+    row = load().get(str(thread_id)) or {}
+    d = row.get('last_delivered') or {}
+    return bool(d.get('key')) and d['key'] == delivery_key(text)
+
+
 def deliver(thread_id, text, source='discord'):
     """The whole Discord path in one call: start or resume, then hand it over."""
+    note_delivery(thread_id, text)
     if alive(thread_id):
         res = paste(thread_id, text)
         if res['ok']:

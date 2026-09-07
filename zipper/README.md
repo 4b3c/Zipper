@@ -339,8 +339,40 @@ conversation again with no mapping file to fall out of sync, and losing
 interchangeable, so the transcript on disk is what decides which one a start is.
 
 **Each instance is started with `ZIPPER_DISCORD_THREAD` in its environment**, which is how
-`zipper discord send` answers the thread it was spoken to in without the session having to
-know its own id. Unset in the dashboard's own terminal, where a send goes to the channel.
+both `zipper discord send` and the reply-forwarding hook reach the right thread without the
+session having to know its own id. Unset in the dashboard's own terminal, where a send goes
+to the channel.
+
+### Replies are forwarded, not sent
+
+`hooks/forward_reply.py` runs on Claude Code's **`Stop`** hook — once per turn, with the
+transcript path. It takes the last assistant text block and posts it to this conversation's
+thread, but **only if that turn came from Discord**: the bot records what it delivered
+(`conversations.note_delivery`) and the hook compares the transcript's last user message
+against that record. Typed at the keyboard, and nothing is sent — the answer is already on
+screen.
+
+The session therefore writes its reply **once**, into the terminal, and never calls
+`discord send` to answer. It used to write it twice, once as the argument to `discord send`
+and once as its own terminal reply, which measured at **44% of the paired output** on
+2026-09-06 — the same words through the model twice to say one thing to one person. It also
+asked the session to decide the destination every turn from ambient context, and that decision
+drifted: eight replies went to Discord that day for messages typed at the terminal, because
+the `[via discord]` tag only ever landed on the message that *opened* the conversation.
+
+Three rules the hook cannot break:
+
+- **It always exits 0.** Exit code 2 on a `Stop` hook *prevents the turn ending* and feeds
+  stderr back to the model, so a Discord outage would trap a session in a loop. Every failure
+  is swallowed; the terminal still has the answer.
+- **It dedupes on the assistant message uuid**, because the hook can fire more than once for
+  a turn and posting is not idempotent from Discord's side.
+- **It skips `local-` thread ids**, the fallback `new_conversation()` uses when Discord is
+  unreachable. There is no thread to post to, and that is not an error.
+
+Interstitial narration stays in the terminal for free: those are earlier text blocks in the
+turn, and only the last one is forwarded. The thread reads as clean question-and-answer while
+the terminal keeps the working detail.
 
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
