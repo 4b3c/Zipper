@@ -326,8 +326,12 @@ once, each in its own detached tmux session.
 
 | Piece | Where |
 |---|---|
-| Registry, start/resume/paste/close, the idle reaper | `zipper/conversations.py` |
-| Routing a Discord message to its thread's instance | `zipper/serve.py`, the `/discord` route |
+| Registry, start/resume/paste | `zipper/convcore.py` |
+| Liveness, titles, listing, close, the idle reaper | `zipper/convstate.py` |
+| A ttyd per conversation, and its port | `zipper/ttyd.py` |
+| All three under one name | `zipper/conversations.py` — import this, not those |
+| Routing a Discord message to its thread's instance | `zipper/web/http.py`, the `/discord` route |
+| Forwarding the reply back to that thread | `hooks/forward_reply.py`, on the `Stop` hook |
 | Opening a thread for a channel message | `bot/client.py`, `on_message` |
 | Typing indicator on/off | `zipper/chat.py` → the bot's `/typing` |
 | `zipper conversations [--close THREAD]` | the CLI surface |
@@ -395,7 +399,7 @@ A closed conversation resumes on the next message — the transcript is on disk 
   the locking is a lot of code for a risk one operator can hold in his head. The failure it
   invites is real — two sessions editing one note, or committing over each other, with
   neither able to see the other. Don't work the same project in two threads at once; if it
-  starts happening, `conversations.py` is where the lock goes.
+  starts happening, `convcore.py` is where the lock goes.
 
 ### The chat list
 

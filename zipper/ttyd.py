@@ -89,8 +89,8 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     if cred:
         args += ['-c', cred]
     args += ['-b', '/t/%d' % port,
-             # See serve.start_terminal: with mouse reporting on, macOS needs
-             # this before Option-drag can select anything.
+             # With mouse reporting on, macOS needs this before Option-drag
+             # can select anything.
              '-t', 'macOptionClickForcesSelection=true',
              '-t', 'rightClickSelectsWord=true',
              # ttyd's client installs a `beforeunload` handler, so the browser

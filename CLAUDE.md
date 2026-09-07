@@ -37,7 +37,9 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `zipper/gh.py` `canvas.py` `metrics.py` | the fetchers and the numbers |
 | `zipper/runqueue.py` `views.py` | the between-runs diff, and the saved queries |
 | `zipper/chat.py` | the Discord CLI |
-| `zipper/serve.py` | the dashboard |
+| `zipper/serve.py` + `zipper/web/` | the dashboard — `serve.py` is the entry point, `web/` is the server, one module per concern |
+| `zipper/conversations.py` | front door over `convcore.py` (identity, registry, paste), `ttyd.py` (a ttyd per conversation) and `convstate.py` (liveness, listing, reaper) |
+| `hooks/forward_reply.py` | the `Stop` hook that posts a reply back to its Discord thread |
 | `zipper/README.md` | operational reference. **Read before touching any of it** |
 | `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |

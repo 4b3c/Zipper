@@ -223,7 +223,7 @@ def paste(thread_id, text):
     """Type a block into a conversation's pane.
 
     Bracketed paste, then a separate Enter -- as keystrokes every newline in a
-    multi-line message would submit a fragment. See serve.inject_queue.
+    multi-line message would submit a fragment.
     """
     tgt = target(thread_id)
     if not alive(thread_id):
