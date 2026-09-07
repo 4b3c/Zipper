@@ -85,9 +85,21 @@ def note_changes():
             path = path[1:-1].encode().decode('unicode_escape')
         if not path.endswith('.md') or _is_generated(path):
             continue
-        state = ('added' if 'A' in code or '?' in code else
-                 'deleted' if 'D' in code else 'changed')
-        out.append({'path': path, 'state': state})
+        action = ('add' if 'A' in code or '?' in code else
+                  'delete' if 'D' in code else 'edit')
+        # `when` is the file's mtime -- the one thing git genuinely knows about
+        # an uncommitted change. `who` is absent and stays absent: git records
+        # an author at commit time, and nothing anywhere records which session
+        # wrote a byte to the working tree. Optional means absent, not guessed.
+        when = None
+        try:
+            when = datetime.datetime.fromtimestamp(
+                os.path.getmtime(os.path.join(VAULT, path))).isoformat(timespec='minutes')
+        except OSError:
+            pass
+        out.append({'system': 'vault', 'action': action, 'path': path,
+                    'when': when, 'clears': 'commit',
+                    'text': '%-11s %s' % (action, path)})
     return sorted(out, key=lambda x: x['path'])
 
 def note_diff(path, context=1):
@@ -140,31 +152,42 @@ def _target_map():
     return repos, courses
 
 def classify(row):
-    """Give a queue row a `kind` and, where possible, a `target` note.
+    """Fill in system/action/target for a row, migrating pre-2026-09-06 ones.
 
-    Rows were flat display strings until 2026-09-06, which meant "work out what
-    this affected" had nothing to work from but the text. The text is still the
-    thing rendered; kind and target are what make the row actionable.
+    Rows written before the typed schema are flat display strings, so their
+    system has to be read back out of the text. New rows arrive already typed
+    and only need their target resolved -- the mapping is hand-maintained and
+    can change after a row was written.
     """
     text = row.get('text', '')
     repos, courses = _target_map()
-    kind, target = 'other', None
-    if text.startswith('pushed'):
-        kind = 'push'
-        m = re.match(r'pushed\s+(\S+)', text)
-        if m:
-            target = repos.get(m.group(1))
-    elif text.startswith(('+ canvas', 'submitted')):
-        kind = 'canvas'
-        for code, note in courses.items():
-            if code.replace(' ', '') in text.replace(' ', ''):
-                target = note
-                break
-    elif text.startswith(('+ calendar', '- calendar')):
-        kind = 'calendar'
-    elif text.startswith('error'):
-        kind = 'error'
-    return dict(row, kind=kind, target=target)
+    out = dict(row)
+    out.setdefault('clears', 'tick')
+    if not out.get('system'):
+        if text.startswith('pushed'):
+            out['system'], out['action'] = 'github', 'push'
+        elif text.startswith('submitted'):
+            out['system'], out['action'] = 'canvas', 'submit'
+        elif text.startswith('+ canvas'):
+            out['system'], out['action'] = 'canvas', 'add'
+        elif text.startswith(('+ calendar', '- calendar')):
+            out['system'] = 'calendar'
+            out['action'] = 'add' if text.startswith('+') else 'remove'
+        elif text.startswith('error'):
+            out['system'] = 'error'
+        else:
+            out['system'] = 'other'
+    if not out.get('target'):
+        if out['system'] == 'github':
+            m = re.match(r'pushed\s+(\S+)', text)
+            if m:
+                out['target'] = repos.get(m.group(1))
+        elif out['system'] == 'canvas':
+            for code, note in courses.items():
+                if code.replace(' ', '') in text.replace(' ', ''):
+                    out['target'] = note
+                    break
+    return out
 
 # ------------------------------------------------------------------ flags
 
@@ -364,40 +387,52 @@ def cmd_brief(a):
     print('  -> Meta/Queue.md  +  Inbox/queue.json')
     return 0
 
-KIND_LABEL = {'push': 'Pushes', 'canvas': 'Canvas', 'calendar': 'Calendar',
-              'error': 'Errors', 'other': 'Other'}
+SYSTEM_LABEL = {'github': 'GitHub', 'calendar': 'Calendar', 'canvas': 'Canvas',
+                'vault': 'Vault', 'error': 'Errors', 'other': 'Other'}
+SYSTEM_ORDER = ('github', 'canvas', 'calendar', 'vault', 'error', 'other')
+
+
+def _ev_line(e):
+    """One event, one line: what it was, when, who, where it lands, how it clears.
+
+    who and when are optional and simply absent when the source does not know
+    them -- a push knows both, a calendar entry knows when it is but not who
+    added it, a note edit knows when it was written and never who wrote it.
+    """
+    bits = []
+    if e.get('when'):
+        bits.append(str(e['when']).replace('T', ' '))
+    if e.get('who'):
+        bits.append(str(e['who']))
+    meta = '  ·  %s' % ' · '.join(bits) if bits else ''
+    tgt = '  → **[[%s]]**' % e['target'] if e.get('target') else ''
+    key = '`%s` ' % e['key'] if e.get('key') else ''
+    return '- %s%s%s%s' % (key, e.get('text', ''), meta, tgt)
+
 
 def _write_brief(q):
     L = ['---', 'tags: [meta, view]', 'type: view', 'view_kind: generated',
-         'status: living', 'source: zipper bookkeep',
+         'status: living', 'source: zipper fetch',
          'generated: ' + core.TODAY.isoformat(), '---', '', '# Queue', '',
-         '*Generated by `zipper bookkeep`. The brief for a bookkeeping pass: '
-         'what happened, what is unreviewed, and what is wrong.*', '',
+         '*Generated by `zipper fetch`. The brief for a bookkeeping pass: what '
+         'happened, what is unreviewed, and what is wrong.*', '',
          '**As of:** %s' % q['generated'], '']
 
-    L += ['## Events to handle', '',
-          '*One queue. Each row is something that happened outside the vault. '
-          'Work out what it affected, update the note, then tick it off.*', '']
-    if not q['events']:
-        L.append('- nothing open')
-    for kind in ('push', 'canvas', 'calendar', 'error', 'other'):
-        rows = [r for r in q['events'] if r['kind'] == kind]
+    events = list(q['events']) + list(q['notes_uncommitted'])
+    L += ['## Events', '',
+          '*One queue, every system. Each row is something that happened: work out '
+          'what it affected, update the note, then clear it. **How a row clears is '
+          'stated on the row** — `tick` means `zipper.serve --mark <key>`, `commit` '
+          'means it goes away when the change is committed.*', '']
+    if not events:
+        L.append('- nothing open; the tree is clean')
+    for sysname in SYSTEM_ORDER:
+        rows = [e for e in events if e.get('system') == sysname]
         if not rows:
             continue
-        L += ['', '### %s' % KIND_LABEL[kind], '']
-        for r in rows:
-            tgt = ' → **[[%s]]**' % r['target'] if r.get('target') else ''
-            L.append('- `%s`  %s%s' % (r['key'], r['text'], tgt))
-    L.append('')
-
-    L += ['## Notes changed since the last pass', '',
-          '*Every pass ends in a commit, so this is exactly what has changed since '
-          'the last one — whoever wrote it, him or any session. Read it, make sure '
-          'it is right, then commit. Cleared by committing, never by ticking.*', '']
-    if not q['notes_uncommitted']:
-        L.append('- nothing; the tree is clean')
-    for c in q['notes_uncommitted']:
-        L.append('- %s `%s`' % (c['state'], c['path']))
+        clears = 'commit' if sysname == 'vault' else 'tick'
+        L += ['', '### %s  <sub>clears by %s</sub>' % (SYSTEM_LABEL[sysname], clears), '']
+        L += [_ev_line(e) for e in rows]
     L.append('')
 
     if q['tasks_dropped'] or q['tasks_renamed']:
@@ -481,8 +516,22 @@ def cmd_commit(a):
         print('  WARNING: %d note(s) still uncommitted — the next pass will show '
               'them as new:' % len(left))
         for c in left[:10]:
-            print('    %s %s' % (c['state'], c['path']))
+            print('    %s %s' % (c['action'], c['path']))
         return 1
+    # Prune here rather than on every write. The end of a pass is the one
+    # moment the queue is known to be reconciled, so it is the only safe place
+    # to throw history away -- and only ticked rows are ever dropped.
+    with open(serve.FEED_JSON, encoding='utf-8') as fh:
+        blob = json.load(fh)
+    kept = serve.feed_prune(blob.get('rows', []), serve.FEED_MAX)
+    dropped = len(blob.get('rows', [])) - len(kept)
+    blob['rows'] = kept
+    with open(serve.FEED_JSON + '.tmp', 'w', encoding='utf-8') as fh:
+        json.dump(blob, fh, indent=1)
+    os.replace(serve.FEED_JSON + '.tmp', serve.FEED_JSON)
+    if dropped:
+        print('  pruned %d ticked row(s); %d kept' % (dropped, len(kept)))
+
     _write_brief({'generated': datetime.datetime.now().isoformat(timespec='seconds'),
                   'events': [], 'notes_uncommitted': [], 'tasks_dropped': [],
                   'tasks_renamed': [], 'flags': flags()})

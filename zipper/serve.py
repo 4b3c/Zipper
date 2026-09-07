@@ -632,7 +632,10 @@ FEED_LOCK = threading.RLock()
 # dashboard is open. FEED_MTIME remembers our own last write so the watcher can
 # tell somebody else's edit from an echo of our own.
 FEED_JSON = os.path.join(core.INBOX, 'feed.json')
-FEED_MAX = 200
+# 100, pruned by `zipper commit` at the end of a pass. The cap only ever drops
+# rows that were ticked off: an open row is outstanding work and must survive
+# any amount of history piling up behind it.
+FEED_MAX = 100
 FEED_MTIME = [0.0]
 
 def _feed_key(text):
@@ -658,12 +661,32 @@ def feed_load():
         FEED = rows
     return rows
 
+def feed_prune(rows, cap=FEED_MAX):
+    """Trim to `cap`, dropping the oldest *ticked* rows only.
+
+    The old truncation sliced the tail regardless of state, so a busy run could
+    silently discard outstanding work to make room for history. Open rows are
+    kept whatever the count; ticked ones are the compressible part."""
+    rows = [r for r in rows if r.get('key')]
+    if len(rows) <= cap:
+        return rows
+    open_rows = [r for r in rows if not r.get('done')]
+    done_rows = [r for r in rows if r.get('done')]
+    keep = max(0, cap - len(open_rows))
+    keep_done = set(id(r) for r in done_rows[-keep:]) if keep else set()
+    return [r for r in rows if not r.get('done') or id(r) in keep_done]
+
+
 def feed_save():
     with FEED_LOCK:
-        rows = [r for r in FEED if r.get('key')][-FEED_MAX:]
+        rows = feed_prune(list(FEED))
         tmp = FEED_JSON + '.tmp'
+        try:
+            last = json.load(open(FEED_JSON, encoding='utf-8')).get('last_fetch')
+        except Exception:
+            last = None
         with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump({'rows': rows}, fh, indent=1)
+            json.dump({'rows': rows, 'last_fetch': last}, fh, indent=1)
         os.replace(tmp, FEED_JSON)          # atomic: the watcher never sees a half-file
         try:
             FEED_MTIME[0] = os.path.getmtime(FEED_JSON)
@@ -734,7 +757,17 @@ def publish(kind, text='', **extra):
             key = _feed_key(text)
             if any(r['key'] == key for r in FEED):
                 return                      # same fact twice is not two queue items
-            row = {'key': key, 'at': ev['at'], 'text': text, 'done': None}
+            # who/when are optional by design: a push knows both, a calendar
+            # entry knows when it is but not who added it, a note edit knows
+            # neither. Absent beats guessed -- a fabricated author is worse
+            # than no author.
+            row = {'key': key, 'at': ev['at'], 'text': text, 'done': None,
+                   'system': extra.get('system', 'other'),
+                   'action': extra.get('action', ''),
+                   'clears': 'tick'}
+            for f in ('who', 'when', 'target'):
+                if extra.get(f):
+                    row[f] = extra[f]
             FEED.append(row)
             feed_save()
         ev['key'] = key
@@ -775,7 +808,7 @@ def notes_watch(interval=4.0):
             rows = note_rows(force=True)
         except Exception:
             continue
-        key = [(r['state'], r['path']) for r in rows]
+        key = [(r['action'], r['path']) for r in rows]
         if key == last:
             continue
         last = key
@@ -825,8 +858,36 @@ def _shape(starts):
     return '  (%s \u00d7%d, through %s)' % (word or 'repeats', len(starts), starts[-1][:10])
 
 
-def _cal_rows(keys, sign):
-    """One row per series, not per occurrence.
+def _window_guard():
+    """The slice of the ingest window that did not move since the last fetch.
+
+    parse_ics expands recurrence into a -180/+400 day window *relative to today*,
+    so the window slides. An event 400 days out crosses the front edge simply
+    because a day passed, and reporting that as `+ calendar` is a lie: nobody
+    added anything. Same at the back edge when a series scrolls out of range.
+
+    Only events inside the intersection of the old and new windows can have
+    genuinely changed, so that is what gets reported. The intersection is the
+    window shrunk by however many days actually elapsed -- read from the last
+    fetch stamp, not assumed to be one, since a box that was off for a week
+    slides seven days at once.
+    """
+    last = None
+    try:
+        last = json.load(open(FEED_JSON, encoding='utf-8')).get('last_fetch')
+    except Exception:
+        pass
+    try:
+        slide = (core.TODAY - datetime.date.fromisoformat(last[:10])).days
+    except Exception:
+        slide = 1
+    slide = max(1, min(slide, 400))
+    return ((core.TODAY - datetime.timedelta(days=180 - slide)).isoformat(),
+            (core.TODAY + datetime.timedelta(days=400 - slide)).isoformat())
+
+
+def _cal_events(keys, action, lo, hi):
+    """One event per series, not per occurrence.
 
     parse_ics expands RRULE into concrete dates, so before this the day CSE 434's
     lab appeared the feed published 58 identical-looking rows -- one calendar
@@ -837,35 +898,80 @@ def _cal_rows(keys, sign):
     groups = {}
     for start, summary, uid in keys:
         groups.setdefault(uid or '%s|%s' % (start, summary), (summary, []))[1].append(start)
-    rows = []
+    out = []
     for summary, starts in groups.values():
         starts.sort()
-        rows.append((starts[0], summary,
-                     '%s calendar  %s  %s%s' % (sign, starts[0], summary, _shape(starts))))
-    return [r for _, _, r in sorted(rows)]
+        if not (lo <= starts[0][:10] <= hi):
+            continue                    # window edge, not a real change
+        out.append({'system': 'calendar', 'action': action, 'when': starts[0],
+                    'text': '%s calendar  %s  %s%s'
+                            % ('+' if action == 'add' else '-', starts[0],
+                               summary, _shape(starts))})
+    return sorted(out, key=lambda e: e['when'])
+
+
+def _push_who(name, after_repos):
+    """'Abram' when the newest commits in the window are his.
+
+    On a personal repo that is always true and says nothing. On an ASU-LL repo
+    it is the whole point: commits_recent is the team's and only his own work
+    should move last_touched, so a push that is not his is a different fact.
+    """
+    try:
+        for r in json.load(open(core.GH_JSON, encoding='utf-8'))['repos']:
+            if r['name'] == name and r.get('commits'):
+                return 'Abram' if any(c.get('mine') for c in r['commits'][:5]) else 'team'
+    except Exception:
+        pass
+    return None
 
 
 def emit_diff(before, after):
-    n = 0
-    for row in _cal_rows(after['cal'] - before['cal'], '+'):
-        publish('diff', row); n += 1
-    for row in _cal_rows(before['cal'] - after['cal'], '-'):
-        publish('diff', row); n += 1
+    """Turn the difference between two fetches into typed events.
+
+    Every row is {system, action, details} with `who` and `when` where the
+    source actually knows them -- a push knows both, a calendar entry knows
+    when it is but not who put it there. Optional means absent, never guessed.
+    """
+    lo, hi = _window_guard()
+    evs = []
+    evs += _cal_events(after['cal'] - before['cal'], 'add', lo, hi)
+    evs += _cal_events(before['cal'] - after['cal'], 'remove', lo, hi)
     for title, done in sorted(after['canvas'].items()):
         was = before['canvas'].get(title)
         if was is None:
-            publish('diff', '+ canvas    %s%s' % (title, '  (already submitted)' if done else '')); n += 1
+            evs.append({'system': 'canvas', 'action': 'add', 'who': 'Abram',
+                        'text': '+ canvas    %s%s'
+                                % (title, '  (already submitted)' if done else '')})
         elif done and not was:
-            publish('diff', 'submitted   %s' % title); n += 1
+            evs.append({'system': 'canvas', 'action': 'submit', 'who': 'Abram',
+                        'text': 'submitted   %s' % title})
     for name, ts in sorted(after['repos'].items()):
         if before['repos'].get(name, '') != ts and before['repos'].get(name) is not None:
-            publish('diff', 'pushed      %s  %s' % (name, ts[:16])); n += 1
+            evs.append({'system': 'github', 'action': 'push', 'when': ts[:16],
+                        'who': _push_who(name, after['repos']),
+                        'text': 'pushed      %s  %s' % (name, ts[:16])})
+    for e in evs:
+        publish('diff', e.pop('text'), **e)
     # Flags deliberately do NOT become queue rows. A flag is a condition derived
     # fresh from current state, not an event: ticking one off is meaningless
     # because it re-fires on the next run, and worse, it reads as handled while
     # the project it names goes on stalling. They surface on Signals, which
     # renders whatever is true right now. See zipper/runqueue.py.
-    return n
+    with FEED_LOCK:
+        try:
+            blob = json.load(open(FEED_JSON, encoding='utf-8'))
+        except Exception:
+            blob = {'rows': []}
+        blob['last_fetch'] = datetime.datetime.now().isoformat(timespec='seconds')
+        with open(FEED_JSON + '.tmp', 'w', encoding='utf-8') as fh:
+            json.dump(blob, fh, indent=1)
+        os.replace(FEED_JSON + '.tmp', FEED_JSON)
+        try:
+            FEED_MTIME[0] = os.path.getmtime(FEED_JSON)
+        except OSError:
+            pass
+    return len(evs)
 
 def do_refresh():
     """Runs ONCE per launch, never on a page reload. Each source publishes as it
@@ -1237,6 +1343,7 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .qrow.crossed .qx,.qrow.crossed .qt{text-decoration:line-through;color:var(--dim)}
 .qrow.crossed .tick{border-color:var(--accent)}
 .qfresh{font-weight:400;margin-left:8px}
+.qwhen{color:var(--dim);margin-left:8px;flex:none}
 #qrefetch{float:right}
 .qsub{font:600 11px/1.6 inherit;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);
   margin:14px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
@@ -1371,8 +1478,9 @@ function drawNotes(rows){
   n.innerHTML='<h3 class="qsub">Notes changed since the last pass ('
     +window.__notes.length+')</h3>'
     +window.__notes.map(r=>'<div class="qrow nrow"><span class="qt'
-      +(r.state==='added'?' added':'')+'">'+esc(r.state)+'</span><span class="qx">'
-      +esc(r.path)+'</span></div>').join('')
+      +(r.action==='add'?' added':'')+'">'+esc(r.action)+'</span><span class="qx">'
+      +esc(r.path)+'</span>'+(r.when?'<span class="qwhen">'+esc(r.when.slice(11))+'</span>':'')
+      +'</div>').join('')
     +'<p class="sub">Cleared by committing, not by ticking \u2014 '
     +'<code>zipper bookkeep --commit "msg"</code></p>';
 }
@@ -2032,8 +2140,9 @@ def _qnotes_html(rows):
     if not rows:
         return ''
     body = ''.join(
-        '<div class="qrow nrow"><span class="qt%s">%s</span><span class="qx">%s</span></div>'
-        % (' added' if r['state'] == 'added' else '', esc(r['state']), esc(r['path']))
+        '<div class="qrow nrow"><span class="qt%s">%s</span><span class="qx">%s</span>%s</div>'
+        % (' added' if r['action'] == 'add' else '', esc(r['action']), esc(r['path']),
+           '<span class="qwhen">%s</span>' % esc(r['when'][11:]) if r.get('when') else '')
         for r in rows)
     return ('<h3 class="qsub">Notes changed since the last pass (%d)</h3>%s'
             '<p class="sub">Cleared by committing, not by ticking &mdash; '
