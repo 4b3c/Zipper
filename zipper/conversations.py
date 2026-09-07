@@ -83,8 +83,17 @@ def _tmux():
 
 
 def alive(thread_id):
+    """Is this thread's tmux session actually running?
+
+    The `=` prefix makes the target an **exact** name, not a prefix. Without it
+    tmux resolves `-t zipper` onto `zipper-<some other thread>`, so a bound row
+    naming the session `zipper` reads its liveness off whichever dashboard
+    terminal happens to be up. That row is also pinned against the reaper, so it
+    listed as live forever and blocked `zipper commit` on every pass -- which is
+    exactly what a hand-bound row did on 2026-09-06.
+    """
     try:
-        return subprocess.run([_tmux(), 'has-session', '-t', tmux_name(thread_id)],
+        return subprocess.run([_tmux(), 'has-session', '-t', '=' + tmux_name(thread_id)],
                               stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL).returncode == 0
     except RuntimeError:
