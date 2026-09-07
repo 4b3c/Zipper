@@ -1441,11 +1441,14 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
    HH:MM:SS and note rows HH:MM, and ragged left edges read as two lists. */
 .qt{color:var(--dim);min-width:62px;flex:none}
 .qrow.crossed .qx,.qrow.crossed .qt{text-decoration:line-through;color:var(--dim)}
-.qrow.crossed .tick{border-color:var(--accent)}
+/* No `.qrow.crossed .tick` accent: queue ticks are all ghosts now, and that rule
+   outranked .tick.ghost on specificity, so a crossed row drew an empty
+   accent-bordered box -- which reads as a checkbox that refuses to be clicked. */
 .qfresh{font-weight:400;margin-left:8px}
 #qrefetch{float:right}
-/* Note rows are queue rows: same list, same columns. The ghost tick holds the
-   box's width so nothing hangs left of the rows that have one. */
+/* Every queue row's tick is a ghost -- the card is read-only. The width is kept
+   so the queue's text still lines up with the tasks in "What to work on", which
+   do have real boxes. */
 .tick.ghost{border-color:transparent;cursor:default}
 .qfold{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;
   font:12px/1.9 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);padding:4px 0 0}
@@ -1504,7 +1507,10 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
 .tick{flex:none;width:17px;height:17px;margin-top:1px;border:1.5px solid var(--line);border-radius:4px;
   background:none;color:var(--accent);cursor:pointer;font-size:11px;line-height:1;padding:0;
   display:flex;align-items:center;justify-content:center}
-.tick:hover{border-color:var(--accent)}
+.tick:not(.ghost):hover{border-color:var(--accent)}
+/* :not(.ghost) because this rule sits after .tick.ghost at equal specificity and
+   would otherwise win: the read-only queue boxes lit up on hover and read as
+   clickable things that then did nothing. */
 li.crossed .tick{border-color:var(--accent)}
 /* `el.hidden` sets an attribute, and the UA rule behind it is only [hidden]{display:none}
    -- which ANY author rule that sets display outranks. #termstart{display:flex} is an id
@@ -1549,19 +1555,20 @@ function drawFresh(){
   }).join('');
 }
 setInterval(drawFresh,1000);
+// Read-only, like _qrow_html server-side: no queue row is crossed off by hand.
+// A row clears when a pass commits, or when the session that did the reasoning
+// runs --mark. See _qrow_html for why the box went away.
 function qrowHTML(r){
   const t=(r.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  const tick = r.key
-    ? '<button class="tick qtick" data-qkey="'+r.key+'" aria-label="cross off">'+(r.done?'\u2713':'')+'</button>'
-    : '<span class="tick ghost"></span>';
-  return '<div class="qrow'+(r.done?' crossed':'')+'">'+tick
+  return '<div class="qrow'+(r.done?' crossed':'')+'"><span class="tick ghost"></span>'
         +'<span class="qt">'+r.at+'</span><span class="qx">'+t+'</span></div>';
 }
 // Dealt-with rows leave the list. The card answers "what is left", and a run
-// of 65 items where 60 are struck through answers it badly — the crossing-off
-// is the point, so the reward for doing it should be a shorter list. They are
-// folded rather than deleted: an accidental tick has to be undoable, and the
-// only place to un-tick is the row itself.
+// of 65 items where 60 are struck through answers it badly. They are folded
+// rather than deleted so a closed pass can still be read back — what it
+// accounted for, not just that it ended. Undo is no longer why the fold exists
+// (there is nothing to mis-click now); `--mark` toggles, so the session that
+// crossed a row too early is still the thing that puts it back.
 function drawQueue(rows){
   if(rows) window.__feed=rows;
   const q=document.getElementById('queue'); if(!q) return;
@@ -1595,7 +1602,7 @@ function notesHTML(rows){
   return rows.map(r=>'<div class="qrow nrow"><span class="tick ghost"></span>'
       +'<span class="qt">'+esc((r.when||'').slice(11))+'</span>'
       +'<span class="qx">'+esc(r.text||(r.action+' '+r.path))+'</span></div>').join('')
-    +'<p class="sub">Note edits clear by committing, not by ticking \u2014 '
+    +'<p class="sub">Nothing here is crossed off by hand. The pass clears it \u2014 '
     +'<code>python3 -m zipper commit "msg"</code></p>';
 }
 function drawNotes(rows){
@@ -2326,10 +2333,23 @@ def _startbtns(live, ready):
 
 
 def _qrow_html(r):
-    tick = ('<button class="tick qtick" data-qkey="%s" aria-label="cross off">%s</button>'
-            % (esc(r['key']), '&#10003;' if r['done'] else ''))
-    return ('<div class="qrow%s">%s<span class="qt">%s</span><span class="qx">%s</span></div>'
-            % (' crossed' if r['done'] else '', tick, esc(r['at']), esc(r['text'])))
+    """A queue row. Read-only: nothing on this card is crossed off by hand.
+
+    Ticking from the dashboard let a row be cleared without the reasoning that
+    clearing it is supposed to stand for -- the same disagreement as "bookkeeping
+    is a pass, not a command". A row means *something happened that the vault has
+    not accounted for*, and the only thing that makes it accounted for is working
+    out what it affected. A tick box offers to shorten the list without that, and
+    a short list then reads as a reconciled one.
+
+    So a row clears exactly two ways, both of which mean the work happened:
+    `zipper commit` closing a pass, or `zipper.serve --mark` from the session
+    that just did the reasoning. The ghost keeps the text aligned with the note
+    rows, which have never had a box for a closely related reason.
+    """
+    return ('<div class="qrow%s"><span class="tick ghost"></span>'
+            '<span class="qt">%s</span><span class="qx">%s</span></div>'
+            % (' crossed' if r['done'] else '', esc(r['at']), esc(r['text'])))
 
 
 def _qnotes_html(rows):
@@ -2349,8 +2369,9 @@ def _qnotes_html(rows):
         % (esc((r.get('when') or '')[11:]),
            esc(r.get('text') or '%-11s %s' % (r['action'], r['path'])))
         for r in rows)
-    return (body + '<p class="sub">Note edits clear by committing, not by ticking '
-            '&mdash; <code>python3 -m zipper commit "msg"</code></p>')
+    return (body + '<p class="sub">Nothing here is crossed off by hand. '
+            'The pass clears it &mdash; '
+            '<code>python3 -m zipper commit "msg"</code></p>')
 
 
 def _item_li(it, show_score=True):
@@ -2483,9 +2504,13 @@ def _list_page(kind):
 
 
 TICKJS = """
+// Tasks in "What to work on" are still ticked by hand -- that box writes back to
+// the markdown and the ledger sees the close, so it records a real completion.
+// The queue card's boxes are gone; there is no .qtick left to skip past here.
 document.addEventListener('click', async e=>{
-  const b = e.target.closest('.tick'); if(!b || b.classList.contains('qtick')) return;
-  const li = b.closest('li'); li.classList.toggle('crossed');
+  const b = e.target.closest('.tick'); if(!b || b.classList.contains('ghost')) return;
+  const li = b.closest('li'); if(!li) return;
+  li.classList.toggle('crossed');
   b.innerHTML = li.classList.contains('crossed') ? '\u2713' : '\u25a1';
   await fetch('/api/done', {method:'POST', headers:{'Content-Type':'application/json'},
                             body: JSON.stringify({key: b.dataset.key})});
@@ -2494,14 +2519,6 @@ document.addEventListener('click', e=>{
   if(!e.target.closest('#qfold')) return;
   window.__showdone = !window.__showdone;
   drawQueue(window.__feed);
-});
-document.addEventListener('click', async e=>{
-  const b = e.target.closest('.qtick'); if(!b) return;
-  const r = (window.__feed||[]).find(x=>x.key===b.dataset.qkey); if(!r) return;
-  r.done = r.done ? null : '1';
-  drawQueue(window.__feed);
-  await fetch('/api/queuedone', {method:'POST', headers:{'Content-Type':'application/json'},
-                                 body: JSON.stringify({key: b.dataset.qkey})});
 });
 """
 
@@ -2866,16 +2883,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(toggle_done(key)), 'application/json')
             except Exception as e:
                 self._send(400, json.dumps({'error': str(e)}), 'application/json')
-        elif self.path == '/api/queuedone':
-            n = int(self.headers.get('Content-Length', 0))
-            try:
-                key = json.loads(self.rfile.read(n).decode('utf-8'))['key']
-                res = feed_mark(key)
-                if res['ok']:
-                    publish('feed', rows=feed_rows())
-                self._send(200, json.dumps(res), 'application/json')
-            except Exception as e:
-                self._send(400, json.dumps({'error': str(e)}), 'application/json')
+        # No /api/queuedone. Crossing a queue row off from the browser is gone;
+        # the endpoint went with the button rather than being left as a live
+        # route with no caller, which is how a "removed" feature comes back.
+        # `feed_mark` itself stays -- --mark and `zipper commit` both need it.
         elif self.path == '/discord':
             # The bot posts every message it sees here. It is loopback-only and
             # unauthenticated, exactly like the rest of this server.

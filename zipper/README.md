@@ -162,10 +162,11 @@ optional `who`/`when` where the source actually knows them. The `vault` events �
 tree, straight from git — are rows in that same list, **not a section under it**. They had
 their own heading for a while, and it made an uncommitted note read as a different kind of
 thing to be dealt with separately when it is simply another event this pass has to account
-for. The one real difference is how they clear, and the row says so by carrying no tick box:
-these go when the pass commits. The header count includes them, because an uncommitted note
-is outstanding. It is polled every four seconds
-rather than watched: another conversation editing the vault writes no file this server
+for. The one real difference is how they clear: a note row goes when the pass commits and
+cannot be `--mark`ed, where an event row can. That distinction used to be visible as a
+missing tick box; now that no row has one, it lives in the caption under the note rows.
+The header count includes them, because an uncommitted note is outstanding. It is polled
+every four seconds rather than watched: another conversation editing the vault writes no file this server
 could watch for, and the card has to show that without waiting for a refresh.
 
 **There is only one queue.** It lives in `Inbox/feed.json` and is crossed off row by row.
@@ -178,9 +179,20 @@ ticking one is meaningless — it re-fires next run while reading as handled. Th
 **Signals**. Until 2026-09-06 `emit_diff` published them as rows; that was the bug.
 
 It lives in `Inbox/feed.json`, so it survives a restart of the server — it used to be
-in-memory only, and a queue you were halfway through vanished with the app. Every row
-has a tick box; ticking one crosses it off for every open tab. The count in the header
-is what is still *outstanding*, not what arrived.
+in-memory only, and a queue you were halfway through vanished with the app. The count in
+the header is what is still *outstanding*, not what arrived.
+
+**The card is read-only. No row is crossed off from the browser.** Tick boxes were removed
+on 2026-09-06: a row means *something happened that the vault has not accounted for*, and
+the only thing that makes it accounted for is working out what it affected. A tick box
+offers to shorten the list without doing that, and a short list then reads as a reconciled
+one — the same objection that says bookkeeping is a pass rather than a command. A row now
+clears exactly two ways, both of which mean the reasoning actually happened: `zipper commit`
+closing a pass, or `--mark` from the session that just did it. `/api/queuedone` was deleted
+along with the button, so there is no live route left for it to come back through.
+
+Tasks in **What to work on** are unaffected and still tick by hand — that box writes back to
+the markdown file, so it records a real completion rather than dismissing a notification.
 
 The file is the interface, not just storage. The Claude session in the terminal crosses
 items off with
@@ -274,7 +286,8 @@ the session first, so `claude-session.sh` actually runs and actually reads the p
 Before that it was silent — the old queue button against a live session wrote a prompt
 nobody read, mounted the old conversation, and looked like it had worked.
 
-**Crossing things off by hand.** Every row has a tick box. A **task** is written back to
+**Crossing things off by hand** — in **What to work on** only; the queue card above is
+read-only. A **task** is written back to
 its markdown file, so the vault stays the source of truth and the ledger sees the close.
 **Canvas** cannot be written to, so those go in `Inbox/overrides.json` and are a display
 override only — Canvas remains authoritative for what was actually submitted.
