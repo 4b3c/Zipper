@@ -401,6 +401,14 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
              # this before Option-drag can select anything.
              '-t', 'macOptionClickForcesSelection=true',
              '-t', 'rightClickSelectsWord=true',
+             # ttyd's client installs a `beforeunload` handler, so the browser
+             # asked "leave site?" on every refresh. That warning was true once
+             # and is not any more: the pane lives in tmux and ttyd `attach`es
+             # to it rather than running the command itself, so a reload drops a
+             # websocket and reattaches to the same conversation. There is
+             # nothing left to lose by closing the tab, and a prompt guarding
+             # nothing only trains you to click through prompts.
+             '-t', 'disableLeaveAlert=true',
              '-t', 'fontSize=%d' % font,
              '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
