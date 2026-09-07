@@ -190,13 +190,20 @@ def start(thread_id, prompt=None):
     --session-id assigns the id on a first run; --resume takes it back up. They
     are not interchangeable -- passing --session-id an id Claude already knows
     is an error -- so the transcript on disk decides which one this is.
+
+    **Auto permission mode.** A conversation Zipper starts is usually one nobody
+    is watching: reached from a phone, or resumed to answer a message. In manual
+    mode the first tool call stops it dead behind a prompt only someone at the
+    keyboard can clear, and from Discord that looks exactly like Zipper having
+    gone quiet. `ZIPPER_PERMISSION_MODE` overrides it.
     """
     name = tmux_name(thread_id)
     row = load().get(str(thread_id)) or {}
     sid = row.get('session_id') or session_id(thread_id)
     resumed = os.path.exists(transcript(thread_id))
     flag = ['--resume', sid] if resumed else ['--session-id', sid]
-    inner = ' '.join(['exec', 'claude'] + flag)
+    mode = os.environ.get('ZIPPER_PERMISSION_MODE', 'auto')
+    inner = ' '.join(['exec', 'claude'] + flag + ['--permission-mode', mode])
     env = dict(os.environ)
     env['ZIPPER_DISCORD_THREAD'] = str(thread_id)
     env['ZIPPER_VAULT'] = VAULT
@@ -214,9 +221,67 @@ def start(thread_id, prompt=None):
     _wait_ready(thread_id)      # a paste before the TUI is listening is lost
     # Reopening is not saying something: it must not reorder the list.
     touch(thread_id, resumed=resumed, closed=False)
+    out = {'ok': True, 'resumed': resumed, 'session_id': sid, 'tmux': name}
     if prompt:
-        paste(thread_id, prompt)
-    return {'ok': True, 'resumed': resumed, 'session_id': sid, 'tmux': name}
+        # The paste result is the answer to "did the message arrive", which is
+        # the whole point of the call. Discarding it meant a cold start that
+        # left the text sitting unsent still reported ok, so nothing upstream --
+        # the bot, the typing indicator, the caller -- had any way to know.
+        r = paste(thread_id, prompt)
+        if not r.get('ok'):
+            out.update(ok=False, error=r.get('error') or 'paste failed')
+    return out
+
+
+def _input_line(pane):
+    """What is currently typed but unsent, or None if the box isn't on screen.
+
+    The input box is the last line starting with the prompt character. Reading
+    "everything after the last ❯" instead swept up the footer, which is fine
+    until the footer is the only thing that redrew.
+    """
+    for line in reversed((pane or '').splitlines()):
+        s = line.lstrip()
+        if s.startswith('❯'):
+            return s[1:].strip()
+    return None
+
+
+def _submit(thread_id, tgt, text, timeout=20.0):
+    """Press Enter until the message actually leaves the input box.
+
+    Two things make this harder than one keystroke:
+
+    **A cold Claude draws the prompt before it will accept a submit.** So
+    `_wait_ready` returns, the first Enters go nowhere, and the message sits in
+    the box looking delivered -- the only failure here invisible from outside.
+    On 2026-09-07 a new conversation from Discord did exactly that, and a single
+    Enter by hand a minute later submitted it instantly: the keystroke was always
+    right, the window (six tries at 0.6s) was too short for a first start.
+
+    **A single frame is not evidence.** The TUI redraws several times a second,
+    so a capture can land mid-redraw with the input line blank. Believing one
+    such frame is what made the first fix report success over an unsent message.
+    Clearing has to be seen twice in a row, and a frame with no input box at all
+    counts as neither.
+    """
+    probe = (text.strip().splitlines() or [''])[0][:40]
+    clear = 0
+    end = time.time() + timeout
+    while time.time() < end:
+        time.sleep(0.5)
+        line = _input_line(_pane(thread_id))
+        if line is None:
+            continue                       # mid-redraw: no evidence either way
+        if probe not in line:
+            clear += 1
+            if clear >= 2:
+                return True
+        else:
+            clear = 0
+            subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'Enter'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return False
 
 
 def paste(thread_id, text):
@@ -242,15 +307,16 @@ def paste(thread_id, text):
         # and the message then sits in the input box looking delivered -- the
         # one failure here that is invisible from outside. Check that the text
         # actually left the box, and press again if it did not.
-        probe = (text.strip().splitlines() or [''])[0][:40]
-        for _ in range(6):
-            time.sleep(0.6)
-            pane = _pane(thread_id)
-            tail = pane.rsplit('\u276f', 1)[-1] if '\u276f' in pane else pane
-            if probe not in tail:
-                break
-            subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'Enter'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        #
+        # **Keep pressing for 20 seconds, not 4.** A *cold* Claude draws the
+        # prompt character well before it will accept a submit, so `_wait_ready`
+        # returns and every Enter for the next several seconds goes nowhere. Six
+        # tries at 0.6s covered a resume and not a first start: on 2026-09-07 a
+        # new conversation from Discord sat with "Test" in its box, and a single
+        # Enter by hand a minute later submitted it instantly -- the keystroke
+        # was always right, the window was too short.
+        if not _submit(thread_id, tgt, text):
+            return {'ok': False, 'error': 'message stayed in the input box'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
     touch(thread_id, active=True)
