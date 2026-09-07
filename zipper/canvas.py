@@ -231,18 +231,26 @@ def cmd_canvas(a):
             items, kind = _canvas_fetch(a.days)
             src = 'api:' + kind
         except CanvasAuthError as e:
-            # Loud, and nothing is written. The old canvas.json stays exactly as
-            # it was and keeps its old `fetched` stamp, so a stale submitted-flag
-            # can still be spotted -- what must never happen is this failing
-            # quietly and the vault claiming the data is current.
-            print('canvas: NOT FETCHED -- %s' % e)
-            print('  repaste the cookie: canvas.asu.edu -> devtools -> Application ->')
-            print('  Cookies -> canvas_session, then set CANVAS_SESSION in /opt/zipper/.env')
-            print('  (and `systemctl restart zipper-web` so running services see it)')
+            # Nothing is written. The old canvas.json keeps its old `fetched`
+            # stamp, so a stale submitted-flag can still be spotted -- what must
+            # never happen is this failing quietly and the vault claiming the
+            # data is current. So: state it, and say how old.
+            #
+            # One line, not four. ASU issues no API tokens, so this runs on a
+            # browser cookie ASU rotates on its own schedule -- twice inside one
+            # day on 2026-09-06. Repasting it is not a task Abram is taking on,
+            # so printing the repaste recipe every hour was an alarm for a
+            # condition nobody is going to act on, which is how real alarms get
+            # tuned out. The degradation is narrow and survivable: the Canvas
+            # ICS feed is a separate input and still works, so due dates and the
+            # agenda are unaffected and only submitted-vs-due goes stale. When a
+            # token finally exists, set CANVAS_TOKEN and this path stops firing.
+            stamp = '?'
             if os.path.exists(CANVAS_JSON):
                 blob = json.load(open(CANVAS_JSON, encoding='utf-8'))
-                print('  %s is unchanged, fetched %s -- treat submitted/ flags as stale'
-                      % (rel(CANVAS_JSON), blob.get('fetched', '?')))
+                stamp = blob.get('fetched', '?')
+            print('canvas: not fetched (%s) -- submitted/ flags stale since %s; '
+                  'due dates unaffected' % (e, stamp))
             return 1
         except Exception as e:
             print('canvas: fetch failed -- %s' % e)
