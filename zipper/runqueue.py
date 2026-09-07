@@ -43,8 +43,14 @@ def _git(*args):
     """Run git in the vault. Returns stdout, or '' if git itself failed --
     the vault being a repo is load-bearing here, but a missing git must
     degrade to "no note changes", never take the whole brief down."""
+    # core.quotePath=false: git otherwise renders any non-ASCII byte in a path
+    # as an octal escape inside double quotes -- `Zipper \342\200\224 the
+    # system.md`. Decoding that back is fiddly and was being got wrong (see
+    # note_changes), so the fix is to never be handed it: with quotePath off,
+    # git emits the real UTF-8 path and there is nothing to decode.
     try:
-        r = subprocess.run(['git', '-C', VAULT] + list(args),
+        r = subprocess.run(['git', '-C', VAULT, '-c', 'core.quotePath=false']
+                           + list(args),
                            capture_output=True, text=True, timeout=30)
         return r.stdout if r.returncode == 0 else ''
     except Exception:
@@ -82,7 +88,20 @@ def note_changes():
             continue
         code, _, path = line[:2], line[2], line[3:].strip()
         if path.startswith('"') and path.endswith('"'):
-            path = path[1:-1].encode().decode('unicode_escape')
+            # Only reachable for genuinely odd names now that quotePath is off
+            # (a quote or a control character in the filename). The round trip
+            # through latin-1 matters: `unicode_escape` maps each octal escape
+            # to one *codepoint*, so the three bytes of an em dash come back as
+            # three mojibake characters unless they are re-packed as bytes and
+            # decoded as UTF-8. Getting this wrong silently produced a path that
+            # matched no file, and `git add` aborts the whole batch on one bad
+            # pathspec -- so a single em dash in a filename stopped four
+            # unrelated notes from being committed at all.
+            try:
+                path = (path[1:-1].encode().decode('unicode_escape')
+                        .encode('latin-1').decode('utf-8'))
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                path = path[1:-1]
         if not path.endswith('.md') or _is_generated(path):
             continue
         action = ('add' if 'A' in code or '?' in code else
@@ -501,7 +520,17 @@ def cmd_commit(a):
     marked = serve.feed_mark_all()['marked']
     paths = [c['path'] for c in changes]
     if paths:
-        subprocess.run(['git', '-C', VAULT, 'add', '--'] + paths, check=False)
+        # Not check=False-and-forget. `git add` aborts the entire batch if one
+        # pathspec matches nothing, so a single unreadable path silently took
+        # every other note down with it and the only symptom was the "still
+        # uncommitted" warning at the end, which reads like nothing was staged
+        # rather than like staging failed.
+        r = subprocess.run(['git', '-C', VAULT, 'add', '--'] + paths,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print('commit: git add failed, nothing staged --')
+            for ln in (r.stderr or '').strip().split('\n')[:3]:
+                print('  ' + ln)
     subprocess.run(['git', '-C', VAULT, 'add', '--'] +
                    [os.path.join('Meta', f) for f in
                     ('Status.md', 'Agenda.md', 'Queue.md', 'Repos.md')], check=False)
