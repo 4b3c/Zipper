@@ -14,7 +14,7 @@ No framework: stdlib only, so the VPS needs nothing but python3.
 import argparse, datetime, glob, html, json, os, shutil, subprocess, sys, tempfile, threading, time
 import base64, io, re, urllib.parse
 
-from . import core, canvas, chat, conversations, events, gh, ics, metrics
+from . import core, canvas, chat, conversations, events, gh, ics, metrics, usage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -106,7 +106,7 @@ def _queue_prompt():
               "Cross a single row off with its key:\n"
               "  python3 -m zipper.serve --mark <key>\n"
               "Or end the whole pass — ticks every row and commits the notes:\n"
-              "  python3 -m zipper bookkeep --commit \"<message>\"\n"
+              "  python3 -m zipper commit \"<message>\"\n"
               "An open dashboard picks either up within a second.")
 
 def _wait_port(host, port, timeout=6.0):
@@ -189,7 +189,6 @@ def new_session():
             open(TERM['ready'], 'w').write('')
         except OSError:
             pass
-    publish('diff', 'terminal    conversation closed')
     return {'ok': True}
 
 
@@ -235,14 +234,77 @@ def inject_queue(prompt):
     """
     res = paste_to_session(prompt, 'the queue')
     if not res['ok']:
-        publish('diff', 'terminal    could not hand over the queue: %s' % res['error'])
+        publish('status', 'terminal    could not hand over the queue: %s' % res['error'])
         return res
-    publish('diff', 'terminal    queue handed to the running conversation')
     return res
 
 
+def _ready_file(prompt):
+    """Write this run's opening instruction and return the launcher's argv.
+
+    claude-session.sh waits on the file rather than taking the prompt as an
+    argument, so the terminal can appear before the fetch has finished.
+    """
+    fh = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False)
+    TERM['ready'] = fh.name
+    fh.write(prompt or '')
+    fh.close()
+    return [os.path.join(HERE, 'claude-session.sh'), TERM['ready']]
+
+
+def _spawn_session(prompt, inner=None):
+    """Create the dashboard's tmux session, detached, primed with `prompt`.
+
+    Separate from spawning ttyd because ttyd only *attaches* now. Whoever wants
+    a conversation has to start it deliberately -- which is exactly what makes
+    Ctrl-C stick.
+    """
+    tmux = shutil.which('tmux')
+    if not tmux:
+        return False
+    if inner is None:
+        inner = _ready_file(prompt)
+    subprocess.run([tmux, 'new-session', '-d', '-s', TERM['session'],
+                    '-c', VAULT] + inner,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return session_exists()
+
+
+def reap_terminal():
+    """Take the dashboard's ttyd down with its session.
+
+    The same rule `conversations.sweep()` applies to every other conversation,
+    which the dashboard's own terminal had been exempt from: when the session is
+    gone, the viewer goes too. Otherwise ttyd keeps the port open, `terminal_up()`
+    keeps saying the terminal is viewable, and the card shows a dead pane instead
+    of offering to start something.
+
+    An **adopted** ttyd is killed too, by port. That is not a nicety: a ttyd
+    outlives the `serve.py` that spawned it, so after a restart the one serving
+    this port is holding whatever command it was born with -- and the ones born
+    before this change run `tmux new -A`, which rebuilds a killed session on the
+    next reconnect. Leaving them be is what made this fix look like it had not
+    worked at all.
+    """
+    if session_exists():
+        return False
+    if TERM['proc'] is not None:
+        if TERM['proc'].poll() is None:
+            try:
+                TERM['proc'].terminate()
+            except Exception:
+                pass
+    elif _port_open(TERM['host'], TERM['port']):
+        conversations.kill_ttyd_on(TERM['port'], TERM['host'])
+    else:
+        return False
+    TERM['proc'] = None
+    return True
+
+
 def start_terminal(mode='blank', prompt=None):
-    """Spawn ttyd running Claude Code in the vault. Only ever called from the
+    """Spawn ttyd running Claude Code in the vault, and the session it attaches
+    to. Only ever called from the
     page, never at launch: opening the dashboard must not start a Claude
     session, because merely looking at the day should not cost tokens.
 
@@ -274,35 +336,44 @@ def start_terminal(mode='blank', prompt=None):
         if not res['ok']:
             return res
         handed = True
-    if TERM['proc']:                       # ttyd already up; just set the prompt
-        if TERM['ready'] and not resumed:
-            open(TERM['ready'], 'w').write(prompt)
+    # ttyd already serving -- either this process's, or one it did not spawn
+    # (the service was restarted under it). Either way, do not spawn a second:
+    # it would fail to bind the port and die silently.
+    adopted = not TERM['proc'] and _port_open(TERM['host'], TERM['port'])
+    if TERM['proc'] or adopted:
+        if not resumed:
+            # The session is gone (Ctrl-C, or `new conversation`) but the viewer
+            # is still up. ttyd only *attaches* now, so nothing would recreate
+            # it -- start it here, primed, and tell the page to remount so the
+            # attach happens without waiting for a reconnect.
+            _spawn_session(prompt)
+            publish('terminal', 'session started')
         return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
-                'primed': bool(prompt) or handed}
-    if _port_open(TERM['host'], TERM['port']):
-        # A ttyd this process did not spawn is still serving the port (the
-        # service was restarted under it). Spawning a second one would fail to
-        # bind and die silently, so use the one that is there.
-        return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
-                'primed': handed, 'adopted': True}
+                'primed': bool(prompt) or handed, 'adopted': adopted or None}
     exe = shutil.which('ttyd')
     if not exe:
-        publish('diff', 'terminal    ttyd not installed')
+        publish('status', 'terminal    ttyd not installed')
         return {'ok': False, 'error': 'ttyd not installed'}
-    fh = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False)
-    TERM['ready'] = fh.name
-    fh.write(prompt)
-    fh.close()
-    inner = [os.path.join(HERE, 'claude-session.sh'), TERM['ready']]
+    inner = _ready_file(prompt)
     tmux = shutil.which('tmux')
     if tmux:
         # tmux owns the process, not the websocket. Closing the tab detaches;
         # reopening reattaches to the SAME live conversation. Without this,
         # ttyd spawns a fresh command per connection and the session is lost.
-        args = [tmux, 'new', '-A', '-s', TERM['session']] + inner
+        #
+        # Creating the session and attaching to it are two steps on purpose.
+        # ttyd re-runs its command on every connection, and the browser
+        # reconnects by itself when one drops -- so a command that can *create*
+        # the session makes Ctrl-C impossible to mean: ending Claude ended the
+        # pane, the page reconnected, and claude-session.sh started a brand new
+        # conversation a second later. Start it here, once; let ttyd only
+        # attach. When the session is gone, attach exits and it stays gone.
+        if not session_exists():
+            _spawn_session(prompt, inner)
+        args = [tmux, 'attach-session', '-t', TERM['session']]
     else:
         args = inner
-        publish('diff', 'terminal    no tmux - the session dies with the tab')
+        publish('status', 'terminal    no tmux - the session dies with the tab')
     try:
         # On loopback the terminal is reached only through nginx's /t/<port>/,
         # which puts it on the dashboard's own origin -- and a credential there
@@ -310,7 +381,7 @@ def start_terminal(mode='blank', prompt=None):
         # directly on any other host it still must carry one.
         cred = ['-c', TERM['cred']] if (TERM['cred'] and TERM['host'] != '127.0.0.1') else []
         if TERM['host'] != '127.0.0.1' and not TERM['cred']:
-            publish('diff', 'terminal    refusing to expose an unauthenticated shell')
+            publish('status', 'terminal    refusing to expose an unauthenticated shell')
             return {'ok': False, 'error': 'refusing to expose an unauthenticated shell'}
         TERM['proc'] = subprocess.Popen(
             [exe, '-p', str(TERM['port']), '-i', TERM['host'], '-W'] + cred + [
@@ -329,9 +400,8 @@ def start_terminal(mode='blank', prompt=None):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         TERM['url'] = 'http://127.0.0.1:%d/' % TERM['port']
         if not _wait_port(TERM['host'], TERM['port']):
-            publish('diff', 'terminal    ttyd did not come up on port %d' % TERM['port'])
+            publish('status', 'terminal    ttyd did not come up on port %d' % TERM['port'])
             return {'ok': False, 'error': 'terminal did not start'}
-        publish('diff', 'terminal    %s session started' % mode)
         # The page may be holding an iframe against the ttyd this one replaced.
         # Without this it shows a dead terminal until someone reloads -- which
         # is what "sending from Discord disconnects the dashboard" looked like.
@@ -344,7 +414,7 @@ def start_terminal(mode='blank', prompt=None):
         return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
                 'primed': bool(prompt) or handed}
     except Exception as e:
-        publish('diff', 'terminal    failed: %s' % e)
+        publish('status', 'terminal    failed: %s' % e)
         return {'ok': False, 'error': str(e)}
 
 # ---------------------------------------------------------------- inbound
@@ -388,12 +458,12 @@ def deliver_to_claude(text, source='discord'):
             time.sleep(1.0)          # let tmux finish attaching before pasting
         res = paste_to_session(body, 'a %s message' % source)
         if res['ok']:
-            publish('diff', 'terminal    %s message delivered (%s)' % (source, state))
+            publish('status', 'terminal    %s message delivered (%s)' % (source, state))
         return dict(res, state=state)
 
     r = start_terminal('blank', prompt=body)
     if r['ok']:
-        publish('diff', 'terminal    %s message started a new conversation' % source)
+        publish('status', 'terminal    %s message started a new conversation' % source)
     return dict(r, state='cold')
 
 
@@ -539,6 +609,7 @@ def newest_buffer(seen=''):
 def conversation_rows():
     """The chat list: every conversation, with the state the page has to show."""
     conversations.sweep()
+    reap_terminal()
     rows = []
     for r in conversations.listing():
         rows.append({
@@ -576,10 +647,7 @@ def open_conversation(thread_id):
             return {'ok': True, 'port': TERM['port'], 'adopted': True}
         r = start_terminal('resume')
         return dict(r, port=r.get('port', TERM['port'])) if r.get('ok') else r
-    res = conversations.ensure_ttyd(thread_id, host='127.0.0.1')
-    if res.get('ok'):
-        publish('diff', 'terminal    showing conversation %s' % thread_id)
-    return res
+    return conversations.ensure_ttyd(thread_id, host='127.0.0.1')
 
 
 
@@ -599,7 +667,7 @@ def new_conversation():
         # No Discord, no thread -- but the conversation should still start. A
         # local id keeps it addressable in the list; it just cannot be reached
         # from a phone until someone opens a thread for it.
-        publish('diff', 'terminal    no Discord thread for this conversation: %s' % e)
+        publish('status', 'terminal    no Discord thread for this conversation: %s' % e)
         tid = 'local-%d' % int(time.time())
     if not tid:
         return {'ok': False, 'error': 'could not open a Discord thread'}
@@ -1344,18 +1412,15 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
       padding:2px 0;display:flex;gap:8px;align-items:flex-start}
 .qrow:last-child{border-bottom:0}
 .qx{white-space:pre-wrap;flex:1;min-width:0}
-.qt{color:var(--dim)}
+/* Fixed column so every row's text starts at the same x: feed rows stamp
+   HH:MM:SS and note rows HH:MM, and ragged left edges read as two lists. */
+.qt{color:var(--dim);min-width:62px;flex:none}
 .qrow.crossed .qx,.qrow.crossed .qt{text-decoration:line-through;color:var(--dim)}
 .qrow.crossed .tick{border-color:var(--accent)}
 .qfresh{font-weight:400;margin-left:8px}
-.qwhen{color:var(--dim);margin-left:8px;flex:none}
 #qrefetch{float:right}
-.qsub{font:600 11px/1.6 inherit;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);
-  margin:14px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
-#qnotes:empty{display:none}
-.qrow.nrow{padding-left:2px}
-.qrow.nrow .qt{min-width:62px;display:inline-block}
-.qrow.nrow .qt.added{color:var(--accent)}
+/* Note rows are queue rows: same list, same columns. The ghost tick holds the
+   box's width so nothing hangs left of the rows that have one. */
 .tick.ghost{border-color:transparent;cursor:default}
 .qfold{display:block;width:100%;text-align:left;background:none;border:0;cursor:pointer;
   font:12px/1.9 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);padding:4px 0 0}
@@ -1373,9 +1438,29 @@ code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
           gap:10px;background:#171614;border-radius:8px;color:#ece8e1}
 #termcard.full .termdead{height:100%}
 #termwrap{flex:1;min-width:0}
-#chatlist{width:186px;flex:0 0 186px;display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:600px}
+/* The side column is the fixed-width thing; the list inside it scrolls and the
+   meters sit under it, so a long list never pushes them off the card. */
+#chatside{width:186px;flex:0 0 186px;display:flex;flex-direction:column;gap:8px;max-height:600px}
+#chatlist{display:flex;flex-direction:column;gap:4px;overflow-y:auto;min-height:0;flex:1}
 #termcard.full #termbody{flex:1;min-height:0}
-#termcard.full #chatlist{max-height:none}
+#termcard.full #chatside{max-height:none}
+#usemeters{flex:none;border-top:1px solid var(--line);padding-top:7px;
+  display:flex;flex-direction:column;gap:6px}
+#usemeters:empty{display:none}
+/* One line: bar, then the number, then when it resets. The bar takes what is
+   left so both readouts stay on the same right edge across the two rows. */
+.use{font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);
+  display:flex;align-items:center;gap:6px}
+.use .pct{flex:none;width:29px;text-align:right;font-variant-numeric:tabular-nums}
+.use .rst{flex:none;opacity:.7;white-space:nowrap}
+.use .bar{flex:1;min-width:22px;height:4px;border-radius:3px;background:rgba(127,127,127,.22);overflow:hidden}
+.use .fill{display:block;height:100%;border-radius:3px;background:var(--accent);
+  transition:width .3s ease}
+.use.warn .fill{background:#e0a52b}
+.use.hot .fill{background:#d2604a}
+.use.hot .pct,.use.warn .pct{color:inherit}
+#usemeters .err{font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);opacity:.7}
+#usemeters.stale{opacity:.55}
 .chat{text-align:left;background:none;border:1px solid transparent;border-radius:7px;padding:6px 8px;
       cursor:pointer;color:inherit;font:inherit;line-height:1.25;display:block;width:100%}
 .chat:hover{background:rgba(127,127,127,.10)}
@@ -1453,18 +1538,19 @@ function qrowHTML(r){
 // folded rather than deleted: an accidental tick has to be undoable, and the
 // only place to un-tick is the row itself.
 function drawQueue(rows){
-  window.__feed=rows||[];
+  if(rows) window.__feed=rows;
   const q=document.getElementById('queue'); if(!q) return;
-  const open=window.__feed.filter(r=>!r.done), done=window.__feed.filter(r=>r.done);
-  document.getElementById('qcount').textContent=open.length;
-  if(!window.__feed.length){
+  const feed=window.__feed||[], notes=window.__notes||[];
+  const open=feed.filter(r=>!r.done), done=feed.filter(r=>r.done);
+  document.getElementById('qcount').textContent=open.length+notes.length;
+  if(!feed.length&&!notes.length){
     q.dataset.empty='1';
     q.innerHTML='<p class="sub">Waiting for this run\u2019s fetch\u2026</p>';
     return;
   }
   delete q.dataset.empty;
-  let h = open.map(qrowHTML).join('');
-  if(!open.length) h = '<p class="sub">All clear \u2014 everything this run turned up is dealt with.</p>';
+  let h = open.map(qrowHTML).join('') + notesHTML(notes);
+  if(!open.length&&!notes.length) h = '<p class="sub">All clear \u2014 everything this run turned up is dealt with.</p>';
   if(done.length){
     h += '<button class="qfold" id="qfold">'+(window.__showdone?'\u25be':'\u25b8')+' '
        + done.length+' crossed off</button>';
@@ -1476,18 +1562,20 @@ function drawQueue(rows){
 // the queue text, which qrowHTML escapes inline.
 function esc(x){return String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;')
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// Note edits are queue rows like any other -- one list, not a section. The only
+// thing that makes them different is how they clear, and the missing tick box
+// says that on the row itself. See _qnotes_html for the same rendering server-side.
+function notesHTML(rows){
+  if(!rows.length) return '';
+  return rows.map(r=>'<div class="qrow nrow"><span class="tick ghost"></span>'
+      +'<span class="qt">'+esc((r.when||'').slice(11))+'</span>'
+      +'<span class="qx">'+esc(r.text||(r.action+' '+r.path))+'</span></div>').join('')
+    +'<p class="sub">Note edits clear by committing, not by ticking \u2014 '
+    +'<code>python3 -m zipper commit "msg"</code></p>';
+}
 function drawNotes(rows){
   window.__notes=rows||[];
-  const n=document.getElementById('qnotes'); if(!n) return;
-  if(!window.__notes.length){ n.innerHTML=''; return; }
-  n.innerHTML='<h3 class="qsub">Notes changed since the last pass ('
-    +window.__notes.length+')</h3>'
-    +window.__notes.map(r=>'<div class="qrow nrow"><span class="qt'
-      +(r.action==='add'?' added':'')+'">'+esc(r.action)+'</span><span class="qx">'
-      +esc(r.path)+'</span>'+(r.when?'<span class="qwhen">'+esc(r.when.slice(11))+'</span>':'')
-      +'</div>').join('')
-    +'<p class="sub">Cleared by committing, not by ticking \u2014 '
-    +'<code>zipper bookkeep --commit "msg"</code></p>';
+  drawQueue();
 }
 function row(e){
   const f=window.__feed||[];
@@ -1614,8 +1702,7 @@ function chatEsc(t){return String(t==null?'':t).replace(/[&<>"]/g,
 function drawChats(rows){
   const el=document.getElementById('chatlist');
   if(!el) return;
-  if(!rows||!rows.length){el.hidden=true;el.innerHTML='';return;}
-  el.hidden=false;
+  if(!rows||!rows.length){el.innerHTML='';sideVis();return;}
   el.innerHTML=rows.map(r=>{
     const on=(String(r.thread_id)===String(window.__chat))?' on':'';
     const st=r.state||(r.alive?'waiting':'closed');
@@ -1626,12 +1713,95 @@ function drawChats(rows){
            chatEsc(r.title)+' \u2014 '+st+'"><span class="dot"></span>'+
            '<span class="ct">'+chatEsc(r.title)+'</span></button>';
   }).join('');
+  // Deliberately no scrollIntoView on the selected row: the page moving under
+  // him on a 6s poll is worse than a selected row sitting out of sight.
+  sideVis();
+}
+// The column carries two things now, so it is on if either has content --
+// otherwise an empty 186px gutter sits beside the terminal.
+function sideVis(){
+  const side=document.getElementById('chatside');
+  if(!side) return;
+  const list=document.getElementById('chatlist'), m=document.getElementById('usemeters');
+  side.hidden = !((list&&list.children.length)||(m&&m.children.length));
+}
+// ---- plan usage: the 5-hour session window and the 7-day one, as bars.
+// The numbers are Anthropic's, not this box's -- see zipper/usage.py for why a
+// local estimate was not good enough. Five minutes is the server's cache TTL,
+// so polling faster would only re-serve the same answer.
+// The stamps are UTC, like every other feed here. Rendered in the box's local
+// time -- a bar that says it resets at 02:50 when he is reading it at 19:50 is
+// worse than saying nothing.
+function resetDate(s){ if(!s) return null; const d=new Date(s); return isNaN(d)?null:d; }
+function resetShort(s){
+  const d=resetDate(s); if(!d) return '';
+  // 186px of column: the time alone if it lands today or tonight, a weekday in
+  // front of it if it doesn't. Anything longer wraps and pushes the bar around.
+  const t=d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}).replace(' ','').toLowerCase();
+  return d.toDateString()===new Date().toDateString()
+    ? t : d.toLocaleDateString([], {weekday:'short'})+' '+t;
+}
+function resetLong(s){
+  const d=resetDate(s); if(!d) return 'unknown';
+  return d.toLocaleString([], {weekday:'short', hour:'numeric', minute:'2-digit'});
+}
+function drawUsage(d){
+  const el=document.getElementById('usemeters');
+  if(!el) return;
+  const rows=(d&&d.meters)||[];
+  el.classList.toggle('stale', !!(d&&d.stale));
+  if(!rows.length){
+    // A blank meter is honest; a bar drawn from a number nothing returned is not.
+    el.innerHTML = d&&d.error ? '<p class="err">usage: '+chatEsc(d.error)+'</p>' : '';
+    sideVis(); return;
+  }
+  el.innerHTML=rows.map(r=>{
+    const p=Math.max(0,Math.min(100,Number(r.pct)||0));
+    const cls=p>=90?' hot':(p>=70?' warn':'');
+    // No label: the two bars are the session and the week, in that order, and
+    // the reset time says which is which more usefully than the words did --
+    // one resets tonight, the other on a weekday.
+    return '<div class="use'+cls+'" title="'+chatEsc(r.label)+' — resets '+
+           chatEsc(resetLong(r.resets))+'"><span class="bar">'+
+           '<span class="fill" style="width:'+p+'%"></span></span>'+
+           '<span class="pct">'+p.toFixed(0)+'%</span>'+
+           '<span class="rst">'+chatEsc(resetShort(r.resets))+'</span></div>';
+  }).join('');
+  sideVis();
+}
+function loadUsage(){
+  return fetch('/api/usage').then(r=>r.json()).then(d=>{drawUsage(d);return d;})
+    .catch(()=>{});
 }
 function loadChats(){
   return fetch('/api/conversations').then(r=>r.json())
     .then(d=>{window.__chats=d.conversations||[];drawChats(window.__chats);
               checkShown(window.__chats);return window.__chats;})
     .catch(()=>[]);
+}
+// On a reload the page used to show whichever ttyd happened to be serving --
+// usually the dashboard's own terminal, which is rarely the conversation he was
+// last in. `/api/conversations` is already sorted newest-first, so the top live
+// row is the one to land on.
+//
+// Only a row that is still alive is opened automatically. Resuming a *closed*
+// conversation re-reads its whole transcript at full price, and a page refresh
+// must never spend that on its own -- those keep the deliberate click.
+function focusRecent(rows){
+  if(window.__chat) return;                       // already showing something
+  const row=(rows||[]).find(r=>r.state!=='closed');
+  if(!row) return;
+  window.__chat=row.thread_id;
+  drawChats(rows);
+  if(row.serving&&row.port){
+    // Free: the ttyd is already up. Skip the remount if it is what the page is
+    // showing anyway, so a reload doesn't reload the iframe twice.
+    window.__mounted=true;
+    if(row.port!==window.__port) mountTerm(row.port);
+    drawTerm();
+  } else {
+    openChat(row.thread_id);                      // alive; just needs a ttyd
+  }
 }
 // A conversation can die without the page doing anything -- Ctrl-C in the pane
 // ends Claude and takes the tmux session with it. The iframe then shows a
@@ -1686,6 +1856,7 @@ function showClosed(row){
 }
 function mountTerm(port){
   const u=termURL(port);
+  window.__port=port;
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';
   document.getElementById('termpop').href=u;
   const f=document.querySelector('#termwrap iframe');
@@ -1871,7 +2042,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   // 6s, not 20: the dot is the only thing saying whether Claude is working,
   // and a light that lags twenty seconds behind is worse than none. Each poll
   // is a capture-pane per conversation, which is cheap.
-  loadChats(); setInterval(loadChats, 6000);
+  loadChats().then(focusRecent); setInterval(loadChats, 6000);
+  loadUsage(); setInterval(loadUsage, 300000);
   // ttyd already serving: attach straight to it. Before this the page offered to
   // resume a conversation it could simply have shown.
   if(window.__termup){ window.__mounted=true; mountTerm(window.__termport); drawTerm(); }
@@ -2136,22 +2308,24 @@ def _qrow_html(r):
 
 
 def _qnotes_html(rows):
-    """The changed-note section of the queue card.
+    """Changed notes, as ordinary queue rows.
 
-    No tick boxes, deliberately. These clear by committing, and offering a tick
-    would imply the same gesture works on both halves of the card when it does
-    not -- the whole confusion this design exists to end.
+    **Not a section of its own.** A note edit is an event like any other -- the
+    queue is one list, and splitting it under a heading made the vault rows read
+    as a different kind of thing that had to be dealt with separately. What is
+    genuinely different is only how they clear, and the row already says that by
+    carrying no tick box: these go when the pass commits.
     """
     if not rows:
         return ''
     body = ''.join(
-        '<div class="qrow nrow"><span class="qt%s">%s</span><span class="qx">%s</span>%s</div>'
-        % (' added' if r['action'] == 'add' else '', esc(r['action']), esc(r['path']),
-           '<span class="qwhen">%s</span>' % esc(r['when'][11:]) if r.get('when') else '')
+        '<div class="qrow nrow"><span class="tick ghost"></span>'
+        '<span class="qt">%s</span><span class="qx">%s</span></div>'
+        % (esc((r.get('when') or '')[11:]),
+           esc(r.get('text') or '%-11s %s' % (r['action'], r['path'])))
         for r in rows)
-    return ('<h3 class="qsub">Notes changed since the last pass (%d)</h3>%s'
-            '<p class="sub">Cleared by committing, not by ticking &mdash; '
-            '<code>zipper bookkeep --commit "msg"</code></p>' % (len(rows), body))
+    return (body + '<p class="sub">Note edits clear by committing, not by ticking '
+            '&mdash; <code>python3 -m zipper commit "msg"</code></p>')
 
 
 def _item_li(it, show_score=True):
@@ -2334,13 +2508,14 @@ def render():
     nrows = note_rows()
     open_rows = [r for r in rows if not r['done']]
     done_rows = [r for r in rows if r['done']]
-    feed = ''.join(_qrow_html(r) for r in open_rows)
-    if rows and not open_rows:
+    feed = ''.join(_qrow_html(r) for r in open_rows) + _qnotes_html(nrows)
+    if rows and not open_rows and not nrows:
         feed = '<p class="sub">All clear &mdash; everything this run turned up is dealt with.</p>'
     if done_rows:
         feed += ('<button class="qfold" id="qfold">&#9656; %d crossed off</button>'
                  % len(done_rows))
-    outstanding = len(open_rows)
+    # The count is what is outstanding, and an uncommitted note is outstanding.
+    outstanding = len(open_rows) + len(nrows)
     live = session_exists()
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2362,7 +2537,7 @@ def render():
 <button id="termfull" class="btn" hidden>fullscreen</button>
 <a id="termpop" class="btn" href="#" target="_blank" rel="noopener" hidden>pop out</a></h2>
 <div id="termstart">%s</div>
-<div id="termbody"><aside id="chatlist" hidden></aside><div id="termwrap"></div></div></div>
+<div id="termbody"><aside id="chatside" hidden><div id="chatlist"></div><div id="usemeters"></div></aside><div id="termwrap"></div></div></div>
 
 <div class="card"><h2>Next actions <a class="more" href="/views/now">see all</a></h2>%s</div>
 
@@ -2377,8 +2552,7 @@ def render():
 <div class="card"><h2>Queue &middot; <span id="qcount">%d</span>
 <span class="sub qfresh" id="qfresh"></span>
 <button id="qrefetch" class="btn">refetch</button></h2>
-<div id="queue"%s>%s</div>
-<div id="qnotes">%s</div></div>
+<div id="queue"%s>%s</div></div>
 
 <footer><div class="fresh" id="fresh"></div>
 <div class="sub vnavbar">%s</div></footer>
@@ -2394,9 +2568,8 @@ window.__notes=%s;
         _view_html(_vb['views'].get('next_actions'), compact=True),
         _view_html(_vb['views'].get('scoreboard'), compact=True),
         len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl) or '<p class="sub">Clean.</p>',
-        met, outstanding, '' if rows else ' data-empty="1"',
+        met, outstanding, '' if (rows or nrows) else ' data-empty="1"',
         feed or '<p class="sub">Waiting for this run’s fetch…</p>',
-        _qnotes_html(nrows),
         ' &middot; '.join('<a class="vnav" href="/views/%s">%s</a>'
                          % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
         json.dumps(epochs), json.dumps(rows), json.dumps(session_exists()),
@@ -2464,6 +2637,10 @@ class Handler(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(self.path.partition('?')[2])
             seen = (q.get('seen') or [''])[0]
             self._send(200, json.dumps(newest_buffer(seen)), 'application/json')
+        elif self.path.split('?')[0] == '/api/usage':
+            q = urllib.parse.parse_qs(self.path.partition('?')[2])
+            self._send(200, json.dumps(usage.read(force=bool(q.get('force')))),
+                       'application/json')
         elif self.path == '/api/conversations':
             self._send(200, json.dumps({'conversations': conversation_rows()}),
                        'application/json')
@@ -2703,7 +2880,7 @@ class Handler(BaseHTTPRequestHandler):
                 res = conversations.deliver(str(tid), _tagged(text, body.get('source', 'discord')),
                                             body.get('source', 'discord'))
                 if res.get('ok'):
-                    publish('diff', 'terminal    %s -> thread %s (%s)'
+                    publish('status', 'terminal    %s -> thread %s (%s)'
                             % (body.get('source', 'discord'), tid, res.get('state')))
                 else:
                     chat.discord_typing(False, tid)

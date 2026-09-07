@@ -15,7 +15,7 @@ one note, or committing over each other, produce conflicts and lost edits that
 neither instance can see. If that starts happening, this is where the lock
 goes; until then, don't work the same project in two threads at once.
 """
-import os, json, time, uuid, shutil, subprocess, datetime
+import os, re, json, time, uuid, shutil, signal, subprocess, datetime
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
@@ -340,8 +340,17 @@ def _pick_port(thread_id, host):
 def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     """A ttyd serving this conversation's pane, started if it isn't already.
 
-    Attaches with `tmux new -A`, so the websocket owns nothing: closing the tab
+    Attaches with `tmux attach`, so the websocket owns nothing: closing the tab
     detaches and the conversation keeps running.
+
+    **`attach`, never `new -A`.** ttyd re-runs its command for every connection,
+    and the browser reconnects on its own when one drops. With `new -A` that
+    made Ctrl-C unkillable: ending Claude ended the pane, ttyd's client exited,
+    the page reconnected, `new -A` built the session again out of nothing, and
+    the sweep tore it down a few seconds later -- a conversation flickering back
+    to life instead of going grey. `attach` can only ever join a session that
+    exists; when it doesn't, the command exits and the conversation stays dead,
+    which is the whole point of pressing Ctrl-C.
 
     Bound to loopback and served through nginx under `/t/<port>/`, which is what
     makes the dashboard's origin the only one a browser ever sees. Pointed
@@ -376,7 +385,7 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
              '-t', 'fontSize=%d' % font,
              '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
-             tmux, 'new', '-A', '-s', tmux_name(thread_id)]
+             tmux, 'attach-session', '-t', tmux_name(thread_id)]
     PROCS[str(thread_id)] = subprocess.Popen(args, stdout=subprocess.DEVNULL,
                                              stderr=subprocess.DEVNULL)
     end = time.time() + 6
@@ -388,13 +397,48 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
     return {'ok': False, 'error': 'ttyd did not come up on port %d' % port}
 
 
+def kill_ttyd_on(port, host='127.0.0.1'):
+    """Terminate the ttyd listening on `port`, whoever started it.
+
+    A handle is not enough. A ttyd outlives the `serve.py` that spawned it -- on
+    a restart the new process *adopts* the port and holds no handle to kill --
+    and an adopted ttyd is exactly the one that has to go when a session dies,
+    because it is still running whatever command it was born with. Until this,
+    a restart across a change to that command left the old command serving:
+    ttyds spawned with `tmux new -A` went on resurrecting killed conversations
+    for as long as they lived, which looked exactly like the fix not working.
+
+    Only a process whose comm is `ttyd` is signalled, so a mistaken port cannot
+    take something else down with it.
+    """
+    try:
+        r = subprocess.run(['ss', '-lntpH', 'sport = :%d' % int(port)],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    killed = False
+    for pid in set(re.findall(r'pid=(\d+)', r.stdout)):
+        try:
+            with open('/proc/%s/comm' % pid) as fh:
+                if fh.read().strip() != 'ttyd':
+                    continue
+            os.kill(int(pid), signal.SIGTERM)
+            killed = True
+        except OSError:
+            continue
+    return killed
+
+
 def stop_ttyd(thread_id):
+    row = load().get(str(thread_id)) or {}
     proc = PROCS.pop(str(thread_id), None)
     if proc:
         try:
             proc.terminate()
         except Exception:
             pass
+    elif row.get('port'):
+        kill_ttyd_on(row['port'], row.get('host') or '127.0.0.1')
     d = load()
     if str(thread_id) in d:
         d[str(thread_id)].pop('port', None)
@@ -578,10 +622,11 @@ def running_claude(thread_id):
     """Is Claude still the process in this session's pane?
 
     tmux staying alive is not the same as the conversation being alive. Ctrl-C
-    ends Claude, and ttyd -- which attaches with `tmux new -A` -- will happily
-    recreate the session on the next connection with a plain shell in it. The
-    session then exists, the name matches, and the dashboard shows a terminal
-    that is not the conversation it is labelled with.
+    ends Claude but leaves the pane if anything else is running in it, and a
+    session someone started by hand can hold a plain shell. The session then
+    exists, the name matches, and the dashboard would show a terminal that is
+    not the conversation it is labelled with. (ttyd used to *recreate* the
+    session as well, with `tmux new -A`; it attaches now -- see `ensure_ttyd`.)
 
     Read the pane's *process*, not `pane_current_command`. That field reports
     whatever is in the foreground, which during a tool call is bash or python --

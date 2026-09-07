@@ -158,9 +158,13 @@ thing a queue of work must never contain: it read as something to deal with, and
 ticked off.
 
 Every row is a typed event: `system` (github/calendar/canvas/vault), `action`, and
-optional `who`/`when` where the source actually knows them. Under the rows sit the `vault`
-events — the working tree, straight from git, with no tick boxes, because they clear by
-committing rather than by ticking. It is polled every four seconds
+optional `who`/`when` where the source actually knows them. The `vault` events — the working
+tree, straight from git — are rows in that same list, **not a section under it**. They had
+their own heading for a while, and it made an uncommitted note read as a different kind of
+thing to be dealt with separately when it is simply another event this pass has to account
+for. The one real difference is how they clear, and the row says so by carrying no tick box:
+these go when the pass commits. The header count includes them, because an uncommitted note
+is outstanding. It is polled every four seconds
 rather than watched: another conversation editing the vault writes no file this server
 could watch for, and the card has to show that without waiting for a refresh.
 
@@ -192,7 +196,12 @@ than once per row, which is one watcher push to the open tabs instead of N.
 and a watcher thread notices the file move and pushes the new state to every open
 dashboard within a second. That is why the queue prompt hands Claude the keys. A row is
 keyed by a hash of its text, so the same fact arriving twice is one queue item, not two.
-`no changes` and `terminal` lines are chatter: shown once, never persisted, no tick.
+**Terminal lifecycle is not an event.** Showing a conversation, a session starting, resuming
+or ending — none of it goes near the queue. It was published as a `diff`, which kept it out of
+`feed.json` but still drew it as a row in the open tab, so a card meant to show what the world
+did filled up with what the dashboard did. Those calls publish `status` now (a transient line
+under the date) or nothing at all; only errors and delivered messages still say anything.
+`no changes` lines are chatter too: shown once, never persisted, no tick.
 
 **Freshness per source** across the top, amber past its threshold. Every data bug this
 vault has produced was stale data presented as current; the page states its own age.
@@ -383,6 +392,48 @@ bookkeeping — `cost-state`, `bridge-session`, a session header — without a w
 Those entries carry no timestamp and `user`/`assistant` messages do, so the newest of those is
 the honest answer.
 
+**A reload lands on the most recent live conversation.** `focusRecent()` takes the top row of
+`/api/conversations` — already sorted by that same last-message stamp. Before this, a refresh
+showed whichever ttyd happened to be serving, which is almost always the dashboard's own
+terminal and rarely the conversation he was in.
+
+It only auto-opens a conversation that is still **alive**. A closed one keeps its deliberate
+click, for the reason the panel already spells out: resuming costs a full re-read, and a page
+refresh must never spend that on its own. If the top row is already serving on the port the
+iframe is showing, nothing remounts.
+
+Selecting is *all* it does. It deliberately does not scroll the selected row into view: the
+list re-renders on a 6s poll, and a page that moves under you is worse than a selected row you
+have to scroll to.
+
+### The usage meters
+
+Under the chat list, two bars: the **5-hour session** window and the **7-day** one, as
+percentages of the plan. Amber at 70%, red at 90%.
+
+Each is one line — bar, percentage, reset time — with no label. The order says which is which,
+and the reset time says it better than the words did: one resets tonight, the other on a
+weekday. The bar takes the leftover width and the percentage sits in a fixed tabular column, so
+both readouts line up across the two rows and nothing shifts when 9% becomes 100%. Times are
+rendered local (the API returns UTC), as a bare time if the window resets today and weekday +
+time if it doesn't — anything longer wraps in 186px and pushes the bar around.
+
+The numbers come from Anthropic's OAuth usage endpoint via `zipper/usage.py` — the same source
+Claude Code's own `/usage` reads. **Nothing local can answer this**: the transcripts on this
+box know what this box spent, but not the denominator, and not what was spent from the phone.
+`/api/usage` caches for five minutes (`ZIPPER_USAGE_TTL`) and the page polls on that interval,
+so asking faster only re-serves the same answer.
+
+The access token is read out of `~/.claude/.credentials.json` at call time and never stored,
+logged or written anywhere — `Inbox/usage.json` holds the percentages only. Same rule as
+`.env`: credentials stay where they are.
+
+`_pct` **hunts** for the number rather than indexing a fixed path, and `normalise` drops a
+window it cannot read. The response shape is not a contract we control, and a blank meter is a
+far better failure than an authoritative-looking 12% when the truth is 90%. A failed call
+falls back to the last good numbers, dimmed (`.stale`), rather than blanking on one flaky
+request; a 401 means the token expired and Claude Code has not refreshed it yet.
+
 **A bound row has to work out which transcript it is writing.** It adopted a session that was
 already running, and nothing states its id: the pane's process carries no `--session-id`, and
 Claude appends and closes the file rather than holding it open. `detect_session()` infers it —
@@ -398,6 +449,34 @@ the tmux session with it. `sweep()` drops the ttyd of any conversation whose ses
 because that ttyd would otherwise happily serve `tmux new -A`: a *new* conversation wearing
 the old one's name. It also ends a session Claude has *left* — tmux alive with a bare shell in
 it is not a conversation. The card swaps the terminal for a **load conversation** button.
+
+**ttyd attaches; it never creates.** Every ttyd here runs `tmux attach-session -t <name>`, and
+the session is started separately — `conversations.start()` for a thread, `_spawn_session()`
+for the dashboard's own terminal. This is what makes Ctrl-C mean something. ttyd re-runs its
+command on every connection and the browser reconnects on its own when one drops, so while the
+command was `tmux new -A` the conversation was **unkillable**: Ctrl-C ended Claude, the pane
+went with it, the page reconnected a second later, `new -A` rebuilt the session out of nothing,
+the sweep tore it down, and round again — a conversation flickering back to life instead of
+going grey. `attach` can only join a session that exists; when there isn't one the command
+exits and it stays closed, which is the whole point of pressing Ctrl-C.
+
+The cost of the split is that `start session to clear queue` against a live ttyd has to create
+the session itself rather than letting the next reconnect do it — it does, and publishes
+`terminal` so the page remounts instead of waiting for a reconnect that would now find nothing.
+
+**`reap_terminal()` applies the same rule to the dashboard's own terminal**, which was exempt
+from `sweep()` because it is not a registry conversation: when the `zipper` session is gone,
+its ttyd goes too. Otherwise the port stays open, `terminal_up()` keeps reporting the terminal
+as viewable, and the card shows a dead pane instead of offering to start something.
+
+**Kill a ttyd by port, not only by handle** (`kill_ttyd_on`). A ttyd outlives the `serve.py`
+that spawned it — on a restart the new process adopts the port and holds no handle — and the
+adopted one is precisely what has to go, because it is still running *the command it was born
+with*. The first cut of the `attach` fix only killed handles, so every ttyd started before the
+change went on serving `tmux new -A` and resurrecting killed conversations for as long as it
+lived. The code was right and the running processes were old, which is indistinguishable from a
+fix that does not work. **After changing a ttyd's argv, kill the running ttyds** — restarting
+`zipper-web` does not. Only a process whose `/proc/<pid>/comm` is `ttyd` is ever signalled.
 
 **Ask the pane's process, not `pane_current_command`.** That field reports whatever is in the
 foreground, which during a tool call is `bash` or `python3`. Trusting it, the sweep read two
