@@ -7,7 +7,7 @@ spawn a second one on top of it.
 
 Split out of `zipper/conversations.py` on 2026-09-07.
 """
-import os, time, shutil, signal, socket, subprocess
+import os, re, time, shutil, signal, socket, subprocess
 
 from .core import *          # noqa: F401,F403
 from . import core
