@@ -476,12 +476,18 @@ def cmd_commit(a):
     consequences written down.
     """
     changes = note_changes()
-    from . import serve, conversations
+    from . import serve, conversations, chat
     try:
         # Anyone else with a live terminal may be mid-edit. Nothing locks the
         # vault -- that was a deliberate call -- so the check is a warning, not
         # a mutex, and --force is the way past it.
-        mine = os.environ.get('ZIPPER_THREAD')
+        #
+        # `chat.default_thread()` rather than a second os.environ read: the
+        # variable is ZIPPER_DISCORD_THREAD, and a local guess at the name got
+        # it wrong (ZIPPER_THREAD, never set by anything), so every commit from
+        # inside a Discord thread counted *itself* as the other conversation
+        # and demanded --force. One reader, one name.
+        mine = chat.default_thread()
         live = [c for c in conversations.listing()
                 if c.get('alive') and c.get('thread_id') != mine]
     except Exception:
