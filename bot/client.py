@@ -14,12 +14,20 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 
-async def post_to_zipper(prompt: str, discord_thread_id: int) -> bool:
-    """Forward a message to Zipper. Returns True if Zipper acknowledged.
+async def post_to_zipper(prompt: str, discord_thread_id: int,
+                         opening: bool = False):
+    """Forward a message to Zipper. Returns `(ok, error)`.
 
     Zipper decides what happens to it: pasted into a live Claude session,
     delivered to a detached one after bringing it back up, or used as the
-    opening prompt of a new conversation."""
+    opening prompt of a new conversation.
+
+    `opening` says the thread was created by *this* message, so there is
+    supposed to be no conversation behind it yet and starting one is correct.
+    Without the flag Zipper cannot tell that from a message in some long-dead
+    thread, and would answer both the same way -- by starting a stranger
+    underneath a visible history it has never read.
+    """
     try:
         timeout = ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -27,11 +35,18 @@ async def post_to_zipper(prompt: str, discord_thread_id: int) -> bool:
                 "prompt": prompt,
                 "source": "discord",
                 "discord_thread_id": discord_thread_id,
+                "opening": opening,
             }) as resp:
-                return resp.status == 200
+                if resp.status == 200:
+                    return True, ""
+                try:
+                    body = await resp.json()
+                except Exception:
+                    body = {}
+                return False, str(body.get("error") or "")
     except Exception as e:
         print(f"[discord] post to Zipper failed: {e}")
-        return False
+        return False, ""
 
 
 async def resolve_thread(thread_id: int):
@@ -60,11 +75,19 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
-    # Message in a thread — relay to zipper
+    # Message in a thread — continue that conversation, if there is one.
+    #
+    # A thread whose conversation Zipper does not know is answered *here*, by
+    # the bot, without waking Claude Code. Starting a fresh session instead
+    # would read as continuous -- the old exchange is still on screen above the
+    # reply -- while actually having no memory of any of it, which is a worse
+    # failure than saying so. It also costs nothing: no session, no tokens.
     if isinstance(message.channel, discord.Thread):
-        ok = await post_to_zipper(message.content, message.channel.id)
+        ok, err = await post_to_zipper(message.content, message.channel.id)
         if not ok:
-            await message.channel.send("⚠️ Zipper disconnected")
+            await message.channel.send(
+                "🗄️ This thread's conversation is gone — start a new one in the channel."
+                if err == "no conversation" else "⚠️ Zipper disconnected")
         return
 
     # A message in the main channel starts a *new* conversation, so it gets its
@@ -77,15 +100,16 @@ async def on_message(message: discord.Message):
     title = " ".join((message.content or "new conversation").split())[:60] or "new conversation"
     try:
         thread = await message.create_thread(name=title, auto_archive_duration=1440)
-        target_id = thread.id
     except Exception as e:
-        # Threads can fail for reasons that are not this message's fault --
-        # missing permission, a channel type that has none. Falling back to the
-        # channel keeps Zipper answerable rather than silent; it just means this
-        # conversation shares the channel's context like it used to.
+        # No thread, no conversation. This used to fall back to the channel id,
+        # which kept Zipper answerable by starting a conversation with nowhere
+        # to reply to: every conversation is keyed on a thread, and the reply
+        # forwarding posts to one. Say so instead of opening a session whose
+        # answers cannot get back out.
         print(f"[discord] thread create failed: {e}")
-        target_id = message.channel.id
+        await message.channel.send(f"⚠️ Couldn't open a thread for that: {e}")
+        return
 
-    ok = await post_to_zipper(message.content, target_id)
+    ok, _ = await post_to_zipper(message.content, thread.id, opening=True)
     if not ok:
-        await client.get_channel(target_id).send("⚠️ Zipper disconnected")
+        await thread.send("⚠️ Zipper disconnected")

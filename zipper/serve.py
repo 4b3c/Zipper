@@ -477,28 +477,17 @@ def start_terminal(mode='blank', prompt=None):
 # Routing is per-turn now, and nothing about it is inferred from the prompt.
 
 
-def deliver_to_claude(text, source='discord'):
-    if not TERM['enabled']:
-        return {'ok': False, 'error': 'terminal disabled'}
-    body = text
-
-    if session_exists():
-        state = 'live' if terminal_up() else 'detached'
-        if state == 'detached':
-            r = start_terminal('resume')
-            if not r['ok']:
-                return r
-            time.sleep(1.0)          # let tmux finish attaching before pasting
-        res = paste_to_session(body, 'a %s message' % source)
-        if res['ok']:
-            publish('status', 'terminal    %s message delivered (%s)' % (source, state))
-        return dict(res, state=state)
-
-    r = start_terminal('blank', prompt=body)
-    if r['ok']:
-        publish('status', 'terminal    %s message started a new conversation' % source)
-    return dict(r, state='cold')
-
+# `deliver_to_claude` used to live here: it took a Discord message with no
+# thread and pasted it into the dashboard's own single terminal, starting that
+# one conversation if it was cold. Deleted 2026-09-06 along with its last
+# caller.
+#
+# It was the Discord half of a second, older way of having a conversation --
+# one fixed tmux session named `zipper` on one fixed ttyd port, from when the
+# dashboard had a single embedded Claude. Every conversation is now keyed on a
+# Discord thread, which is what the reply forwarding posts to, so a conversation
+# with no thread is one whose answers cannot get back out. The bot opens a
+# thread before it posts, and `/discord` refuses a message without one.
 
 
 TITLE_TTL = 900          # seconds before a Discord thread name is looked up again
@@ -2910,26 +2899,43 @@ class Handler(BaseHTTPRequestHandler):
                            'application/json')
                 return
             tid = body.get('discord_thread_id')
-            if tid:
-                # A thread is a conversation. Its own instance gets the message,
-                # started or resumed as needed, and Discord shows the typing
-                # indicator until that instance answers -- chat.discord_send
-                # clears it, so every reply path ends the indicator exactly once.
-                chat.discord_typing(True, tid)
-                if not (conversations.load().get(str(tid)) or {}).get('title'):
-                    # The thread's name in Discord is the first line of the
-                    # message that opened it; the chat list should read the same
-                    # rather than showing an id nobody recognises.
-                    conversations.touch(str(tid), title=' '.join(text.split())[:60])
-                res = conversations.deliver(str(tid), text,
-                                            body.get('source', 'discord'))
-                if res.get('ok'):
-                    publish('status', 'terminal    %s -> thread %s (%s)'
-                            % (body.get('source', 'discord'), tid, res.get('state')))
-                else:
-                    chat.discord_typing(False, tid)
+            if not tid:
+                # Every conversation is keyed on a thread -- that is what the
+                # reply forwarding posts to -- so a message with no thread has
+                # nowhere to be answered. The bot opens one before posting here.
+                self._send(400, json.dumps({'error': 'no thread'}),
+                           'application/json')
+                return
+
+            # A thread is a conversation. Its own instance gets the message,
+            # started or resumed as needed, and Discord shows the typing
+            # indicator until that instance answers -- chat.discord_send
+            # clears it, so every reply path ends the indicator exactly once.
+            known = bool(conversations.load().get(str(tid)))
+            if not known and not body.get('opening'):
+                # A thread Zipper has never seen, and this message did not
+                # create it: the conversation it belonged to is gone. Refuse,
+                # and let the bot say so in the thread. Starting a fresh session
+                # here would answer underneath a visible history it has not read
+                # -- continuous to look at, amnesiac in fact.
+                self._send(404, json.dumps({'ok': False,
+                                            'error': 'no conversation'}),
+                           'application/json')
+                return
+
+            chat.discord_typing(True, tid)
+            if not (conversations.load().get(str(tid)) or {}).get('title'):
+                # The thread's name in Discord is the first line of the
+                # message that opened it; the chat list should read the same
+                # rather than showing an id nobody recognises.
+                conversations.touch(str(tid), title=' '.join(text.split())[:60])
+            res = conversations.deliver(str(tid), text,
+                                        body.get('source', 'discord'))
+            if res.get('ok'):
+                publish('status', 'terminal    %s -> thread %s (%s)'
+                        % (body.get('source', 'discord'), tid, res.get('state')))
             else:
-                res = deliver_to_claude(text, body.get('source', 'discord'))
+                chat.discord_typing(False, tid)
             self._send(200 if res.get('ok') else 503, json.dumps(res),
                        'application/json')
         elif self.path == '/api/canvas':
