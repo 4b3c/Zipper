@@ -54,6 +54,18 @@ def tmux_name(thread_id):
     return row.get('tmux') or 'zipper-%s' % thread_id
 
 
+def target(thread_id):
+    """This thread's session as an **exact** tmux `-t` target.
+
+    tmux resolves a bare `-t` by prefix, so a bound row naming its session
+    `zipper` matches `zipper-<any thread>`. Every `-t` here therefore has to be
+    anchored, not just the liveness check: unanchored, `close()` killed a live
+    conversation and `deliver()` pasted into one. Only for `-t` -- the `-t`
+    flags passed to ttyd are its own option, not tmux's.
+    """
+    return '=' + tmux_name(thread_id)
+
+
 def bind(thread_id, tmux, session_id=None, title=''):
     """Point a Discord thread at a conversation that is already running.
 
@@ -93,7 +105,7 @@ def alive(thread_id):
     exactly what a hand-bound row did on 2026-09-06.
     """
     try:
-        return subprocess.run([_tmux(), 'has-session', '-t', '=' + tmux_name(thread_id)],
+        return subprocess.run([_tmux(), 'has-session', '-t', target(thread_id)],
                               stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL).returncode == 0
     except RuntimeError:
@@ -160,7 +172,7 @@ def last_active(thread_id):
 
 def _pane(thread_id):
     try:
-        r = subprocess.run([_tmux(), 'capture-pane', '-p', '-t', tmux_name(thread_id)],
+        r = subprocess.run([_tmux(), 'capture-pane', '-p', '-t', target(thread_id)],
                            capture_output=True, text=True, timeout=5)
         return r.stdout
     except Exception:
@@ -224,7 +236,7 @@ def paste(thread_id, text):
     Bracketed paste, then a separate Enter -- as keystrokes every newline in a
     multi-line message would submit a fragment. See serve.inject_queue.
     """
-    name = tmux_name(thread_id)
+    tgt = target(thread_id)
     if not alive(thread_id):
         return {'ok': False, 'error': 'conversation not running'}
     buf = 'zipper-%s' % thread_id
@@ -232,10 +244,10 @@ def paste(thread_id, text):
         subprocess.run([_tmux(), 'load-buffer', '-b', buf, '-'],
                        input=text.encode('utf-8'), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([_tmux(), 'paste-buffer', '-b', buf, '-t', name, '-p', '-d'],
+        subprocess.run([_tmux(), 'paste-buffer', '-b', buf, '-t', tgt, '-p', '-d'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.4)
-        subprocess.run([_tmux(), 'send-keys', '-t', name, 'Enter'], check=True,
+        subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'Enter'], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # An Enter that arrives while the TUI is still settling is swallowed,
         # and the message then sits in the input box looking delivered -- the
@@ -248,7 +260,7 @@ def paste(thread_id, text):
             tail = pane.rsplit('\u276f', 1)[-1] if '\u276f' in pane else pane
             if probe not in tail:
                 break
-            subprocess.run([_tmux(), 'send-keys', '-t', name, 'Enter'],
+            subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'Enter'],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         return {'ok': False, 'error': str(e)}
@@ -285,10 +297,9 @@ def close(thread_id, reason='idle', force=False):
                                       'closing it would kill a live terminal. '
                                       'Pass force=True if that is really what you want.'
                                       % (thread_id, row.get('tmux'))}
-    name = tmux_name(thread_id)
     stop_ttyd(thread_id)
     try:
-        subprocess.run([_tmux(), 'kill-session', '-t', name],
+        subprocess.run([_tmux(), 'kill-session', '-t', target(thread_id)],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except RuntimeError:
         pass
@@ -385,7 +396,7 @@ def ensure_ttyd(thread_id, host='127.0.0.1', cred='', font=13):
              '-t', 'fontSize=%d' % font,
              '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
              '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}',
-             tmux, 'attach-session', '-t', tmux_name(thread_id)]
+             tmux, 'attach-session', '-t', target(thread_id)]
     PROCS[str(thread_id)] = subprocess.Popen(args, stdout=subprocess.DEVNULL,
                                              stderr=subprocess.DEVNULL)
     end = time.time() + 6
@@ -636,7 +647,7 @@ def running_claude(thread_id):
     hand.
     """
     try:
-        r = subprocess.run([_tmux(), 'list-panes', '-t', tmux_name(thread_id),
+        r = subprocess.run([_tmux(), 'list-panes', '-t', target(thread_id),
                             '-F', '#{pane_pid}'], capture_output=True, text=True, timeout=5)
     except Exception:
         return False

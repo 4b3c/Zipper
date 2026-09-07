@@ -145,11 +145,27 @@ def _port_open(host, port, timeout=0.3):
         c.close()
 
 
+def _t(name):
+    """A tmux `-t` target that means exactly this session and nothing else.
+
+    Bare `-t zipper` is a *prefix*: tmux resolves it onto `zipper-<thread>` --
+    a conversation's session -- the moment the dashboard's own `zipper` is gone.
+    Everything downstream then aims at somebody else's terminal:
+    `session_exists()` reports a dead terminal as alive (so `reap_terminal()`
+    returns early and never cleans up), a Discord message pastes into the wrong
+    pane, and `new_session()`'s kill-session takes down a live conversation.
+
+    Only for `-t`. `new-session -s` is a name, not a target, and the `-t` flags
+    handed to ttyd are its own option, nothing to do with tmux.
+    """
+    return '=' + name
+
+
 def session_exists():
     tmux = shutil.which('tmux')
     if not tmux:
         return False
-    return subprocess.run([tmux, 'has-session', '-t', TERM['session']],
+    return subprocess.run([tmux, 'has-session', '-t', _t(TERM['session'])],
                           stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode == 0
 
@@ -182,7 +198,7 @@ def new_session():
     tmux = shutil.which('tmux')
     if not tmux:
         return {'ok': False, 'error': 'tmux not installed'}
-    subprocess.run([tmux, 'kill-session', '-t', TERM['session']],
+    subprocess.run([tmux, 'kill-session', '-t', _t(TERM['session'])],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if TERM['ready']:
         try:
@@ -208,11 +224,11 @@ def paste_to_session(text, label='text'):
         subprocess.run([tmux, 'load-buffer', '-b', 'zipperq', '-'],
                        input=text.encode('utf-8'), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([tmux, 'paste-buffer', '-b', 'zipperq', '-t', TERM['session'],
+        subprocess.run([tmux, 'paste-buffer', '-b', 'zipperq', '-t', _t(TERM['session']),
                         '-p', '-d'], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.25)                   # let the TUI settle before submitting
-        subprocess.run([tmux, 'send-keys', '-t', TERM['session'], 'Enter'],
+        subprocess.run([tmux, 'send-keys', '-t', _t(TERM['session']), 'Enter'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         return {'ok': False, 'error': str(e)}
@@ -370,7 +386,7 @@ def start_terminal(mode='blank', prompt=None):
         # attach. When the session is gone, attach exits and it stays gone.
         if not session_exists():
             _spawn_session(prompt, inner)
-        args = [tmux, 'attach-session', '-t', TERM['session']]
+        args = [tmux, 'attach-session', '-t', _t(TERM['session'])]
     else:
         args = inner
         publish('status', 'terminal    no tmux - the session dies with the tab')
@@ -2762,7 +2778,7 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run([tmux, 'load-buffer', '-b', 'zipper-copy', '-'],
                                input=text.encode('utf-8'), check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run([tmux, 'display-message', '-t', sess,
+                subprocess.run([tmux, 'display-message', '-t', _t(sess),
                                 'copied %d chars to tmux buffer' % len(text)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self._send(200, json.dumps({'ok': True, 'chars': len(text)}),
