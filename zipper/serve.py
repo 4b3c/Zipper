@@ -643,7 +643,12 @@ def _feed_key(text):
     return hashlib.sha1(text.encode('utf-8')).hexdigest()[:10]
 
 def _feed_transient(text):
-    """Status chatter, not work: shown once, never persisted, never crossed off."""
+    """Belt and braces: anything about the terminal itself is never a queue row.
+
+    Nothing should reach this any more -- conversation lifecycle goes out on
+    `status` now -- but publish() is the only chokepoint between a message and
+    the queue, so the guard stays.
+    """
     return text.startswith('terminal ')
 
 def feed_rows():
@@ -2746,7 +2751,13 @@ def conversation_reaper():
         time.sleep(120)
         try:
             for tid in conversations.reap(notify=notify):
-                publish('diff', 'terminal    conversation %s closed (idle)' % tid)
+                # Status, not an event. A conversation going idle is the
+                # machinery talking about itself -- it happened to Zipper, not
+                # to Abram's work, and it has no system, no action and nothing
+                # to bookkeep against. It reached the queue as a transient row
+                # for a while, which meant the one channel that is supposed to
+                # be "things needing a decision" carried housekeeping too.
+                publish('status', 'conversation %s closed (idle)' % tid)
         except Exception as e:
             print('[reaper] %s' % e)
 
