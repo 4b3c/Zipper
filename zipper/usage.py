@@ -58,17 +58,23 @@ def token():
 def _pct(node):
     """The utilization of one window as 0-100, or None.
 
-    Accepts either a percentage the API already computed or a used/limit pair,
-    and normalises a 0-1 fraction. Returns None rather than guessing.
+    Accepts either a percentage the API already computed or a used/limit pair.
+    Returns None rather than guessing.
+
+    A named percentage is taken as 0-100 and never rescaled. An earlier version
+    read any value <= 1 as a 0-1 fraction and multiplied by 100, which is
+    undecidable exactly where it matters: a real `utilization: 1.0` means one
+    percent, and the guess rendered it as a maxed-out week. Ambiguity here has
+    to fail quiet, not loud.
     """
     if isinstance(node, (int, float)):
-        return max(0.0, min(100.0, float(node) * (100 if node <= 1 else 1)))
+        return max(0.0, min(100.0, float(node)))
     if not isinstance(node, dict):
         return None
-    for k in ('utilization', 'used_pct', 'percent_used', 'percentage', 'pct'):
+    for k in ('utilization', 'percent', 'used_pct', 'percent_used',
+              'percentage', 'pct'):
         if isinstance(node.get(k), (int, float)):
-            v = float(node[k])
-            return max(0.0, min(100.0, v * 100 if v <= 1 else v))
+            return max(0.0, min(100.0, float(node[k])))
     used, limit = node.get('used'), node.get('limit') or node.get('total')
     if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit:
         return max(0.0, min(100.0, 100.0 * used / limit))
