@@ -82,13 +82,26 @@ def ago(iso):
 
 
 # ---------------------------------------------------------------- terminal
-
-TERM = {'proc': None, 'port': 8801, 'url': '', 'enabled': True, 'ready': None,
-        'host': '127.0.0.1', 'cred': '',
-        # One tmux session per Zipper instance. Overridable so a second
-        # instance -- a test, or a staging box -- cannot paste into the
-        # conversation the real one is holding.
-        'session': os.environ.get('ZIPPER_TMUX_SESSION', 'zipper')}
+#
+# **One kind of conversation.** Until 2026-09-06 there were two, side by side:
+# this module owned a single fixed one -- tmux session `zipper`, ttyd on 8801,
+# held in a module-level TERM dict -- while `conversations.py` owned one per
+# Discord thread on 8810-8829. The fixed one predated threads; it was never
+# removed when they arrived.
+#
+# Keeping both cost more than the duplication. tmux resolves `-t` by prefix, so
+# a bare `-t zipper` matched `zipper-<any thread>`, and both files carried
+# anchoring workarounds for it: a dead terminal reported as alive, a reaper
+# aimed at somebody else's pane, and a bound row that read as live forever and
+# blocked `zipper commit` on every pass. One naming scheme makes that
+# unrepresentable rather than defended against twice.
+#
+# It also could not answer. Every conversation is keyed on a Discord thread,
+# which is what the reply forwarding posts to, so a conversation without one is
+# a conversation whose answers cannot get back out.
+#
+# What the dashboard now shows is simply *a conversation* -- by default the most
+# recently active live one, and any other by picking it from the list.
 
 def _queue_prompt():
     """The queue as an opening instruction — only what is still outstanding."""
@@ -109,338 +122,86 @@ def _queue_prompt():
               "  python3 -m zipper commit \"<message>\"\n"
               "An open dashboard picks either up within a second.")
 
-def _wait_port(host, port, timeout=6.0):
-    """Block until ttyd is actually accepting.
 
-    Popen returns the instant the process is forked, but ttyd needs a moment to
-    bind. Returning before then makes the browser mount the iframe against a
-    dead port and show "refused to connect".
+
+TTYD = {'enabled': True, 'host': '127.0.0.1', 'cred': ''}
+# What was TERM. The fixed port and the fixed tmux session name went with Path A;
+# host and cred survive because they still govern every ttyd -- `ttyd -W` hands
+# out a live shell, so binding one off loopback without a credential is refused
+# in `conversations.ensure_ttyd`.
+
+
+def current_conversation():
+    """The conversation the terminal card shows by default.
+
+    The most recently active live one. `listing()` is ordered by last message
+    (from the transcript, so a message typed straight into a pane counts), which
+    means this follows the conversation actually being used rather than whichever
+    was started first.
     """
-    import socket
-    end = time.time() + timeout
-    while time.time() < end:
-        c = socket.socket()
-        c.settimeout(0.3)
-        try:
-            c.connect((host, port))
-            return True
-        except OSError:
-            time.sleep(0.1)
-        finally:
-            c.close()
-    return False
+    for r in conversations.listing():
+        if r.get('alive'):
+            return r['thread_id']
+    return ''
 
 
-def _port_open(host, port, timeout=0.3):
-    """Is something already accepting on this port right now?"""
-    import socket
-    c = socket.socket()
-    c.settimeout(timeout)
+def new_conversation(prompt=None):
+    """Start another conversation, closing none.
+
+    It gets a Discord thread of its own straight away, so a conversation begun
+    at the keyboard can be picked up from a phone without being adopted after
+    the fact -- which is the awkward path that binding exists to patch.
+    """
+    title = 'Dashboard \u00b7 %s' % datetime.datetime.now().strftime('%a %H:%M')
     try:
-        c.connect((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        c.close()
-
-
-def _t(name):
-    """A tmux `-t` target that means exactly this session and nothing else.
-
-    Bare `-t zipper` is a *prefix*: tmux resolves it onto `zipper-<thread>` --
-    a conversation's session -- the moment the dashboard's own `zipper` is gone.
-    Everything downstream then aims at somebody else's terminal:
-    `session_exists()` reports a dead terminal as alive (so `reap_terminal()`
-    returns early and never cleans up), a Discord message pastes into the wrong
-    pane, and `new_session()`'s kill-session takes down a live conversation.
-
-    The trailing colon is not cosmetic. `=name` anchors a *session* target, but
-    `capture-pane`, `send-keys` and `paste-buffer` take a **pane** target and
-    reject it outright -- "can't find pane: =zipper". Anchoring without it broke
-    the whole delivery path: a Discord message could not be pasted, the
-    readiness probe never saw a prompt, and the bot gave up at its 10s timeout
-    and answered "Zipper disconnected". `=name:` is a pane target whose session
-    part is still exact, and the session-target commands accept it too, so one
-    form serves every call site.
-
-    Only for `-t`. `new-session -s` is a name, not a target, and the `-t` flags
-    handed to ttyd are its own option, nothing to do with tmux.
-    """
-    return '=%s:' % name
-
-
-def session_exists():
-    tmux = shutil.which('tmux')
-    if not tmux:
-        return False
-    return subprocess.run([tmux, 'has-session', '-t', _t(TERM['session'])],
-                          stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL).returncode == 0
-
-
-def terminal_up():
-    """Is ttyd actually serving? This, not a page-local flag, is what decides
-    whether the card shows start buttons.
-
-    `window.__mounted` only ever lived in one tab, and a launcher opens a fresh
-    one every time — so after a reload the page offered to *resume* a
-    conversation that was already on screen. The server knows the truth: if ttyd
-    is up the terminal is viewable right now, and there is nothing to resume.
-    """
-    if TERM['proc'] is not None and TERM['proc'].poll() is None:
-        return True
-    # A ttyd from a previous serve.py can outlive it (the service was restarted
-    # under an open dashboard). It is still serving the same tmux session, so it
-    # is still the terminal -- adopt it rather than spawning a second one that
-    # cannot bind the port and dies silently.
-    return _port_open(TERM['host'], TERM['port'])
-
-
-def new_session():
-    """Drop the tmux session so the next attach starts a fresh conversation.
-
-    The ready-file is cleared too: it still holds the last prompt written to it,
-    and `new conversation` means blank. Priming a new one is what the queue
-    buttons are for.
-    """
-    tmux = shutil.which('tmux')
-    if not tmux:
-        return {'ok': False, 'error': 'tmux not installed'}
-    subprocess.run([tmux, 'kill-session', '-t', _t(TERM['session'])],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if TERM['ready']:
-        try:
-            open(TERM['ready'], 'w').write('')
-        except OSError:
-            pass
-    return {'ok': True}
-
-
-def paste_to_session(text, label='text'):
-    """Type a block into the running pane.
-
-    Everything that reaches a live conversation from outside goes through here:
-    the run queue, and now anything arriving over Discord. See inject_queue for
-    why this is a bracketed paste and not send-keys.
-    """
-    tmux = shutil.which('tmux')
-    if not tmux:
-        return {'ok': False, 'error': 'tmux not installed'}
-    if not session_exists():
-        return {'ok': False, 'error': 'no conversation to hand %s to' % label}
-    try:
-        subprocess.run([tmux, 'load-buffer', '-b', 'zipperq', '-'],
-                       input=text.encode('utf-8'), check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([tmux, 'paste-buffer', '-b', 'zipperq', '-t', _t(TERM['session']),
-                        '-p', '-d'], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.25)                   # let the TUI settle before submitting
-        subprocess.run([tmux, 'send-keys', '-t', _t(TERM['session']), 'Enter'],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = chat._bot('/thread', {'name': title,
+                                  'message': 'New conversation started from the dashboard.'})
+        tid = str(r.get('thread_id') or '')
     except Exception as e:
-        return {'ok': False, 'error': str(e)}
-    return {'ok': True}
+        # No Discord, no thread -- but the conversation should still start. A
+        # local id keeps it addressable in the list; it just cannot be reached
+        # from a phone, and the reply hook skips it for exactly that reason.
+        publish('status', 'terminal    no Discord thread for this conversation: %s' % e)
+        tid = 'local-%d' % int(time.time())
+    if not tid:
+        return {'ok': False, 'error': 'could not open a Discord thread'}
+    conversations.touch(tid, title=title, auto_named=True, discord_name=title)
+    r = conversations.start(tid, prompt=prompt or None)
+    if not r.get('ok'):
+        return r
+    res = conversations.ensure_ttyd(tid, host=TTYD['host'], cred=TTYD['cred'])
+    return dict(res, thread_id=tid, title=title,
+                primed=bool(prompt), resumed=False)
 
 
-def inject_queue(prompt):
-    """Hand this run's queue to a conversation that is already running.
-
-    The ready-file only works at launch — claude-session.sh reads it once, before
-    exec'ing claude — so a live session needs the text typed into its pane. It goes
-    through tmux's paste buffer with `-p` (bracketed paste) rather than send-keys:
-    the prompt is multi-line, and as keystrokes every newline would submit a
-    fragment. Bracketed paste arrives as one block, then a separate Enter sends it.
-    Load-bearing: `-p` only wraps the text in the bracketed-paste escapes, so it
-    depends on the receiving TUI having the mode enabled. Claude Code does — it is
-    what makes a multi-line paste one message there. A plain shell does not, and
-    would run each line; that is the shape of it if this ever misbehaves.
+def resume_conversation(prompt=None):
+    """Bring the current conversation back onto the page, optionally handing it
+    the queue. Resumes rather than replaces: the transcript is the conversation.
     """
-    res = paste_to_session(prompt, 'the queue')
-    if not res['ok']:
-        publish('status', 'terminal    could not hand over the queue: %s' % res['error'])
-        return res
-    return res
+    tid = current_conversation()
+    if not tid:
+        return {'ok': False, 'error': 'no conversation to resume'}
+    r = open_conversation(tid)
+    if not r.get('ok'):
+        return r
+    primed = False
+    if prompt:
+        primed = conversations.paste(tid, prompt).get('ok', False)
+    return dict(r, thread_id=tid, resumed=True, primed=primed)
 
 
-def _ready_file(prompt):
-    """Write this run's opening instruction and return the launcher's argv.
+def start_session(mode='blank'):
+    """The terminal card's start buttons, in Path B terms.
 
-    claude-session.sh waits on the file rather than taking the prompt as an
-    argument, so the terminal can appear before the fetch has finished.
+    `blank`/`queue` open a new conversation; `resume`/`catchup` return to the
+    current one. The only difference within each pair is whether the run queue
+    is handed over.
     """
-    fh = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False)
-    TERM['ready'] = fh.name
-    fh.write(prompt or '')
-    fh.close()
-    return [os.path.join(HERE, 'claude-session.sh'), TERM['ready']]
+    prompt = _queue_prompt() if mode in ('queue', 'catchup') else None
+    if mode in ('resume', 'catchup'):
+        return resume_conversation(prompt)
+    return new_conversation(prompt)
 
-
-def _spawn_session(prompt, inner=None):
-    """Create the dashboard's tmux session, detached, primed with `prompt`.
-
-    Separate from spawning ttyd because ttyd only *attaches* now. Whoever wants
-    a conversation has to start it deliberately -- which is exactly what makes
-    Ctrl-C stick.
-    """
-    tmux = shutil.which('tmux')
-    if not tmux:
-        return False
-    if inner is None:
-        inner = _ready_file(prompt)
-    subprocess.run([tmux, 'new-session', '-d', '-s', TERM['session'],
-                    '-c', VAULT] + inner,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return session_exists()
-
-
-def reap_terminal():
-    """Take the dashboard's ttyd down with its session.
-
-    The same rule `conversations.sweep()` applies to every other conversation,
-    which the dashboard's own terminal had been exempt from: when the session is
-    gone, the viewer goes too. Otherwise ttyd keeps the port open, `terminal_up()`
-    keeps saying the terminal is viewable, and the card shows a dead pane instead
-    of offering to start something.
-
-    An **adopted** ttyd is killed too, by port. That is not a nicety: a ttyd
-    outlives the `serve.py` that spawned it, so after a restart the one serving
-    this port is holding whatever command it was born with -- and the ones born
-    before this change run `tmux new -A`, which rebuilds a killed session on the
-    next reconnect. Leaving them be is what made this fix look like it had not
-    worked at all.
-    """
-    if session_exists():
-        return False
-    if TERM['proc'] is not None:
-        if TERM['proc'].poll() is None:
-            try:
-                TERM['proc'].terminate()
-            except Exception:
-                pass
-    elif _port_open(TERM['host'], TERM['port']):
-        conversations.kill_ttyd_on(TERM['port'], TERM['host'])
-    else:
-        return False
-    TERM['proc'] = None
-    return True
-
-
-def start_terminal(mode='blank', prompt=None):
-    """Spawn ttyd running Claude Code in the vault, and the session it attaches
-    to. Only ever called from the
-    page, never at launch: opening the dashboard must not start a Claude
-    session, because merely looking at the day should not cost tokens.
-
-    Modes, and what a live session does to each:
-      blank   start a conversation, nothing injected
-      queue   start a conversation primed with this run's queue
-      resume  reattach to the conversation that is already running
-      catchup reattach AND hand it the queue
-
-    `queue` is the only one that means a NEW conversation, so it kills the
-    session first: tmux attaches instead of running claude-session.sh, so against
-    a live session the prompt file was written and never read, and the button
-    silently did nothing at all. `catchup` is the live-session counterpart —
-    same intent, but the text is pasted into the running pane.
-
-    Bound to loopback: ttyd -W hands out a live shell, so it must never listen
-    on anything reachable from outside this machine.
-    """
-    if not TERM['enabled']:
-        return {'ok': False, 'error': 'terminal disabled'}
-    if mode == 'queue' and session_exists():
-        new_session()
-    resumed = session_exists()
-    opening = prompt or ''
-    prompt = '' if resumed else (opening or (_queue_prompt() if mode == 'queue' else ''))
-    handed = False
-    if resumed and mode == 'catchup':
-        res = inject_queue(_queue_prompt())
-        if not res['ok']:
-            return res
-        handed = True
-    # ttyd already serving -- either this process's, or one it did not spawn
-    # (the service was restarted under it). Either way, do not spawn a second:
-    # it would fail to bind the port and die silently.
-    adopted = not TERM['proc'] and _port_open(TERM['host'], TERM['port'])
-    if TERM['proc'] or adopted:
-        if not resumed:
-            # The session is gone (Ctrl-C, or `new conversation`) but the viewer
-            # is still up. ttyd only *attaches* now, so nothing would recreate
-            # it -- start it here, primed, and tell the page to remount so the
-            # attach happens without waiting for a reconnect.
-            _spawn_session(prompt)
-            publish('terminal', 'session started')
-        return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
-                'primed': bool(prompt) or handed, 'adopted': adopted or None}
-    exe = shutil.which('ttyd')
-    if not exe:
-        publish('status', 'terminal    ttyd not installed')
-        return {'ok': False, 'error': 'ttyd not installed'}
-    inner = _ready_file(prompt)
-    tmux = shutil.which('tmux')
-    if tmux:
-        # tmux owns the process, not the websocket. Closing the tab detaches;
-        # reopening reattaches to the SAME live conversation. Without this,
-        # ttyd spawns a fresh command per connection and the session is lost.
-        #
-        # Creating the session and attaching to it are two steps on purpose.
-        # ttyd re-runs its command on every connection, and the browser
-        # reconnects by itself when one drops -- so a command that can *create*
-        # the session makes Ctrl-C impossible to mean: ending Claude ended the
-        # pane, the page reconnected, and claude-session.sh started a brand new
-        # conversation a second later. Start it here, once; let ttyd only
-        # attach. When the session is gone, attach exits and it stays gone.
-        if not session_exists():
-            _spawn_session(prompt, inner)
-        args = [tmux, 'attach-session', '-t', _t(TERM['session'])]
-    else:
-        args = inner
-        publish('status', 'terminal    no tmux - the session dies with the tab')
-    try:
-        # On loopback the terminal is reached only through nginx's /t/<port>/,
-        # which puts it on the dashboard's own origin -- and a credential there
-        # would prompt for a sign-in the dashboard has already had. Exposed
-        # directly on any other host it still must carry one.
-        cred = ['-c', TERM['cred']] if (TERM['cred'] and TERM['host'] != '127.0.0.1') else []
-        if TERM['host'] != '127.0.0.1' and not TERM['cred']:
-            publish('status', 'terminal    refusing to expose an unauthenticated shell')
-            return {'ok': False, 'error': 'refusing to expose an unauthenticated shell'}
-        TERM['proc'] = subprocess.Popen(
-            [exe, '-p', str(TERM['port']), '-i', TERM['host'], '-W'] + cred + [
-             # matches the nginx location, so ttyd's own asset and websocket
-             # URLs carry the prefix they are served under
-             '-b', '/t/%d' % TERM['port'],
-             # Claude Code turns on mouse reporting, so a drag goes to the
-             # application and xterm makes no selection of its own. xterm's
-             # bypass is Shift everywhere except macOS, where it is Option --
-             # and only when this option is on, which it is not by default.
-             # Without it there is no way to select text with a mouse at all.
-             '-t', 'macOptionClickForcesSelection=true',
-             '-t', 'rightClickSelectsWord=true',
-             '-t', 'fontSize=13', '-t', 'fontFamily=SFMono-Regular,Menlo,monospace',
-             '-t', 'theme={"background":"#171614","foreground":"#ece8e1"}'] + args,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        TERM['url'] = 'http://127.0.0.1:%d/' % TERM['port']
-        if not _wait_port(TERM['host'], TERM['port']):
-            publish('status', 'terminal    ttyd did not come up on port %d' % TERM['port'])
-            return {'ok': False, 'error': 'terminal did not start'}
-        # The page may be holding an iframe against the ttyd this one replaced.
-        # Without this it shows a dead terminal until someone reloads -- which
-        # is what "sending from Discord disconnects the dashboard" looked like.
-        publish('terminal', 'session started')
-        if handed:
-            pass
-        elif mode == 'catchup' and session_exists() and _queue_prompt():
-            # ttyd had to be spawned first; the pane exists only now.
-            handed = inject_queue(_queue_prompt())['ok']
-        return {'ok': True, 'port': TERM['port'], 'resumed': resumed,
-                'primed': bool(prompt) or handed}
-    except Exception as e:
-        publish('status', 'terminal    failed: %s' % e)
-        return {'ok': False, 'error': str(e)}
 
 # ---------------------------------------------------------------- inbound
 #
@@ -631,7 +392,6 @@ def newest_buffer(seen=''):
 def conversation_rows():
     """The chat list: every conversation, with the state the page has to show."""
     conversations.sweep()
-    reap_terminal()
     rows = []
     for r in conversations.listing():
         rows.append({
@@ -659,55 +419,13 @@ def open_conversation(thread_id):
         r = conversations.start(thread_id)
         if not r.get('ok'):
             return r
-    row = conversations.load().get(str(thread_id)) or {}
-    if row.get('tmux') == TERM['session']:
-        # The bound conversation is the dashboard's own terminal. It has its own
-        # ttyd on --term-port; bring that one back if it is down rather than
-        # giving this row a second one. Two ttyds on one tmux session both work,
-        # but they share a cursor and argue about the size of the window.
-        if terminal_up():
-            return {'ok': True, 'port': TERM['port'], 'adopted': True}
-        r = start_terminal('resume')
-        return dict(r, port=r.get('port', TERM['port'])) if r.get('ok') else r
-    return conversations.ensure_ttyd(thread_id, host='127.0.0.1')
+    # Every conversation is served the same way now. This used to special-case
+    # the one bound to the dashboard's own tmux session, which had its own ttyd
+    # on a fixed port -- so picking it from the list had to reuse that rather
+    # than hand it a second one. With Path A gone there is no such conversation.
+    return conversations.ensure_ttyd(thread_id, host=TTYD['host'], cred=TTYD['cred'])
 
 
-
-def new_conversation():
-    """Start another conversation, closing none.
-
-    It gets a Discord thread of its own straight away, so a conversation begun
-    at the keyboard can be picked up from a phone without being adopted after
-    the fact -- which is the awkward path that binding exists to patch.
-    """
-    title = 'Dashboard \u00b7 %s' % datetime.datetime.now().strftime('%a %H:%M')
-    try:
-        r = chat._bot('/thread', {'name': title,
-                                  'message': 'New conversation started from the dashboard.'})
-        tid = str(r.get('thread_id') or '')
-    except Exception as e:
-        # No Discord, no thread -- but the conversation should still start. A
-        # local id keeps it addressable in the list; it just cannot be reached
-        # from a phone until someone opens a thread for it.
-        publish('status', 'terminal    no Discord thread for this conversation: %s' % e)
-        tid = 'local-%d' % int(time.time())
-    if not tid:
-        return {'ok': False, 'error': 'could not open a Discord thread'}
-    conversations.touch(tid, title=title, auto_named=True, discord_name=title)
-    r = conversations.start(tid)
-    if not r.get('ok'):
-        return r
-    res = conversations.ensure_ttyd(tid, host='127.0.0.1')
-    return dict(res, thread_id=tid, title=title)
-
-
-def stop_terminal():
-    if TERM['proc']:
-        try:
-            TERM['proc'].terminate()
-        except Exception:
-            pass
-        TERM['proc'] = None
 
 # ---------------------------------------------------------------- refresh
 
@@ -845,8 +563,6 @@ def note_rows(force=False):
 def publish(kind, text='', **extra):
     ev = {'kind': kind, 'text': text, 'at': datetime.datetime.now().strftime('%H:%M:%S')}
     ev.update(extra)
-    if kind == 'terminal':
-        ev['port'] = TERM['port']
     if kind == 'diff' and not _feed_transient(text):
         with FEED_LOCK:
             key = _feed_key(text)
@@ -1626,7 +1342,10 @@ function drawTerm(){
   // `on` means the terminal is viewable right now — either this page mounted it,
   // or ttyd is already serving one (a reload, or a freshly opened tab). Either
   // way there is nothing to resume, so no start buttons.
-  const on=window.__mounted||window.__termup, live=window.__session, ready=window.__queueready;
+  // `on` means the iframe is showing a conversation. There is no longer a
+  // second way to be "already serving": every ttyd belongs to a conversation,
+  // and focusRecent() mounts the most recent one at load.
+  const on=window.__mounted, live=window.__session, ready=window.__queueready;
   const qd = ready ? '' : ' disabled title="nothing in this run&#39;s queue to consume"';
   box.hidden = !!on;
   if(!on) box.innerHTML = live
@@ -1666,7 +1385,7 @@ async function panels(){
   for(const k in p.html){const el=document.getElementById(k); if(el) el.innerHTML=p.html[k];}
   window.__epochs=p.epochs; drawFresh();
   window.__session=p.session||window.__mounted; window.__queueready=p.queue_ready;
-  window.__termup=p.termup; window.__termport=p.termport; drawTerm();
+  drawTerm();
 }
 const es=new EventSource('/events');
 es.addEventListener('diff',e=>row(JSON.parse(e.data)));
@@ -1705,12 +1424,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(ev.key==='ArrowLeft') goDay(-1); else if(ev.key==='ArrowRight') goDay(1);
   });
   drawDay();
-});
-es.addEventListener('terminal',e=>{
-  // ttyd was (re)started under us -- point the iframe at the live one.
-  const p=JSON.parse(e.data).port; if(!p) return;
-  window.__termup=true; window.__termport=p; window.__mounted=true;
-  mountTerm(p); drawTerm();
 });
 es.addEventListener('source',()=>panels());
 es.addEventListener('status',e=>{document.getElementById('status').textContent=JSON.parse(e.data).text;});
@@ -2073,9 +1786,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   // is a capture-pane per conversation, which is cheap.
   loadChats().then(focusRecent); setInterval(loadChats, 6000);
   loadUsage(); setInterval(loadUsage, 300000);
-  // ttyd already serving: attach straight to it. Before this the page offered to
-  // resume a conversation it could simply have shown.
-  if(window.__termup){ window.__mounted=true; mountTerm(window.__termport); drawTerm(); }
+  // Attaching to whatever is already serving is focusRecent()'s job, called
+  // above with the chat list. It used to be done twice: once from the list, and
+  // once from a `__termup` flag describing the single fixed ttyd that no longer
+  // exists.
   const rb=document.getElementById('dorefresh');
   if(rb) rb.onclick=async()=>{
     document.getElementById('status').textContent='refreshing…';
@@ -2103,7 +1817,9 @@ document.addEventListener('DOMContentLoaded',()=>{
                                         body:JSON.stringify({mode:mode})}).then(r=>r.json());
     btn.disabled=false;
     if(!r.ok){document.getElementById('termstate').textContent=r.error||'failed';return;}
-    window.__session=true; window.__mounted=true; window.__termport=r.port; drawTerm();
+    window.__session=true; window.__mounted=true;
+    if(r.thread_id) window.__chat=r.thread_id;
+    drawTerm();
     const st=document.getElementById('termstate');
     st.dataset.said='1';
     st.textContent = r.resumed ? (r.primed ? 'resumed, queue handed over' : 'resumed')
@@ -2320,6 +2036,10 @@ def _startbtns(live, ready):
 
     A page load is never the `mounted` state: the iframe is only ever attached by
     a click, so the choices here are the live pair or the cold pair.
+
+    The four modes are Path B operations: blank/queue open a new conversation,
+    resume/catchup return to the current one, and within each pair the only
+    difference is whether the run queue is handed over. See `start_session`.
     """
     qd = '' if ready else ' disabled title="nothing in this run&#39;s queue to consume"'
     if live:
@@ -2555,7 +2275,7 @@ def render():
                  % len(done_rows))
     # The count is what is outstanding, and an uncommitted note is outstanding.
     outstanding = len(open_rows) + len(nrows)
-    live = session_exists()
+    live = bool(current_conversation())
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Zipper</title><style>%s</style></head><body><div class="wrap">
@@ -2596,14 +2316,14 @@ def render():
 <footer><div class="fresh" id="fresh"></div>
 <div class="sub vnavbar">%s</div></footer>
 </div><script>window.__epochs=%s;window.__feed=%s;window.__session=%s;window.__mounted=false;window.__showdone=false;window.__queueready=%s;
-window.__termup=%s;window.__termport=%s;window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
+window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
 window.__notes=%s;
 %s%s</script></body></html>""" % (
         CSS, core.TODAY.strftime('%A %d %B %Y'),
         p['p-today'], p['p-work-canvas'], p['p-work-tasks'],
         'running \u2014 not attached here' if live else 'not started',
         '' if live else ' hidden',
-        '' if terminal_up() else _startbtns(live, bool(_queue_prompt())),
+        _startbtns(live, bool(_queue_prompt())),
         _view_html(_vb['views'].get('next_actions'), compact=True),
         _view_html(_vb['views'].get('scoreboard'), compact=True),
         len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl) or '<p class="sub">Clean.</p>',
@@ -2611,9 +2331,8 @@ window.__notes=%s;
         feed or '<p class="sub">Waiting for this run’s fetch…</p>',
         ' &middot; '.join('<a class="vnav" href="/views/%s">%s</a>'
                          % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
-        json.dumps(epochs), json.dumps(rows), json.dumps(session_exists()),
-        json.dumps(bool(_queue_prompt())), json.dumps(terminal_up()),
-        json.dumps(TERM['port']), json.dumps(core.TODAY.isoformat()),
+        json.dumps(epochs), json.dumps(rows), json.dumps(bool(current_conversation())),
+        json.dumps(bool(_queue_prompt())), json.dumps(core.TODAY.isoformat()),
         json.dumps(canvas.CANVAS_HOST), json.dumps(nrows), JS, TICKJS)
 
 
@@ -2629,7 +2348,6 @@ def _maybe_quit():
     if SRV.get('daemon'):
         return          # always-on: the browser is a viewer, not the owner
     print('no clients left - shutting down')
-    stop_terminal()
     threading.Thread(target=SRV['server'].shutdown, daemon=True).start()
 
 def client_gone():
@@ -2696,9 +2414,9 @@ class Handler(BaseHTTPRequestHandler):
                     ep[k] = None
             self._send(200, json.dumps({'epochs': ep, 'html': panels_html(day),
                                         'queue_ready': bool(_queue_prompt()),
-                                        'session': session_exists(),
-                                        'termup': terminal_up(),
-                                        'termport': TERM['port']}), 'application/json')
+                                        'session': bool(current_conversation()),
+                                        'termup': False,
+                                        'termport': 0}), 'application/json')
         elif self.path == '/api/state':
             with LOCK:
                 st = dict(STATE)
@@ -2768,7 +2486,7 @@ class Handler(BaseHTTPRequestHandler):
                     mode = json.loads(self.rfile.read(n).decode('utf-8')).get('mode', 'blank')
                 except Exception:
                     pass
-            self._send(200, json.dumps(start_terminal(mode) or {'ok': False}), 'application/json')
+            self._send(200, json.dumps(start_session(mode) or {'ok': False}), 'application/json')
         elif self.path == '/api/clipdebug':
             # The clipboard is the one thing here that cannot be tested from
             # this box: whether it works depends on the browser, and on whether
@@ -2795,13 +2513,22 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 self._send(400, json.dumps({'error': 'text required'}), 'application/json')
                 return
-            sess = conversations.tmux_name(str(d['thread_id'])) if d.get('thread_id') else TERM['session']
+            tid = str(d.get('thread_id') or '') or current_conversation()
+            if not tid:
+                self._send(400, json.dumps({'error': 'no conversation'}), 'application/json')
+                return
+            # `conversations.target()` rather than a session name plus a local
+            # anchoring helper: it is the one place that knows how to name a
+            # pane exactly. serve.py used to carry its own `_t()` for this,
+            # which existed only because the dashboard's fixed `zipper` session
+            # was a prefix of every `zipper-<thread>` -- a collision Path A took
+            # with it.
             try:
                 tmux = shutil.which('tmux')
                 subprocess.run([tmux, 'load-buffer', '-b', 'zipper-copy', '-'],
                                input=text.encode('utf-8'), check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run([tmux, 'display-message', '-t', _t(sess),
+                subprocess.run([tmux, 'display-message', '-t', conversations.target(tid),
                                 'copied %d chars to tmux buffer' % len(text)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self._send(200, json.dumps({'ok': True, 'chars': len(text)}),
@@ -2872,7 +2599,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(400, json.dumps({'error': str(e)[:80]}), 'application/json')
         elif self.path == '/api/newsession':
-            self._send(200, json.dumps(new_session()), 'application/json')
+            # Was: kill the single fixed tmux session so the next attach started
+            # a fresh conversation. There is no single session now, and starting
+            # one closes none, so this is /api/newconversation by another name.
+            self._send(200, json.dumps(new_conversation()), 'application/json')
         elif self.path == '/api/done':
             n = int(self.headers.get('Content-Length', 0))
             try:
@@ -2995,7 +2725,6 @@ def main():
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--open', action='store_true', help='open a browser and exit when it closes')
     ap.add_argument('--no-terminal', action='store_true', help='skip the embedded Claude session')
-    ap.add_argument('--term-port', type=int, default=8801)
     # Defaults come from the environment so a systemd EnvironmentFile can set
     # them; the flags still win when both are given.
     ap.add_argument('--term-host', default=os.environ.get('ZIPPER_TERM_HOST', '127.0.0.1'),
@@ -3026,10 +2755,9 @@ def main():
         return 0 if res['ok'] else 1
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
-    TERM['enabled'] = not a.no_terminal
-    TERM['port'] = a.term_port
-    TERM['host'] = a.term_host
-    TERM['cred'] = a.term_cred
+    TTYD['enabled'] = not a.no_terminal
+    TTYD['host'] = a.term_host
+    TTYD['cred'] = a.term_cred
     SRV['server'] = srv
     SRV['daemon'] = a.daemon
     feed_load()
@@ -3052,7 +2780,6 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
-    stop_terminal()
     print('stopped')
     return 0
 

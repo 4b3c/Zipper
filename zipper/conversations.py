@@ -45,10 +45,11 @@ def session_id(thread_id):
 def tmux_name(thread_id):
     """Which tmux session holds this thread.
 
-    Normally derived, like the session id. The exception is a *bound* thread:
-    an already-running conversation -- the dashboard's own terminal, say --
-    adopted by a thread so it can be carried on from a phone. Its pane is not
-    ours to name, so the registry records the real one.
+    Normally derived, like the session id. The exception is a *bound* thread: an
+    already-running conversation adopted by a thread so it can be carried on
+    from a phone. Its pane is not ours to name, so the registry records the real
+    one. Binding used to be how the dashboard's own fixed terminal got a thread
+    at all; that terminal is gone, and every conversation now starts with one.
     """
     row = load().get(str(thread_id)) or {}
     return row.get('tmux') or 'zipper-%s' % thread_id
@@ -57,10 +58,14 @@ def tmux_name(thread_id):
 def target(thread_id):
     """This thread's session as an **exact** tmux `-t` target.
 
-    tmux resolves a bare `-t` by prefix, so a bound row naming its session
-    `zipper` matches `zipper-<any thread>`. Every `-t` here therefore has to be
-    anchored, not just the liveness check: unanchored, `close()` killed a live
-    conversation and `deliver()` pasted into one.
+    tmux resolves a bare `-t` by prefix, so any session name that is a prefix of
+    another matches both. Every `-t` here is therefore anchored, not just the
+    liveness check: unanchored, `close()` killed a live conversation and
+    `deliver()` pasted into one.
+
+    The case that produced those bugs is gone -- a fixed session named `zipper`
+    alongside every `zipper-<thread>` -- but a bound row still carries a name
+    this module did not choose, so the anchoring stays.
 
     The trailing colon matters: `=name` is a *session* target, and the commands
     that actually carry a message -- `capture-pane`, `send-keys`,
@@ -105,12 +110,10 @@ def _tmux():
 def alive(thread_id):
     """Is this thread's tmux session actually running?
 
-    The `=` prefix makes the target an **exact** name, not a prefix. Without it
-    tmux resolves `-t zipper` onto `zipper-<some other thread>`, so a bound row
-    naming the session `zipper` reads its liveness off whichever dashboard
-    terminal happens to be up. That row is also pinned against the reaper, so it
-    listed as live forever and blocked `zipper commit` on every pass -- which is
-    exactly what a hand-bound row did on 2026-09-06.
+    The `=` prefix makes the target an **exact** name, not a prefix -- see
+    `target()`. Read a bound row's liveness off the wrong pane and it reports as
+    live forever; pinned against the reaper, it then blocked `zipper commit` on
+    every pass, which is what a hand-bound `zipper` row did on 2026-09-06.
     """
     try:
         return subprocess.run([_tmux(), 'has-session', '-t', target(thread_id)],
