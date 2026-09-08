@@ -158,6 +158,85 @@ def last_message_at(thread_id):
     return out
 
 
+_TOKENS = {}
+
+
+def fmt_tokens(n):
+    """`104k`, `1.2M`. Two significant figures is all this deserves -- the
+    number moves with every turn and it is read to decide whether a wake-up is
+    cheap, not to reconcile a bill."""
+    if not n:
+        return ''
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return '%dk' % round(n / 1000)
+    return '%.1fM' % (n / 1_000_000)
+
+
+def context_tokens(thread_id):
+    """How much context the next message to this conversation would carry.
+
+    Read off the last assistant turn's `usage`, as
+    `input + cache_creation + cache_read` -- the three together are what that
+    request actually put in front of the model, whatever fraction of it the
+    cache happened to serve. That total is the point: while the cache is warm
+    most of it is billed at the cache rate, and once it expires the *same*
+    tokens are re-read at full input price. So this is the size of the bill
+    that waking a cold conversation converts back to full freight.
+
+    Assistant rows are the only ones carrying usage, and the last one is at the
+    end of the file, so the tail is enough. Sidechain rows -- a subagent's own
+    turns -- are skipped: their context is the subagent's, not this
+    conversation's, and taking one would report a number for the wrong thread.
+
+    Cached on (mtime, size) like `title` and `last_message_at`, because the
+    conversation list polls every few seconds and these files reach megabytes.
+    """
+    p = transcript(thread_id)
+    try:
+        st = os.stat(p)
+    except OSError:
+        return 0
+    key = (st.st_mtime, st.st_size)
+    hit = _TOKENS.get(str(thread_id))
+    if hit and hit[0] == key:
+        return hit[1]
+
+    def scan(window):
+        found = 0
+        try:
+            with open(p, 'rb') as fh:
+                if window and st.st_size > window:
+                    fh.seek(-window, os.SEEK_END)
+                    fh.readline()      # drop the partial line the seek landed in
+                for raw in fh:
+                    if b'"usage"' not in raw:
+                        continue
+                    try:
+                        d = json.loads(raw.decode('utf-8', 'replace'))
+                    except ValueError:
+                        continue
+                    if d.get('type') != 'assistant' or d.get('isSidechain'):
+                        continue
+                    u = (d.get('message') or {}).get('usage') or {}
+                    tot = (u.get('input_tokens') or 0) \
+                        + (u.get('cache_creation_input_tokens') or 0) \
+                        + (u.get('cache_read_input_tokens') or 0)
+                    if tot:
+                        found = tot
+        except OSError:
+            return 0
+        return found
+
+    # The tail almost always holds the last assistant turn. A conversation that
+    # ended on a very long stretch of tool traffic is the exception, and there
+    # the whole file is worth reading once rather than reporting nothing.
+    total = scan(262144) or scan(0)
+    _TOKENS[str(thread_id)] = (key, total)
+    return total
+
+
 def detect_session(thread_id):
     """Work out which transcript a *bound* conversation is actually writing.
 
@@ -336,6 +415,7 @@ def listing():
                         serving=(_port_open(row.get('host') or '127.0.0.1', int(row['port']))
                                  if row.get('port') else False),
                         last_active_ts=last_active(tid),
+                        context_tokens=context_tokens(tid),
                         idle_for=int(time.time() - last_active(tid)) if last_active(tid) else None))
     # last_active_ts is the newest of the registry stamp and the transcript's
     # mtime. The registry only sees messages this process delivered, so sorting
@@ -364,10 +444,20 @@ def reap(notify=None):
             continue
         tid = row['thread_id']
         if notify:
+            # The size is the whole point of the notice: "re-read at full price"
+            # is a warning he cannot act on without knowing how much there is to
+            # re-read. A 6k conversation is worth waking without thinking; a
+            # 400k one is a decision. Omitted rather than guessed when the
+            # transcript has no usage to read yet.
+            size = fmt_tokens(row.get('context_tokens'))
             try:
                 notify(tid, '_[conversation idle, closing — the prompt cache has expired, '
-                            'so picking this up again re-reads it at full price]_')
+                            'so picking this up again re-reads %s at full price]_'
+                            % ('all ~%s tokens' % size if size else 'it'))
             except Exception:
+                # Discord being down must not stop the sweep: the close below is
+                # the part that keeps the registry honest, and it happens either
+                # way. The notice is a courtesy.
                 pass
         close(tid, reason='idle')
         closed.append(tid)
@@ -396,12 +486,17 @@ def cmd_conversations(a):
     if not rows:
         print('conversations: none yet')
         return 0
-    print('%-22s %-7s %-10s %s' % ('thread', 'state', 'idle', 'session id'))
+    print('%-22s %-7s %-10s %-8s %s' % ('thread', 'state', 'idle', 'context',
+                                        'session id'))
     for r in rows:
         idle = _ago(r['last_active_ts']) if r['last_active_ts'] else '-'
-        print('%-22s %-7s %-10s %s' % (r['thread_id'],
-                                       'live' if r['alive'] else 'closed',
-                                       idle, r.get('session_id', '')[:8]))
-    print('\nidle close at %d min. A closed conversation resumes on the next message;\n'
+        print('%-22s %-7s %-10s %-8s %s' % (r['thread_id'],
+                                            'live' if r['alive'] else 'closed',
+                                            idle,
+                                            fmt_tokens(r.get('context_tokens')) or '-',
+                                            r.get('session_id', '')[:8]))
+    print('\ncontext is what the next message to that conversation would carry --\n'
+          'the size of the re-read once its cache is cold.')
+    print('idle close at %d min. A closed conversation resumes on the next message;\n'
           'its transcript is on disk either way.' % (IDLE_NOTICE // 60))
     return 0
