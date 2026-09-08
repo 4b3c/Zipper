@@ -11,7 +11,7 @@ import os, re, time, shutil, signal, socket, subprocess
 
 from .core import *          # noqa: F401,F403
 from . import core
-from .convcore import _tmux, alive, load, save, target, touch, tmux_name
+from .convcore import _tmux, alive, load, mutate, save, target, touch, tmux_name
 
 # ---------------------------------------------------------------- viewing
 #
@@ -158,10 +158,9 @@ def stop_ttyd(thread_id):
             pass
     elif row.get('port'):
         kill_ttyd_on(row['port'], row.get('host') or '127.0.0.1')
-    d = load()
-    if str(thread_id) in d:
-        d[str(thread_id)].pop('port', None)
-        save(d)
+    with mutate() as d:
+        if str(thread_id) in d:
+            d[str(thread_id)].pop('port', None)
 
 
 # Claude Code names its own conversations: it writes an `ai-title` line into the

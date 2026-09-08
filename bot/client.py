@@ -27,9 +27,18 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
     Without the flag Zipper cannot tell that from a message in some long-dead
     thread, and would answer both the same way -- by starting a stranger
     underneath a visible history it has never read.
+
+    **The timeout has to outlast delivery, not a normal request.** `/discord`
+    is synchronous all the way through `conversations.deliver`: a cold
+    conversation waits up to 25s for the TUI to draw and then presses Enter for
+    up to 20s more until the message provably leaves the input box. At the old
+    10s the bot gave up on deliveries that were still going fine, posted
+    "Zipper disconnected", and then the answer arrived minutes later anyway --
+    the message had been delivered the whole time. 120s is above the server's
+    worst case; past that something really is wrong.
     """
     try:
-        timeout = ClientTimeout(total=10)
+        timeout = ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{ZIPPER_URL}/discord", json={
                 "prompt": prompt,

@@ -38,7 +38,10 @@ async def handle_inject(request: web.Request) -> web.Response:
             return web.json_response({"error": "thread_id must be an integer"}, status=400)
 
         async def _inject():
-            ok = await post_to_zipper(prompt, thread_id)
+            # post_to_zipper returns (ok, error). Binding the pair to `ok` made
+            # every inject look successful -- a non-empty tuple is always truthy
+            # -- so a dropped synthetic prompt said nothing at all.
+            ok, _err = await post_to_zipper(prompt, thread_id)
             if not ok:
                 thread = await resolve_thread(thread_id)
                 if thread:

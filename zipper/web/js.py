@@ -109,16 +109,23 @@ function drawTerm(){
   // focusRecent() mounts the most recent one at load.
   const on=window.__mounted, live=window.__session, ready=window.__queueready;
   const qd = ready ? '' : ' disabled title="nothing in this run&#39;s queue to consume"';
-  box.hidden = !!on;
+  // `closedview` is the third thing that can occupy the terminal slot: the panel
+  // offering to resume a closed conversation. It lives in #termwrap, which
+  // #termstart hides while it is showing -- so from a cold card, clicking a
+  // closed row rendered the panel underneath an invisible element and looked
+  // like nothing had happened. It is not a mounted conversation, though, so it
+  // gets no fullscreen or pop-out.
+  box.hidden = !!(on||window.__closedview);
   if(!on) box.innerHTML = live
     ? '<button class="startbtn" data-mode="resume">resume conversation</button>'
      +'<button class="startbtn" data-mode="catchup"'+qd+'>resume and clear queue</button>'
     : '<button class="startbtn" data-mode="blank">start blank session</button>'
      +'<button class="startbtn" data-mode="queue"'+qd+'>start session to clear queue</button>';
-  document.getElementById('termnew').hidden = !(live||on);
+  document.getElementById('termnew').hidden = !(live||on||window.__closedview);
   ['termfull','termpop'].forEach(i=>{document.getElementById(i).hidden=!on;});
   const st=document.getElementById('termstate');
-  if(st && !on) st.textContent = live ? 'running — not attached here' : 'not started';
+  if(st && !on) st.textContent = window.__closedview ? 'closed'
+    : live ? 'running — not attached here' : 'not started';
   if(st && on && !st.dataset.said) st.textContent='';
 }
 function shiftDay(iso,n){const d=new Date(iso+'T12:00:00');d.setDate(d.getDate()+n);
@@ -350,6 +357,7 @@ function showClosed(row){
   const wrap=document.getElementById('termwrap');
   if(!wrap) return;
   wrap.dataset.closed='1';
+  window.__closedview=true; drawTerm();
   wrap.innerHTML='<div class="termdead"><p><b>'+chatEsc(row.title)+'</b> is closed.</p>'+
     '<button class="btn" id="termreload">reload conversation</button>'+
     '<p class="sub">Resuming re-reads the whole conversation \u2014 its prompt cache has '+
@@ -360,7 +368,7 @@ function showClosed(row){
 }
 function mountTerm(port){
   const u=termURL(port);
-  window.__port=port;
+  window.__port=port; window.__closedview=false;
   document.getElementById('termwrap').innerHTML='<iframe src="'+u+'" allow="clipboard-read; clipboard-write"></iframe>';
   document.getElementById('termpop').href=u;
   const f=document.querySelector('#termwrap iframe');

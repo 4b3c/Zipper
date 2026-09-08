@@ -181,7 +181,18 @@ li.crossed .tick{border-color:var(--accent)}
    buttons stayed up next to the running conversation through two rounds of "fixes" to the
    logic, which was correct the whole time. Make the attribute win everywhere. */
 [hidden]{display:none!important}
-#termstart{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;padding:26px 0 20px}
+/* The start buttons live *inside* #termbody, in the slot the terminal will take,
+   rather than in a band above it: stacked above, they added their own height to a
+   card that is already 600px of chat list, so the cold card was taller than the
+   running one. Centred in the empty terminal slot, cold and running are the same
+   height and the buttons sit where the conversation will appear. */
+#termstart{flex:1;min-width:0;display:flex;gap:14px;align-items:center;justify-content:center;
+  flex-wrap:wrap;min-height:600px;background:#171614;border-radius:8px}
+#termcard.full #termstart{min-height:0}
+/* ...and the empty #termwrap next to it is still flex:1, so the two split the row
+   and the buttons sat in the left half. While the start box is showing there is no
+   terminal to lay out, so take it out of the flow entirely. */
+#termstart:not([hidden]) + #termwrap{display:none}
 .startbtn{font:inherit;font-size:15px;background:none;border:1px solid var(--line);color:var(--fg);
   border-radius:9px;padding:13px 26px;cursor:pointer;transition:border-color .15s,color .15s}
 .startbtn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}

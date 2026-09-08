@@ -12,8 +12,8 @@ import os, re, json, time, shutil, subprocess, datetime
 from .core import *          # noqa: F401,F403
 from . import core
 from .convcore import (CLAUDE_PROJECTS, CONV_JSON, IDLE_NOTICE, _pane, _project_dir,
-                       _tmux, alive, load, save, session_id, target, tmux_name,
-                       touch, transcript)
+                       _tmux, alive, load, mutate, save, session_id, target,
+                       tmux_name, touch, transcript)
 from .ttyd import _port_open, stop_ttyd
 
 def last_active(thread_id):
@@ -56,12 +56,11 @@ def close(thread_id, reason='idle', force=False):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except RuntimeError:
         pass
-    d = load()
-    if str(thread_id) in d:
-        d[str(thread_id)]['closed'] = True
-        d[str(thread_id)]['closed_at'] = datetime.datetime.now().isoformat(timespec='seconds')
-        d[str(thread_id)]['closed_reason'] = reason
-        save(d)
+    with mutate() as d:
+        if str(thread_id) in d:
+            d[str(thread_id)]['closed'] = True
+            d[str(thread_id)]['closed_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+            d[str(thread_id)]['closed_reason'] = reason
     return {'ok': True}
 
 

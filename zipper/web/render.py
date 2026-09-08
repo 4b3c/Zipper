@@ -446,8 +446,7 @@ def render():
 <button id="termnew" class="btn"%s>new conversation</button>
 <button id="termfull" class="btn" hidden>fullscreen</button>
 <a id="termpop" class="btn" href="#" target="_blank" rel="noopener" hidden>pop out</a></h2>
-<div id="termstart">%s</div>
-<div id="termbody"><aside id="chatside" hidden><div id="chatlist"></div><div id="usemeters"></div></aside><div id="termwrap"></div></div></div>
+<div id="termbody"><aside id="chatside" hidden><div id="chatlist"></div><div id="usemeters"></div></aside><div id="termstart">%s</div><div id="termwrap"></div></div></div>
 
 <div class="card"><h2>Next actions <a class="more" href="/views/now">see all</a></h2>%s</div>
 

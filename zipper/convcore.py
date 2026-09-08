@@ -9,7 +9,8 @@ what lets this file be read on its own.
 Split out of `zipper/conversations.py` on 2026-09-07 (857 lines).
 Import it as `zipper.conversations`, which re-exports all three.
 """
-import os, re, json, time, uuid, shutil, signal, hashlib, subprocess, datetime
+import os, re, json, time, uuid, fcntl, shutil, signal, hashlib, subprocess, datetime
+import contextlib
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
@@ -131,6 +132,42 @@ def save(d):
     os.replace(tmp, CONV_JSON)
 
 
+CONV_LOCK = CONV_JSON + '.lock'
+
+
+@contextlib.contextmanager
+def mutate():
+    """Read-modify-write the registry with nobody else in the middle.
+
+    **Every writer must go through this.** `load()` + edit + `save()` is a
+    read-modify-write across *processes* -- the hook, the web server, the CLI
+    and every conversation's own Claude all hold this file -- and the write is
+    a whole-file replace. Two overlapping writers means the slower one saves a
+    dict it read before the faster one's change and puts the file back the way
+    it was.
+
+    That is not a theoretical race. It ate replies: `note_delivery` records the
+    Discord message under `last_delivered`, and the Stop hook forwards only if
+    the transcript's last user message matches it. A second conversation
+    touching the registry during the first one's turn -- caching a title,
+    remembering a ttyd port, marking itself active -- restored the *previous*
+    `last_delivered`, the hook compared against a stale key, decided the message
+    had been typed at the keyboard, and dropped the reply on the floor. Long
+    turns lost more often because the window is the whole turn.
+
+    An advisory flock on a sidecar file, so an interrupted holder releases it.
+    """
+    os.makedirs(os.path.dirname(CONV_JSON), exist_ok=True)
+    with open(CONV_LOCK, 'a+') as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            d = load()
+            yield d
+            save(d)
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def touch(thread_id, active=False, **fields):
     """Record something about a conversation.
 
@@ -140,20 +177,19 @@ def touch(thread_id, active=False, **fields):
     to the top, and the order the operator was navigating by rearranged itself
     under his cursor.
     """
-    d = load()
-    row = d.setdefault(str(thread_id), {})
-    row.setdefault('started', datetime.datetime.now().isoformat(timespec='seconds'))
+    with mutate() as d:
+        row = d.setdefault(str(thread_id), {})
+        row.setdefault('started', datetime.datetime.now().isoformat(timespec='seconds'))
     # A bound row's session id belongs to the conversation it adopted, not to
     # the thread -- overwriting it with the derived one would resume the wrong
     # transcript if that session ever had to be restarted.
-    if not row.get('bound'):
-        row['session_id'] = session_id(thread_id)
-    now = datetime.datetime.now().isoformat(timespec='seconds')
-    row.setdefault('last_active', now)
-    if active:
-        row['last_active'] = now
-    row.update(fields)
-    save(d)
+        if not row.get('bound'):
+            row['session_id'] = session_id(thread_id)
+        now = datetime.datetime.now().isoformat(timespec='seconds')
+        row.setdefault('last_active', now)
+        if active:
+            row['last_active'] = now
+        row.update(fields)
     return row
 
 
