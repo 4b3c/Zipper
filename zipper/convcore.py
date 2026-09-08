@@ -385,16 +385,67 @@ def note_delivery(thread_id, text):
     this turn come from Discord?" by comparing the transcript's last user message
     against this. A match means the bot put it there; anything else means he
     typed it.
+
+    **It is a set, not a slot.** A single `last_delivered` assumed one message
+    in flight at a time, and a conversation does not work that way: he sends a
+    follow-up while a long turn is still running, delivery overwrites the slot,
+    and when the *first* turn ends the hook compares its prompt against the
+    *second* message's key, decides it was typed, and drops the reply. That is
+    exactly what happened on 2026-09-08 -- an eight-minute bookkeeping pass
+    answered into a terminal nobody was reading while he waited on Discord.
+
+    So every delivery is remembered, not just the newest. The list is bounded
+    two ways, because an unbounded provenance log is its own bug: `KEEP` entries,
+    and `TTL` seconds. Both exist to stop a key outliving the conversation it
+    describes -- a message from this morning still matching at midnight would
+    forward a reply to something he typed at the keyboard hours later.
     """
-    touch(thread_id, last_delivered={'key': delivery_key(text),
-                                     'at': datetime.datetime.now().isoformat(timespec='seconds')})
+    now = datetime.datetime.now()
+    with mutate() as d:
+        row = d.setdefault(str(thread_id), {})
+        rows = [e for e in (row.get('deliveries') or [])
+                if isinstance(e, dict) and e.get('key')]
+        rows.append({'key': delivery_key(text),
+                     'at': now.isoformat(timespec='seconds')})
+        row['deliveries'] = _fresh_deliveries(rows, now)
+        # Kept in step for anything still reading the old field -- the dashboard
+        # shows it, and a rollback should not lose today's provenance.
+        row['last_delivered'] = row['deliveries'][-1]
+
+
+DELIVERY_KEEP = 12
+DELIVERY_TTL = 6 * 3600
+
+
+def _fresh_deliveries(rows, now):
+    """The last `DELIVERY_KEEP` deliveries that are younger than `DELIVERY_TTL`."""
+    out = []
+    for e in rows:
+        try:
+            age = (now - datetime.datetime.fromisoformat(e['at'])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            age = 0                    # unparseable: keep, let the count bound it
+        if age <= DELIVERY_TTL:
+            out.append(e)
+    return out[-DELIVERY_KEEP:]
 
 
 def delivered(thread_id, text):
-    """Was `text` the message this conversation was last handed from Discord?"""
+    """Was `text` a message this conversation was handed from Discord?
+
+    Any live delivery, not only the most recent one -- see `note_delivery`. The
+    legacy single slot is still read so a registry written by an older version
+    keeps routing correctly through the upgrade.
+    """
     row = load().get(str(thread_id)) or {}
+    key = delivery_key(text)
+    now = datetime.datetime.now()
+    for e in _fresh_deliveries([e for e in (row.get('deliveries') or [])
+                                if isinstance(e, dict) and e.get('key')], now):
+        if e['key'] == key:
+            return True
     d = row.get('last_delivered') or {}
-    return bool(d.get('key')) and d['key'] == delivery_key(text)
+    return bool(d.get('key')) and d['key'] == key
 
 
 def deliver(thread_id, text, source='discord'):
