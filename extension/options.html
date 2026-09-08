@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Zipper Collector</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; max-width: 34rem;
+         margin: 3rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; }
+  label { display: block; margin: 1.5rem 0 .35rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem .6rem; font: inherit;
+          border: 1px solid #8886; border-radius: 6px; background: transparent;
+          color: inherit; }
+  button { margin-top: 1rem; padding: .5rem 1rem; font: inherit; cursor: pointer;
+           border: 1px solid #8886; border-radius: 6px; background: transparent;
+           color: inherit; }
+  p.hint { color: #8a8a8a; font-size: .875rem; }
+  #status { margin-top: 1rem; min-height: 1.5em; }
+  .ok { color: #2e7d32; } .bad { color: #c62828; }
+</style>
+
+<h1>Zipper Collector</h1>
+<p class="hint">
+  Reads what a logged-in browser can see and hands it to Zipper. It collects and
+  never concludes — everything is worked out on the backend.
+</p>
+
+<label for="endpoint">Zipper address</label>
+<input id="endpoint" type="url" placeholder="http://your-host:4199" spellcheck="false">
+<p class="hint">
+  The dashboard's own address, reachable over Tailscale. Saving asks for
+  permission to talk to it — that is not known at build time, which is why it is
+  not baked into the extension.
+</p>
+
+<button id="save">Save</button>
+<button id="test">Test connection</button>
+<div id="status"></div>
+
+<script src="options.js"></script>

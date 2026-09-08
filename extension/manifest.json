@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Zipper Collector",
+  "version": "0.1.0",
+  "description": "Reads what only a logged-in browser can see, and hands it to Zipper. Collects; never concludes.",
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module",
+    "scripts": ["background.js"]
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://canvas.asu.edu/*", "*://*.instructure.com/*"],
+      "js": ["collectors/canvas.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "zipper-collector@zipper.local",
+      "strict_min_version": "121.0"
+    }
+  }
+}
