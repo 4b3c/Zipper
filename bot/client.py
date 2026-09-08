@@ -9,6 +9,15 @@ from utils.constants import ZIPPER_URL
 
 DISCORD_CHANNEL_ID = None  # set by __init__.py at startup
 
+# How long a post to /discord may take before the bot stops holding the request.
+# Named because the timeout notice quotes it -- a number in the message and a
+# different number in the code is how a diagnostic starts lying.
+POST_TIMEOUT = 300
+
+# The unit behind ZIPPER_URL. Knowing its name is what lets a failure say
+# "inactive" instead of the catch-all "disconnected".
+ZIPPER_UNIT = "zipper-web"
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -41,7 +50,7 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
     anyway, because its expiry is no longer evidence of anything.
     """
     try:
-        timeout = ClientTimeout(total=300)
+        timeout = ClientTimeout(total=POST_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{ZIPPER_URL}/discord", json={
                 "prompt": prompt,
@@ -55,7 +64,11 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
                     body = await resp.json()
                 except Exception:
                     body = {}
-                return False, str(body.get("error") or "")
+                # A server that answered is not a server that is missing, so
+                # never hand back an empty reason here -- `failure_notice`
+                # reads the empty string as "could not reach it" and would
+                # blame the network for an HTTP error.
+                return False, str(body.get("error") or f"HTTP {resp.status}")
     except asyncio.TimeoutError:
         print("[discord] post to Zipper: timed out waiting for delivery")
         return False, "slow"
@@ -65,9 +78,9 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
 
 
 async def zipper_alive():
-    """Is the server actually up? A cheap GET, answered by a different thread
-    than the one handling a slow delivery, so a long `/discord` does not make
-    this look dead."""
+    """Is the server actually answering? A cheap GET, served by a different
+    thread than the one handling a slow delivery, so a long `/discord` cannot
+    make it look dead."""
     try:
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=5)) as s:
             async with s.get(f"{ZIPPER_URL}/api/state") as resp:
@@ -76,33 +89,92 @@ async def zipper_alive():
         return False
 
 
+async def unit_state(unit: str = None):
+    """`systemctl is-active`, or `''` when systemd cannot be asked.
+
+    A read-only query, so it needs no privilege, and it is run out of process
+    so a wedged systemd cannot block the gateway's event loop. The empty string
+    means *unknown* and is never reported as a state -- an unanswered question
+    is not the same as a stopped service.
+
+    The unit name is resolved at call time rather than bound as a default: a
+    default argument is evaluated once, at import, so it would go on querying
+    whatever `ZIPPER_UNIT` was then while the message quoted its current value
+    -- a diagnostic reporting on one service and naming another.
+    """
+    unit = unit or ZIPPER_UNIT
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "is-active", unit,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        return out.decode().strip()
+    except Exception:
+        return ""
+
+
 async def failure_notice(err: str):
     """What to say in the thread about a failed post -- or `None` for nothing.
 
-    **"Zipper disconnected" is a claim about the service, and it may only be
-    made when the service is genuinely unreachable.** It used to be the message
-    for every failure, including a request that merely took longer than the
-    bot's patience. That produced the worst kind of wrong: an error, followed
-    minutes later by the answer it said would never come. Delivery had been
-    working the entire time.
+    **Every message here names one specific failure, and may only be sent when
+    that failure is the one that happened.** "Zipper disconnected" used to be
+    the answer to all of them, which made it useless twice over: it was wrong
+    whenever the service was fine, and even when it was right it did not say
+    what to do about it. The three real ways this breaks want three different
+    responses -- restart the unit, look at why a running server is refusing
+    connections, wait.
 
-    So a timeout is not evidence any more. It is ambiguous by nature -- the
-    handover may still be in flight -- and it is resolved by asking the server
-    whether it is alive rather than by inferring from the clock. If it answers,
-    say nothing: either the message lands and the reply arrives on its own, or
-    it does not and `deliver` already reported why. A false alarm is worse than
-    silence here, because the typing indicator is still running and it is
-    telling the truth.
+    So the failure is *diagnosed* rather than assumed. Two observations
+    separate them: whether systemd holds the unit active, and whether the
+    server answers a cheap request.
+
+    | what happened | unit | answers | message |
+    |---|---|---|---|
+    | connection refused | inactive | -- | service is down, restart it |
+    | connection refused | active | -- | running but not accepting connections |
+    | connection refused | unknown | no | unreachable, cause unknown |
+    | no response in time | active | yes | still working, probably in flight |
+    | server said no | active | yes | the delivery's own reason |
+
+    The timeout line is deliberately not an error. `/discord` returns when the
+    message reaches the pane, and the reply comes back separately through the
+    Stop hook, so a slow handover that eventually lands still produces an
+    answer. It says the message is probably still coming, because it probably
+    is -- claiming a disconnection here is what produced an error followed
+    minutes later by the reply it said would never arrive.
     """
     if err == "no conversation":
         return ("🗄️ This thread's conversation is gone — "
                 "start a new one in the channel.")
-    if err in ("slow", "unreachable", ""):
-        return None if await zipper_alive() else "⚠️ Zipper disconnected"
-    # A real answer from a running server: the delivery itself failed, and the
-    # reason is specific ("conversation not running", "message stayed in the
-    # input box"). Saying "disconnected" would send him to look at systemd for
-    # a problem that is in the pane.
+
+    if err == "slow":
+        # Held the request for POST_TIMEOUT and got nothing back. If the server
+        # is answering, the handover is the slow part, not the connection.
+        if await zipper_alive():
+            return (f"⏳ Zipper hasn't answered in {POST_TIMEOUT}s, but the service "
+                    "is up — the message is most likely still being delivered. "
+                    "The reply will arrive on its own if it lands; resend if it "
+                    "doesn't.")
+        err = "unreachable"                # not slow, gone -- fall through
+
+    if err in ("unreachable", ""):
+        state = await unit_state()
+        if state == "active":
+            return (f"⚠️ Zipper is unreachable — `{ZIPPER_UNIT}` is active but not "
+                    f"accepting connections on {ZIPPER_URL}. It may be wedged or "
+                    "mid-restart.")
+        if state in ("activating", "deactivating", "reloading"):
+            return (f"🔄 Zipper is restarting — `{ZIPPER_UNIT}` is {state}. "
+                    "Send that again in a moment.")
+        if state:
+            return (f"⚠️ Zipper's service isn't running — `{ZIPPER_UNIT}` is {state}, "
+                    "so nothing can be delivered until it's started again.")
+        return (f"⚠️ Can't reach Zipper at {ZIPPER_URL}, and systemd couldn't be "
+                f"asked about `{ZIPPER_UNIT}`.")
+
+    # A running server that answered with a reason of its own: the connection
+    # was fine and the *delivery* failed. Saying "disconnected" would send him
+    # to look at systemd for a problem that is in the pane.
     return f"⚠️ Couldn't deliver that: {err}"
 
 
