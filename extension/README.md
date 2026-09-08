@@ -46,8 +46,19 @@ override in release builds. Two real options:
   not held up by review, never publicly listed. `web-ext sign --channel=unlisted`
   with an API key gives a `.xpi` that installs like any add-on.
 
-Then open the extension's options and enter the dashboard's address
-(`http://<tailnet-host>:4199`). Saving asks permission for that one origin; a
+Then open the extension's options and enter the dashboard's address — the
+MagicDNS name rather than the tailnet IP, so it survives the address changing:
+
+```
+http://srv1441333.tail0dcbff.ts.net:8800
+```
+
+(Port 8800, not 4199. `zipper-web.service` binds `127.0.0.1:8800` and the enabled
+nginx site proxies the tailnet address to it. The `4199`/`4200` blocks in
+`sites-available/zipper` are a superseded config, not enabled, with nothing
+listening behind them.)
+
+Saving asks permission for that one origin; a
 personal tailnet address does not belong in a manifest in a public repo, which
 is why it is requested at runtime instead.
 
