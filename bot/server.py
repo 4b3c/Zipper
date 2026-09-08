@@ -6,7 +6,8 @@ import discord
 from aiohttp import web
 
 from utils.text import smart_split
-from bot.client import client, post_to_zipper, resolve_thread, DISCORD_CHANNEL_ID
+from bot.client import (client, post_to_zipper, resolve_thread, failure_notice,
+                        DISCORD_CHANNEL_ID)
 
 # Active typing tasks keyed by thread_id
 _typing_tasks: dict[int, asyncio.Task] = {}
@@ -41,11 +42,13 @@ async def handle_inject(request: web.Request) -> web.Response:
             # post_to_zipper returns (ok, error). Binding the pair to `ok` made
             # every inject look successful -- a non-empty tuple is always truthy
             # -- so a dropped synthetic prompt said nothing at all.
-            ok, _err = await post_to_zipper(prompt, thread_id)
+            ok, err = await post_to_zipper(prompt, thread_id)
             if not ok:
-                thread = await resolve_thread(thread_id)
-                if thread:
-                    await thread.send("⚠️ Zipper disconnected")
+                notice = await failure_notice(err)
+                if notice:
+                    thread = await resolve_thread(thread_id)
+                    if thread:
+                        await thread.send(notice)
 
         asyncio.create_task(_inject())
         return web.json_response({"ok": True})

@@ -28,17 +28,20 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
     thread, and would answer both the same way -- by starting a stranger
     underneath a visible history it has never read.
 
-    **The timeout has to outlast delivery, not a normal request.** `/discord`
-    is synchronous all the way through `conversations.deliver`: a cold
-    conversation waits up to 25s for the TUI to draw and then presses Enter for
-    up to 20s more until the message provably leaves the input box. At the old
-    10s the bot gave up on deliveries that were still going fine, posted
-    "Zipper disconnected", and then the answer arrived minutes later anyway --
-    the message had been delivered the whole time. 120s is above the server's
-    worst case; past that something really is wrong.
+    The error half of the pair says *what* went wrong, and callers route on it
+    through `failure_notice`. `slow` and `unreachable` are this function's own
+    verdicts on the trip; anything else came back from the server.
+
+    **This request waits on delivery, not on the answer.** `/discord` returns
+    once the message is in the pane -- `conversations.deliver` waits up to 25s
+    for the TUI to draw and presses Enter for up to 20s until the text provably
+    leaves the input box -- and the reply comes back later and separately
+    through the Stop hook. So the timeout bounds the handover, not the turn: a
+    conversation can think for an hour without touching it. It is generous
+    anyway, because its expiry is no longer evidence of anything.
     """
     try:
-        timeout = ClientTimeout(total=120)
+        timeout = ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{ZIPPER_URL}/discord", json={
                 "prompt": prompt,
@@ -53,9 +56,54 @@ async def post_to_zipper(prompt: str, discord_thread_id: int,
                 except Exception:
                     body = {}
                 return False, str(body.get("error") or "")
+    except asyncio.TimeoutError:
+        print("[discord] post to Zipper: timed out waiting for delivery")
+        return False, "slow"
     except Exception as e:
         print(f"[discord] post to Zipper failed: {e}")
-        return False, ""
+        return False, "unreachable"
+
+
+async def zipper_alive():
+    """Is the server actually up? A cheap GET, answered by a different thread
+    than the one handling a slow delivery, so a long `/discord` does not make
+    this look dead."""
+    try:
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=5)) as s:
+            async with s.get(f"{ZIPPER_URL}/api/state") as resp:
+                return resp.status == 200
+    except Exception:
+        return False
+
+
+async def failure_notice(err: str):
+    """What to say in the thread about a failed post -- or `None` for nothing.
+
+    **"Zipper disconnected" is a claim about the service, and it may only be
+    made when the service is genuinely unreachable.** It used to be the message
+    for every failure, including a request that merely took longer than the
+    bot's patience. That produced the worst kind of wrong: an error, followed
+    minutes later by the answer it said would never come. Delivery had been
+    working the entire time.
+
+    So a timeout is not evidence any more. It is ambiguous by nature -- the
+    handover may still be in flight -- and it is resolved by asking the server
+    whether it is alive rather than by inferring from the clock. If it answers,
+    say nothing: either the message lands and the reply arrives on its own, or
+    it does not and `deliver` already reported why. A false alarm is worse than
+    silence here, because the typing indicator is still running and it is
+    telling the truth.
+    """
+    if err == "no conversation":
+        return ("🗄️ This thread's conversation is gone — "
+                "start a new one in the channel.")
+    if err in ("slow", "unreachable", ""):
+        return None if await zipper_alive() else "⚠️ Zipper disconnected"
+    # A real answer from a running server: the delivery itself failed, and the
+    # reason is specific ("conversation not running", "message stayed in the
+    # input box"). Saying "disconnected" would send him to look at systemd for
+    # a problem that is in the pane.
+    return f"⚠️ Couldn't deliver that: {err}"
 
 
 async def resolve_thread(thread_id: int):
@@ -94,9 +142,9 @@ async def on_message(message: discord.Message):
     if isinstance(message.channel, discord.Thread):
         ok, err = await post_to_zipper(message.content, message.channel.id)
         if not ok:
-            await message.channel.send(
-                "🗄️ This thread's conversation is gone — start a new one in the channel."
-                if err == "no conversation" else "⚠️ Zipper disconnected")
+            notice = await failure_notice(err)
+            if notice:
+                await message.channel.send(notice)
         return
 
     # A message in the main channel starts a *new* conversation, so it gets its
@@ -118,6 +166,8 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"⚠️ Couldn't open a thread for that: {e}")
         return
 
-    ok, _ = await post_to_zipper(message.content, thread.id, opening=True)
+    ok, err = await post_to_zipper(message.content, thread.id, opening=True)
     if not ok:
-        await thread.send("⚠️ Zipper disconnected")
+        notice = await failure_notice(err)
+        if notice:
+            await thread.send(notice)
