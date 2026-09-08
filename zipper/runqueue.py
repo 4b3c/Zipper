@@ -523,9 +523,13 @@ def cmd_commit(a):
             print('commit: git add failed, nothing staged --')
             for ln in (r.stderr or '').strip().split('\n')[:3]:
                 print('  ' + ln)
-    subprocess.run(['git', '-C', VAULT, 'add', '--'] +
-                   [os.path.join('Meta', f) for f in
-                    ('Status.md', 'Agenda.md', 'Queue.md', 'Repos.md')], check=False)
+    # The generated views used to be staged explicitly here, because a pass
+    # rewrites them and leaving them dirty made `zipper commit`'s own
+    # tree-is-clean check fail. They are gitignored as of 2026-09-08 -- the
+    # brief cannot describe a clean tree without dirtying it, so tracking them
+    # guaranteed one stray file after every pass -- and staging an ignored path
+    # only earns a git warning. They still reach Obsidian: that goes over
+    # CouchDB (see the vault's `Meta/Systems/CouchDB Sync`), not over git.
     r = subprocess.run(['git', '-C', VAULT, 'commit', '-m', a.message],
                        capture_output=True, text=True)
     ok = r.returncode == 0
