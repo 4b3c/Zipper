@@ -9,7 +9,11 @@ Type=simple
 # module form matters -- `python bot/discord_bot.py` puts bot/ on sys.path
 # instead of its parent, so `from bot import main` raises ModuleNotFoundError.
 # That is exactly how the previous bot died, silently, for 70 days.
-ExecStart=/usr/bin/python3 -m bot.discord_bot
+# -u: without it Python block-buffers stdout when it is a journal socket rather
+# than a tty, so every print in the bot -- including the delivery diagnostics --
+# sat in a 4KB buffer and reached the journal hours late or never. "logged in
+# as" had zero hits across the whole history of this unit.
+ExecStart=/usr/bin/python3 -u -m bot.discord_bot
 WorkingDirectory=/opt/zipper
 EnvironmentFile=/opt/zipper/.env
 Restart=always
