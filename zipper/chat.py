@@ -75,14 +75,29 @@ def discord_typing(active, thread_id=None):
 
 def discord_send(message, file_path=None, thread_id=None):
     thread_id = thread_id or default_thread()
-    if file_path:
-        r = _bot_multipart('/send', message, os.path.expanduser(file_path), thread_id)
-    else:
-        r = _bot('/send', {'message': message, 'thread_id': thread_id})
-    # Answering is the end of thinking. Clearing it here means no code path can
-    # reply and leave Discord showing that Zipper is still typing.
-    if thread_id:
-        discord_typing(False, thread_id)
+    try:
+        if file_path:
+            r = _bot_multipart('/send', message, os.path.expanduser(file_path), thread_id)
+        else:
+            r = _bot('/send', {'message': message, 'thread_id': thread_id})
+    finally:
+        # **In a `finally`, and that is the whole point.** This used to sit after
+        # the send, with a comment claiming no code path could reply and leave
+        # Discord showing Zipper still typing. It was false in the one case that
+        # matters: when the send *raises*, nothing was cleared, so the thread
+        # span forever on an answer that was never coming. On 2026-09-08 he
+        # waited in Discord watching the indicator while the reply sat in a
+        # terminal he wasn't reading.
+        #
+        # The indicator is a claim about *thinking*, not about delivery. The turn
+        # is over either way, so it stops either way; whether the message
+        # actually arrived is the caller's business, and the caller finds out
+        # from the exception coming out of here.
+        if thread_id:
+            try:
+                discord_typing(False, thread_id)
+            except Exception:
+                pass
     return r
 
 def discord_history(limit=5, thread_id=None):

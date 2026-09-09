@@ -98,6 +98,36 @@ def read_turn(path):
     return last_user, last_asst, uuid_
 
 
+def _log(line):
+    """Why this hook did what it did, appended to `Inbox/forward.log`.
+
+    **Silence is the right failure mode for the model and the wrong one for
+    diagnosis.** Every branch below is a `return` and every exception was
+    swallowed, so a reply that never reached Discord left no trace anywhere:
+    not in the journal, not in the registry, not on screen. Three separate
+    forwarding bugs on 2026-09-08 each had to be reconstructed afterwards from
+    timestamps and uuids, and the third could not be attributed at all.
+
+    So each decision now says itself, once, in one line. Inbox/ is gitignored
+    machine state, the file is trimmed, and a failure to log is still never
+    allowed to reach the model.
+    """
+    try:
+        from zipper.core import INBOX
+        p = os.path.join(INBOX, 'forward.log')
+        stamp = __import__('datetime').datetime.now().isoformat(timespec='seconds')
+        with open(p, 'a', encoding='utf-8') as fh:
+            fh.write('%s  %s\n' % (stamp, line))
+        # Keep it readable rather than eternal; this is a diagnostic, not a record.
+        if os.path.getsize(p) > 200_000:
+            with open(p, encoding='utf-8') as fh:
+                tail = fh.readlines()[-1000:]
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.writelines(tail)
+    except Exception:
+        pass
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -105,12 +135,14 @@ def main():
         return
     path = payload.get('transcript_path')
     if not path or not os.path.exists(path):
+        _log('skip  no transcript_path')
         return
 
     from zipper import conversations, chat
 
     last_user, reply, uuid_ = read_turn(path)
     if not last_user or not reply.strip():
+        _log('skip  empty turn (user=%d reply=%d)' % (len(last_user), len(reply)))
         return
 
     # Which conversation is this? The env var is set for every per-thread
@@ -124,19 +156,37 @@ def main():
                 tid = k
                 break
     if not tid or tid.startswith('local-'):
+        _log('skip  no discord thread (tid=%r)' % tid)
         return
 
     if not conversations.delivered(tid, last_user):
-        return                          # typed at the keyboard; he already saw it
+        # Typed at the keyboard; he already saw it. Logged anyway, because
+        # "decided it was typed" is exactly the wrong call that ate a reply
+        # twice today, and it is indistinguishable from a real one in hindsight.
+        _log('skip  %s not a delivered message -- treated as typed (%r)'
+             % (tid, last_user[:60]))
+        return
 
     row = conversations.load().get(str(tid)) or {}
     if uuid_ and row.get('last_forwarded') == uuid_:
-        return                          # this hook already ran for this turn
+        _log('skip  %s already forwarded %s' % (tid, uuid_))
+        return
 
     try:
         chat.discord_send(reply, thread_id=tid)
-    except Exception:
-        return                          # never block the turn on Discord
+    except Exception as e:
+        # Never block the turn on Discord -- but never fail invisibly either,
+        # and never leave the thread showing a typing indicator for an answer
+        # that is not coming. That combination is what made him wait in Discord
+        # long after the reply had been written to a terminal he wasn't reading.
+        _log('FAIL  %s send failed after %d chars: %s: %s'
+             % (tid, len(reply), type(e).__name__, e))
+        try:
+            chat.discord_typing(False, tid)
+        except Exception:
+            pass
+        return
+    _log('sent  %s %d chars uuid=%s' % (tid, len(reply), uuid_))
     conversations.touch(tid, last_forwarded=uuid_)
 
 
