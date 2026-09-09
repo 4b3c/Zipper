@@ -294,6 +294,20 @@ its markdown file, so the vault stays the source of truth and the ledger sees th
 **Canvas** cannot be written to, so those go in `Inbox/overrides.json` and are a display
 override only — Canvas remains authoritative for what was actually submitted.
 
+The override has to **survive a re-read**, because the extension rewrites `canvas.json`
+wholesale every time he opens Canvas. So it is stored beside the data rather than on the
+item, and is reattached at read time by `canvas.stamp_overrides` — matching on **course +
+normalized title**, or on **`plannable_id`** if Canvas has since renamed the assignment.
+Either match is enough, so a crossed-off item finds its own cross-off again however Canvas
+chooses to re-describe it.
+
+Everything reads Canvas through **`canvas.items()`**, which applies them. Loading
+`canvas.json` directly is the bug: the dashboard's two cards, the agenda strike-through and
+the CLI report each used to do their own load, so crossing something off in one place left
+it outstanding in the others and the next visit to Canvas brought it back everywhere.
+`zipper canvas` names what has been crossed off, because that is the one line in the report
+resting on Abram's word rather than on Canvas.
+
 **Paste:** text paste works. Image paste stores the bytes on the VPS and types the *path*,
 which Claude Code opens — the browser and the session are on different machines, so the
 pasteboard itself never crosses.

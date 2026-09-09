@@ -75,14 +75,19 @@ def today_split(day=None):
 
 
 def canvas_items():
-    if not os.path.exists(canvas.CANVAS_JSON):
-        return []
-    return json.load(open(canvas.CANVAS_JSON, encoding='utf-8')).get('items', [])
+    """Read through `canvas.items()`, never from the file directly.
+
+    That is what applies the hand cross-offs -- see `canvas.OVERRIDES`. Loading
+    `canvas.json` here for itself is what let a crossed-off assignment come back
+    as outstanding the next time he opened Canvas: the extension rewrites that
+    file wholesale, and this saw the rewrite without the overrides.
+    """
+    return canvas.items()
 
 
 def canvas_outstanding():
     return [r for r in canvas_items()
-            if not r['submitted'] and r['due'][:10] >= core.TODAY.isoformat()]
+            if not canvas.is_done(r) and r['due'][:10] >= core.TODAY.isoformat()]
 
 
 def task_text(raw):
@@ -133,19 +138,26 @@ def priority(it):
 def ranked(limit=10):
     """Canvas work and self-reported tasks in one list, most pressing first."""
     items = []
-    for r in canvas_outstanding():
+    # Not `canvas_outstanding()`: crossed-off work stays on this list and sinks,
+    # rather than disappearing from it. A struck-through row is him seeing his
+    # own decision reflected back; a row that vanishes is indistinguishable from
+    # the cross-off having failed, which is the complaint this whole mechanism
+    # exists to answer.
+    for r in canvas_items():
+        if r['submitted'] or r['due'][:10] < core.TODAY.isoformat():
+            continue
         items.append({'source': 'canvas', 'title': r['title'], 'due': r['due'][:10],
                       'tag': r['course'], 'url': r['url'], 'points': r.get('points'),
-                      'next': False, 'elsewhere': r.get('elsewhere', '')})
+                      'next': False, 'elsewhere': r.get('elsewhere', ''),
+                      'done': bool(r.get('done_by_hand'))})
     for t in open_tasks():
         items.append({'source': 'task', 'title': t['text'], 'due': t['due'],
-                      'tag': t['project'], 'url': '', 'points': 0, 'next': t['next']})
-    ov = _ov_load()
+                      'tag': t['project'], 'url': '', 'points': 0,
+                      'next': t['next'], 'done': False})
     for it in items:
         it['score'] = priority(it)
         it['overdue'] = bool(it['due'] and it['due'] < core.TODAY.isoformat())
         it['key'] = override_key(it)
-        it['done'] = it['key'] in ov
     # Crossed-off work sinks, whatever it scores. The partition this replaces was undone
     # by the sort on the very next line, so a struck-through row kept its place at the top
     # and spent a slot in the top ten on something already handled — which reads from the
@@ -154,20 +166,17 @@ def ranked(limit=10):
     return items[:limit], items
 
 
-OVERRIDES = os.path.join(core.INBOX, 'overrides.json')
-
-def _ov_load():
-    try:
-        return json.load(open(OVERRIDES, encoding='utf-8'))
-    except Exception:
-        return {}
-
-def _ov_save(d):
-    with open(OVERRIDES, 'w', encoding='utf-8') as fh:
-        json.dump(d, fh, indent=1, sort_keys=True)
-
 def override_key(it):
-    return ('canvas:%s|%s' if it['source'] == 'canvas' else 'task:%s|%s') % (it['tag'], it['title'])
+    """The name the browser sends back to cross something off.
+
+    Canvas keys come from `canvas._ov_key` -- the same normalization the store
+    and the agenda use, so a key minted here matches the one looked up there.
+    The store itself belongs to `canvas.py`, which is the module every surface
+    now reads Canvas through.
+    """
+    if it['source'] == 'canvas':
+        return canvas._ov_key(it['tag'], it['title'])
+    return 'task:%s|%s' % (it['tag'], it['title'])
 
 def toggle_done(key):
     """Cross something off by hand.
@@ -196,15 +205,8 @@ def toggle_done(key):
                 open(p, 'w', encoding='utf-8').write('\n'.join(lines))
                 return {'ok': True, 'where': os.path.basename(p), 'done': not done}
         return {'ok': False, 'error': 'task not found'}
-    d = _ov_load()
-    if key in d:
-        d.pop(key)
-        state = False
-    else:
-        d[key] = datetime.datetime.now().isoformat(timespec='seconds')
-        state = True
-    _ov_save(d)
-    return {'ok': True, 'where': 'overrides.json', 'done': state}
+    return {'ok': True, 'where': 'overrides.json',
+            'done': canvas.toggle_override(key)}
 
 def flags():
     try:

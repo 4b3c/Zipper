@@ -29,6 +29,155 @@ CANVAS_JSON = os.path.join(INBOX, 'canvas.json')
 CANVAS_HOST = os.environ.get('CANVAS_HOST', 'https://canvas.instructure.com')
 DESC_CAP = 6000          # a rubric-heavy assignment body, not a whole page
 
+# --------------------------------------------------------------------------
+# Crossing something off by hand
+#
+# **Canvas is not always right about what is done.** CSE 434's homework lives on
+# PrairieLearn, an optional extra-credit item is one he has decided not to do --
+# in both cases Canvas says `submitted: false` forever and is not going to change
+# its mind. Abram's word is the better evidence, and this is where it is kept.
+#
+# The hard requirement is that it **survives a re-read**. The extension rewrites
+# `canvas.json` wholesale every time he opens Canvas, so an override that lived
+# on the item itself would be erased by the next visit and the finished homework
+# would come back as outstanding -- which is exactly what it did.
+#
+# So overrides live beside the data rather than in it, and an item is matched
+# back to its override two ways:
+#
+#   * **by key** -- course plus normalized title, so a re-read finds it again
+#   * **by `plannable_id`** -- so an item that gets *retitled* stays crossed off
+#
+# Either match is enough. Between them, a crossed-off assignment reconnects to
+# its own cross-off however Canvas chooses to re-describe it.
+#
+# **This is a display override and never a submission.** Nothing here is sent to
+# Canvas, and nothing here makes a deadline go away.
+OVERRIDES = os.path.join(INBOX, 'overrides.json')
+
+
+def _ov_key(course, title):
+    """`canvas:<course>|<normalized title>` -- the stable name of an item.
+
+    Normalized through the same `_norm_title` the agenda uses, so the planner's
+    'HW 01' and the ICS feed's 'HW 01 · CSE 434' cannot be crossed off
+    separately and then disagree with each other.
+    """
+    return 'canvas:%s|%s' % (course, core._norm_title(title))
+
+
+def _ov_load():
+    """The override store, canonical and migrated.
+
+    Keys written before 2026-09-09 hold the raw title rather than the normalized
+    one, and values were a bare timestamp string. Both are read and rewritten in
+    place, once -- a store that silently stopped matching after a format change
+    would drop a cross-off on the floor, which is the one thing it exists to
+    prevent.
+    """
+    try:
+        raw = json.load(open(OVERRIDES, encoding='utf-8'))
+    except Exception:
+        return {}
+    out, dirty = {}, False
+    for k, v in (raw or {}).items():
+        entry = {'at': v} if isinstance(v, str) else dict(v or {})
+        course, _, title = k.partition('canvas:')[2].partition('|')
+        key = _ov_key(course, entry.get('title') or title)
+        if key != k or not isinstance(v, dict):
+            dirty = True
+        entry.setdefault('title', title)
+        entry.setdefault('course', course)
+        out[key] = entry
+    if dirty:
+        try:
+            _ov_save(out)
+        except OSError:
+            pass                      # a read must never fail on a bad write
+    return out
+
+
+def _ov_save(d):
+    os.makedirs(os.path.dirname(OVERRIDES), exist_ok=True)
+    with open(OVERRIDES, 'w', encoding='utf-8') as fh:
+        json.dump(d, fh, indent=1, sort_keys=True)
+
+
+def stamp_overrides(rows):
+    """Mark every row Abram has crossed off, in place.
+
+    `done_by_hand` is when he crossed it off, or ''. Downstream, *done* means
+    `submitted or done_by_hand` -- see `is_done`. The two stay separate fields
+    on purpose: the dashboard says "you crossed this off", not "Canvas received
+    it", and conflating them would be the system lying on his behalf.
+    """
+    ov = _ov_load()
+    by_id = {str(e['id']): e for e in ov.values() if e.get('id')}
+    dirty = False
+    for r in rows or []:
+        key = _ov_key(r.get('course', ''), r.get('title', ''))
+        hit = ov.get(key) or by_id.get(str(r.get('plannable_id') or ''))
+        r['done_by_hand'] = (hit or {}).get('at', '')
+        if hit is not None and not hit.get('id') and r.get('plannable_id'):
+            # Backfill: an entry crossed off before ids were stored, or before
+            # the item had been seen. Learning the id here is what buys it the
+            # retitle-resistance the key alone cannot give.
+            hit['id'] = str(r['plannable_id'])
+            dirty = True
+    if dirty:
+        try:
+            _ov_save(ov)
+        except OSError:
+            pass
+    return rows
+
+
+def is_done(r):
+    """Handed in, or crossed off by hand. The question every surface is asking."""
+    return bool(r.get('submitted') or r.get('done_by_hand'))
+
+
+def toggle_override(key):
+    """Cross an item off, or put it back. Returns the new state.
+
+    The full entry is recorded rather than just the key, so the store can still
+    identify the item when Canvas renames it and so `zipper canvas` can name
+    what has been crossed off without a lookup.
+    """
+    ov = _ov_load()
+    if key in ov:
+        ov.pop(key)
+        state = False
+    else:
+        row = next((r for r in raw_items()
+                    if _ov_key(r['course'], r['title']) == key), None)
+        ov[key] = {'at': datetime.datetime.now().isoformat(timespec='seconds'),
+                   'title': (row or {}).get('title', ''),
+                   'course': (row or {}).get('course', ''),
+                   'id': str((row or {}).get('plannable_id') or '')}
+        state = True
+    _ov_save(ov)
+    return state
+
+
+def raw_items():
+    """What the browser last sent, exactly as it sent it."""
+    try:
+        return json.load(open(CANVAS_JSON, encoding='utf-8')).get('items', [])
+    except Exception:
+        return []
+
+
+def items():
+    """What the browser last sent, with the hand cross-offs applied.
+
+    **Every surface reads Canvas through here.** The dashboard's two cards, the
+    agenda's strike-through and the CLI report each used to load `canvas.json`
+    for themselves, so crossing something off in one place left it outstanding
+    in the others and the next re-read brought it back everywhere.
+    """
+    return stamp_overrides(raw_items())
+
 
 def _html_to_text(h):
     """Assignment bodies are HTML. Keep the prose and the list structure."""
@@ -171,24 +320,35 @@ def ingest(items, assignments=None, source='extension'):
 
 
 def _report(rows, skipped=None, described=None, stamp=None):
+    stamp_overrides(rows)
     done = sum(1 for r in rows if r['submitted'])
-    print('canvas: %d item(s), %d submitted, %d outstanding%s%s'
-          % (len(rows), done, len(rows) - done,
+    crossed = [r for r in rows if r.get('done_by_hand') and not r['submitted']]
+    print('canvas: %d item(s), %d submitted, %d outstanding%s%s%s'
+          % (len(rows), done, sum(1 for r in rows if not is_done(r)),
+             ', %d crossed off' % len(crossed) if crossed else '',
              '  (%d skipped)' % skipped if skipped is not None else '',
              '  read %s' % stamp if stamp else ''))
     if described is not None:
         print('  descriptions: %d of %d item(s)' % (described, len(rows)))
-    ext = [r for r in rows if r.get('elsewhere')]
+    if crossed:
+        # Named rather than merely counted: this is the one number in the report
+        # that rests on his word instead of on Canvas, and it should be possible
+        # to see what he took responsibility for without opening a JSON file.
+        print('  crossed off by hand -- Canvas still calls these unsubmitted:')
+        for r in crossed:
+            print('    %s %s  (%s)' % (r['course'], r['title'][:40],
+                                       r['done_by_hand'][:10]))
+    ext = [r for r in rows if r.get('elsewhere') and not is_done(r)]
     if ext:
         print('  graded elsewhere -- Canvas cannot see these submitted:')
         for r in ext:
             print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
-    late = [r for r in rows if r['missing'] or (r['late'] and not r['submitted'])]
+    late = [r for r in rows if not is_done(r) and (r['missing'] or r['late'])]
     if late:
         print('  MISSING: ' + '; '.join('%s %s' % (r['course'], r['title'][:40]) for r in late))
     by_day = {}
     for r in rows:
-        if not r['submitted'] and r['due']:
+        if not is_done(r) and r['due']:
             by_day.setdefault(r['due'][:10], []).append(r)
     for d in sorted(by_day)[:6]:
         print('  %s  %d outstanding: %s' % (d, len(by_day[d]),
@@ -240,15 +400,16 @@ def cmd_canvas(a):
 
 
 def canvas_status_map():
-    """{(YYYY-MM-DD, normalized title): submitted} for the agenda to annotate with."""
-    if not os.path.exists(CANVAS_JSON):
-        return {}
-    blob = json.load(open(CANVAS_JSON, encoding='utf-8'))
+    """{(YYYY-MM-DD, normalized title): done} for the agenda to annotate with.
+
+    *Done*, not *submitted* -- a crossed-off item strikes through here too, or
+    the dashboard would contradict itself between its own two cards.
+    """
     out = {}
-    for r in blob.get('items', []):
+    for r in items():
         if not r['due']:
             continue
-        out[(r['due'][:10], _norm_title(r['title']))] = r['submitted']
+        out[(r['due'][:10], _norm_title(r['title']))] = is_done(r)
         # Canvas dates a 23:59 deadline on the day it falls; the ICS feed often
         # files the same item on the following date. Accept either.
         nxt = (datetime.date(*map(int, r['due'][:10].split('-')))
