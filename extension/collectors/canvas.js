@@ -60,11 +60,55 @@ async function planner() {
   return all;
 }
 
+/* Assignment bodies, per course.
+ *
+ * Not a nicety. Some courses keep the actual work on PrairieLearn, Gradescope
+ * or zyBooks and leave Canvas holding an empty shell with a grade column, so
+ * `submitted: false` on those is not evidence of anything -- Canvas cannot see
+ * a submission it never received. The backend spots that by reading the
+ * description, which means the description has to arrive. Without this, every
+ * externally-hosted assignment reads as outstanding forever.
+ *
+ * One request per course, and only for courses that actually appear in the
+ * planner.
+ */
+async function descriptions(courseIds) {
+  const out = {};
+  for (const cid of courseIds) {
+    try {
+      let url = `/api/v1/courses/${cid}/assignments?per_page=100`;
+      const rows = [];
+      while (url && rows.length < 500) {
+        const res = await fetch(url, { credentials: 'same-origin',
+                                       headers: { Accept: 'application/json' } });
+        if (!res.ok) break;
+        let text = await res.text();
+        if (text.startsWith('while(1);')) text = text.slice(9);
+        const page = JSON.parse(text);
+        if (!Array.isArray(page)) break;
+        rows.push(...page);
+        const next = (res.headers.get('Link') || '').match(/<([^>]+)>;\s*rel="next"/);
+        url = next ? next[1] : null;
+      }
+      // Only the two fields the backend indexes on, and the body. Sending whole
+      // assignment objects would be a lot of bytes for no extra meaning.
+      out[cid] = rows.map((a) => ({ id: a.id, name: a.name, description: a.description }));
+    } catch (e) {
+      // A single unreadable course must not cost the whole reading.
+      console.debug('[zipper] canvas descriptions, course', cid, e);
+    }
+  }
+  return out;
+}
+
 async function run() {
   try {
     const items = await planner();
     if (!items.length) return;
-    api.runtime.sendMessage({ type: 'zipper:data', collector: 'canvas', payload: items });
+    const courseIds = [...new Set(items.map((i) => i.course_id).filter(Boolean))];
+    const assignments = await descriptions(courseIds);
+    api.runtime.sendMessage({ type: 'zipper:data', collector: 'canvas',
+                              payload: { items, assignments } });
   } catch (e) {
     // Never surface anything to the page. A failed read is Zipper's problem to
     // notice by the data going stale, not an alert over his coursework.

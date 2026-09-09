@@ -59,11 +59,17 @@ async function send(name, payload) {
     console.warn('[zipper] no endpoint configured; open the extension options');
     return { ok: false, error: 'no endpoint' };
   }
+  // A collector hands over the body it wants posted; the reporter only stamps
+  // where it came from. An array is wrapped for the older `{source, items}`
+  // shape so a collector that has nothing but a list stays a one-liner.
+  const body = Array.isArray(payload) ? { items: payload } : { ...payload };
+  body.source = 'extension';
+
   const url = endpoint + '/api/' + name;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: 'extension', items: payload }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     return { ok: false, error: 'zipper returned ' + res.status };

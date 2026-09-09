@@ -1,9 +1,25 @@
 """zipper.canvas
 
 Canvas planner items -- the only source that knows submitted vs due.
+
+**Nothing in this file talks to Canvas.** It parses a reading the browser has
+already taken and hands the result to the vault. That is a deliberate amputation
+(2026-09-08), not a gap waiting to be filled:
+
+ASU issues no API access tokens to students, so the fetcher ran on a
+`canvas_session` cookie copied by hand into `.env`. A copied cookie starts dying
+the moment it is taken -- ASU rotated it twice inside one day on 2026-09-06 --
+while the identical session inside a browser never dies, because the browser
+renews it through SSO unasked. Nothing was ever wrong with the request; only the
+credential's lifetime failed. So the request moved to where the credential
+already lives, and only the answer crosses the network. See `extension/`.
+
+What follows from that, and is worth not re-litigating: there is no
+`CANVAS_TOKEN` path, no `CANVAS_SESSION` path, and no auth error to handle,
+because there is no credential here that could be wrong. `ingest()` is the
+single write path, reached from `POST /api/canvas` or `zipper canvas --file`.
 """
 import os, re, json, datetime, html
-import urllib.request, urllib.error
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import core
@@ -12,79 +28,6 @@ from . import core
 CANVAS_JSON = os.path.join(INBOX, 'canvas.json')
 CANVAS_HOST = os.environ.get('CANVAS_HOST', 'https://canvas.instructure.com')
 DESC_CAP = 6000          # a rubric-heavy assignment body, not a whole page
-
-
-class CanvasAuthError(Exception):
-    """The credential is missing, wrong, or expired.
-
-    Kept distinct from every other failure on purpose: an expired session must
-    never be mistaken for 'nothing due', and must never leave the stale
-    canvas.json in place while reporting success.
-    """
-
-
-def _canvas_auth():
-    """Headers proving who we are. A token if the institution grants them,
-    otherwise the session cookie from a browser that already cleared MFA.
-
-    ASU does not issue access tokens, so CANVAS_SESSION is the live path here.
-    The cookie is not a way around Duo -- it is what Duo produced. It carries
-    that session's lifetime with it, which is why _canvas_get treats a login
-    redirect as an error rather than as data.
-    """
-    tok = os.environ.get('CANVAS_TOKEN', '').strip()
-    if tok:
-        return {'Authorization': 'Bearer ' + tok}, 'token'
-    sess = os.environ.get('CANVAS_SESSION', '').strip()
-    if sess:
-        # Accept either a bare canvas_session value or a whole pasted
-        # `Cookie:` header -- the browser offers both and neither is wrong.
-        cookie = sess if '=' in sess else 'canvas_session=' + sess
-        return {'Cookie': cookie}, 'cookie'
-    raise CanvasAuthError('no CANVAS_TOKEN and no CANVAS_SESSION set')
-
-
-def _canvas_get(url, headers):
-    """One authenticated GET. Returns (parsed json, next-page url).
-
-    The failure that matters: with cookie auth an expired session does not
-    return 401. Canvas 302s to the SSO login page and serves it with a cheerful
-    200, so trusting the status code alone would parse a login form as an empty
-    planner and quietly report that nothing is due. Anything that is not JSON
-    is therefore an auth error.
-    """
-    req = urllib.request.Request(url, headers=dict(headers, Accept='application/json'))
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            body = r.read().decode('utf-8', 'replace').lstrip()
-            ctype = (r.headers.get('Content-Type') or '').lower()
-            link = r.headers.get('Link', '')
-            final = r.geturl()
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            raise CanvasAuthError('Canvas returned %d -- credential rejected' % e.code)
-        raise
-    if body.startswith('while(1);'):
-        body = body[len('while(1);'):]          # Canvas' anti-JSON-hijack prefix
-    if 'json' not in ctype:
-        raise CanvasAuthError('Canvas served %s from %s -- session expired'
-                              % (ctype.split(';')[0] or 'no content-type', final))
-    try:
-        data = json.loads(body)
-    except ValueError:
-        raise CanvasAuthError('Canvas returned non-JSON -- session expired')
-    m = re.search(r'<([^>]+)>\s*;\s*rel="next"', link)
-    return data, (m.group(1) if m else None)
-
-
-def _canvas_paged(url, headers, cap=1000):
-    out = []
-    while url and len(out) < cap:
-        data, url = _canvas_get(url, headers)
-        if not isinstance(data, list):
-            break
-        out.extend(data)
-    return out
 
 
 def _html_to_text(h):
@@ -113,51 +56,6 @@ def _canvas_courses():
         if d.get('type') == 'class' and d.get('canvas_course_id') and d.get('code'):
             out[str(d['canvas_course_id']).strip()] = d['code'].strip()
     return out
-
-def _canvas_fetch(days):
-    """Pull planner items straight from the API.
-
-    The parsing below is identical whether a token or a cookie got us in, so
-    the credential is a swap of transport only.
-    """
-    headers, kind = _canvas_auth()
-    url = ('%s/api/v1/planner/items?start_date=%s&end_date=%s&per_page=100'
-           % (CANVAS_HOST, (core.TODAY - datetime.timedelta(days=7)).isoformat(),
-              (core.TODAY + datetime.timedelta(days=days)).isoformat()))
-    # per_page caps at 100; without following rel="next" a busy month is
-    # silently truncated and the dashboard under-reports what is due.
-    return _canvas_paged(url, headers), kind
-
-
-def _canvas_descriptions(course_ids):
-    """{course_id: {assignment_id: text, normalized title: text}}.
-
-    What an assignment actually asks for -- the thing the ICS feed has never
-    carried. These stay in Inbox/ and are never written into a note: an
-    assignment body is a copy, and a copy goes stale in silence. Read them,
-    conclude something, write the conclusion.
-    """
-    headers, _ = _canvas_auth()
-    out = {}
-    for cid in course_ids:
-        url = ('%s/api/v1/courses/%s/assignments?per_page=100' % (CANVAS_HOST, cid))
-        try:
-            rows = _canvas_paged(url, headers)
-        except CanvasAuthError:
-            raise
-        except Exception as e:
-            print('  descriptions: course %s skipped (%s)' % (cid, e))
-            continue
-        idx = {}
-        for a in rows:
-            txt = _html_to_text(a.get('description') or '')
-            if not txt:
-                continue
-            idx[str(a.get('id'))] = txt
-            idx.setdefault(_norm_title((a.get('name') or '').strip()), txt)
-        out[str(cid)] = idx
-    return out
-
 
 def _canvas_parse(items):
     codes = _canvas_courses()
@@ -218,81 +116,74 @@ def _elsewhere(text):
     return ''
 
 
-def cmd_canvas(a):
-    kind = None
-    if a.file:
-        raw = open(os.path.expanduser(a.file), encoding='utf-8').read().lstrip()
-        if raw.startswith('while(1);'):
-            raw = raw[len('while(1);'):]          # Canvas' anti-JSON-hijack prefix
-        items = json.loads(raw)
-        src = 'file:' + os.path.basename(a.file)
-    else:
-        try:
-            items, kind = _canvas_fetch(a.days)
-            src = 'api:' + kind
-        except CanvasAuthError as e:
-            # Nothing is written. The old canvas.json keeps its old `fetched`
-            # stamp, so a stale submitted-flag can still be spotted -- what must
-            # never happen is this failing quietly and the vault claiming the
-            # data is current. So: state it, and say how old.
-            #
-            # One line, not four. ASU issues no API tokens, so this runs on a
-            # browser cookie ASU rotates on its own schedule -- twice inside one
-            # day on 2026-09-06. Repasting it is not a task Abram is taking on,
-            # so printing the repaste recipe every hour was an alarm for a
-            # condition nobody is going to act on, which is how real alarms get
-            # tuned out. The degradation is narrow and survivable: the Canvas
-            # ICS feed is a separate input and still works, so due dates and the
-            # agenda are unaffected and only submitted-vs-due goes stale. When a
-            # token finally exists, set CANVAS_TOKEN and this path stops firing.
-            stamp = '?'
-            if os.path.exists(CANVAS_JSON):
-                blob = json.load(open(CANVAS_JSON, encoding='utf-8'))
-                stamp = blob.get('fetched', '?')
-            print('canvas: not fetched (%s) -- submitted/ flags stale since %s; '
-                  'due dates unaffected' % (e, stamp))
-            return 1
-        except Exception as e:
-            print('canvas: fetch failed -- %s' % e)
-            return 1
+def _index_descriptions(assignments):
+    """{course_id: {assignment id or normalized title: body text}}.
 
+    Keyed twice on purpose. A quiz's `plannable_id` is not an assignment id, so
+    an id-only index misses exactly the items whose bodies say where the work
+    really lives; the title fallback is scoped to one course so two courses
+    with a "Homework 1" cannot borrow each other's instructions.
+    """
+    out = {}
+    for cid, rows in (assignments or {}).items():
+        idx = {}
+        for a in rows or []:
+            txt = _html_to_text((a or {}).get('description') or '')
+            if not txt:
+                continue
+            idx[str(a.get('id'))] = txt
+            idx.setdefault(_norm_title((a.get('name') or '').strip()), txt)
+        out[str(cid)] = idx
+    return out
+
+
+def ingest(items, assignments=None, source='extension'):
+    """Turn one browser reading into `Inbox/canvas.json`.
+
+    **The only way Canvas data enters the vault.** Nothing here fetches: the
+    engine has no Canvas credential and cannot get one. ASU issues no API
+    tokens, and the session cookie that stood in for one had to be copied by
+    hand into `.env`, where it began expiring immediately -- rotated twice
+    inside a single day on 2026-09-06. The reading now happens in the browser,
+    where the session is renewed through SSO without anyone being asked, and
+    only the *answer* crosses the network. See `extension/`.
+
+    Returns `(rows, skipped, described)`.
+    """
     rows, skipped = _canvas_parse(items)
-
-    descs = {}
-    if not a.no_descriptions and not a.file:
-        try:
-            descs = _canvas_descriptions(sorted({r['course_id'] for r in rows if r.get('course_id')}))
-        except CanvasAuthError as e:
-            print('canvas: descriptions skipped -- %s' % e)
-    got = 0
+    idx = _index_descriptions(assignments)
+    described = 0
     for r in rows:
-        idx = descs.get(r.get('course_id') or '', {})
-        # by assignment id first; a quiz's plannable id is not an assignment id,
-        # so fall back to the normalized title within the same course.
-        txt = idx.get(r.get('plannable_id') or '') or idx.get(_norm_title(r['title']))
+        by_course = idx.get(r.get('course_id') or '', {})
+        txt = by_course.get(r.get('plannable_id') or '') or by_course.get(_norm_title(r['title']))
         if txt:
             r['description'] = txt
-            got += 1
+            described += 1
         # Only meaningful while it is not submitted; once Canvas has a grade it
         # knows more than the description does.
         where = _elsewhere(r.get('description', ''))
         if where and not r['submitted']:
             r['elsewhere'] = where
-
     with open(CANVAS_JSON, 'w', encoding='utf-8') as fh:
         json.dump({'fetched': datetime.datetime.now().isoformat(timespec='seconds'),
-                   'source': src, 'items': rows}, fh, indent=1)
+                   'source': source, 'items': rows}, fh, indent=1)
+    return rows, skipped, described
+
+
+def _report(rows, skipped=None, described=None, stamp=None):
     done = sum(1 for r in rows if r['submitted'])
+    print('canvas: %d item(s), %d submitted, %d outstanding%s%s'
+          % (len(rows), done, len(rows) - done,
+             '  (%d skipped)' % skipped if skipped is not None else '',
+             '  read %s' % stamp if stamp else ''))
+    if described is not None:
+        print('  descriptions: %d of %d item(s)' % (described, len(rows)))
     ext = [r for r in rows if r.get('elsewhere')]
-    late = [r for r in rows if r['missing'] or (r['late'] and not r['submitted'])]
-    print('canvas: %d item(s), %d submitted, %d outstanding  (%d skipped) -> %s'
-          % (len(rows), done, len(rows) - done, skipped, rel(CANVAS_JSON)))
-    if descs:
-        print('  descriptions: %d of %d item(s)' % (got, len(rows)))
     if ext:
         print('  graded elsewhere -- Canvas cannot see these submitted:')
         for r in ext:
             print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
+    late = [r for r in rows if r['missing'] or (r['late'] and not r['submitted'])]
     if late:
         print('  MISSING: ' + '; '.join('%s %s' % (r['course'], r['title'][:40]) for r in late))
     by_day = {}
@@ -302,7 +193,51 @@ def cmd_canvas(a):
     for d in sorted(by_day)[:6]:
         print('  %s  %d outstanding: %s' % (d, len(by_day[d]),
               ', '.join(sorted(set(x['course'] for x in by_day[d])))))
+
+
+def cmd_canvas(a):
+    """Show what the browser last sent, or ingest a saved dump.
+
+    There is deliberately no fetch here any more. The command that used to pull
+    from Canvas could only ever run on a credential this machine is not able to
+    keep, so what it mostly did was fail once an hour and print how stale it
+    had become. Freshness is now the extension's business, and this reports it.
+    """
+    if a.file:
+        raw = open(os.path.expanduser(a.file), encoding='utf-8').read().lstrip()
+        if raw.startswith('while(1);'):
+            raw = raw[len('while(1);'):]          # Canvas' anti-JSON-hijack prefix
+        body = json.loads(raw)
+        if isinstance(body, dict):
+            items, assignments = body.get('items') or [], body.get('assignments')
+        else:
+            items, assignments = body, None
+        rows, skipped, described = ingest(items, assignments,
+                                          source='file:' + os.path.basename(a.file))
+        _report(rows, skipped, described)
+        print('  -> %s' % rel(CANVAS_JSON))
+        return 0
+
+    if not os.path.exists(CANVAS_JSON):
+        print('canvas: nothing read yet. The browser extension writes this -- '
+              'see extension/README.md, then open Canvas.')
+        return 1
+    blob = json.load(open(CANVAS_JSON, encoding='utf-8'))
+    rows = blob.get('items', [])
+    stamp = blob.get('fetched', '?')
+    age = ''
+    try:
+        secs = (datetime.datetime.now()
+                - datetime.datetime.fromisoformat(stamp)).total_seconds()
+        age = ' (%dh ago)' % (secs // 3600) if secs >= 3600 else ' (%dm ago)' % (secs // 60)
+    except (TypeError, ValueError):
+        pass
+    _report(rows, stamp='%s%s via %s' % (stamp, age, blob.get('source', '?')))
+    # Staleness here is a fact about his browsing, not a fault to fix. Say it
+    # plainly and do not prescribe: the reading is as old as the last time he
+    # had Canvas open, and no amount of nagging from a server changes that.
     return 0
+
 
 def canvas_status_map():
     """{(YYYY-MM-DD, normalized title): submitted} for the agenda to annotate with."""

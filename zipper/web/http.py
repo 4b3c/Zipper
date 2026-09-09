@@ -359,16 +359,20 @@ class Handler(BaseHTTPRequestHandler):
                 # way `canvas.json` can later admit *how* it was read.
                 if isinstance(body, dict):
                     items = body.get('items') or []
+                    assignments = body.get('assignments')
                     source = str(body.get('source') or 'unknown')[:32]
                 else:
-                    items, source = body, 'bookmarklet'
-                rows, skipped = canvas._canvas_parse(items)
-                with open(canvas.CANVAS_JSON, 'w', encoding='utf-8') as fh:
-                    json.dump({'fetched': datetime.datetime.now().isoformat(timespec='seconds'),
-                               'source': source, 'items': rows}, fh, indent=1)
+                    items, assignments, source = body, None, 'bookmarklet'
+                # `assignments` carries the per-course bodies, and only the
+                # extension sends them. Without it an assignment whose work
+                # lives on PrairieLearn keeps reading as outstanding, because
+                # the only evidence it is hosted elsewhere is in its text.
+                rows, skipped, described = canvas.ingest(items, assignments, source)
                 emit_diff(before, snapshot_data())
                 publish('source', 'canvas')
-                self._send(200, json.dumps({'ok': True, 'kept': len(rows)}), 'application/json')
+                self._send(200, json.dumps({'ok': True, 'kept': len(rows),
+                                            'described': described}),
+                           'application/json')
             except Exception as e:
                 self._send(400, json.dumps({'error': str(e)}), 'application/json')
         else:

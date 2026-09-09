@@ -67,9 +67,9 @@ def main():
     s.add_argument('--thread', help='thread id; default is the main channel')
     s.add_argument('--limit', type=int, default=5)
     s.set_defaults(fn=chat.cmd_discord)
-    s = sub.add_parser('canvas'); s.add_argument('--file'); s.add_argument('--days', type=int, default=21)
-    s.add_argument('--no-descriptions', action='store_true',
-                   help='skip the per-course assignment bodies')
+    # No --days and no fetch: the browser extension takes the reading, this
+    # reports it. --file still ingests a saved planner dump.
+    s = sub.add_parser('canvas'); s.add_argument('--file')
     s.set_defaults(fn=canvas.cmd_canvas)
     s = sub.add_parser('conversations'); s.add_argument('--close', metavar='THREAD')
     s.add_argument('--force', action='store_true',

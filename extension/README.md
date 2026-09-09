@@ -75,6 +75,17 @@ The POST *out* is the mirror image and has to happen in the background: from the
 page it would be a cross-origin request and CORS would refuse it; from the
 background, host permissions apply and the browser does not interpose.
 
+## What has actually been tried
+
+Being explicit, because everything below the first line is untested and it
+should not take a debugging session to find that out.
+
+| | state |
+|---|---|
+| **Chrome / Arc, Canvas** | **working end to end**, verified 2026-09-08: 110 planner items with live submitted flags, `source: "extension"` in `canvas.json` |
+| **Firefox** | **never loaded, in any form.** Not once, not temporarily. The manifest is written for it and the reasoning is sound, but no line of this has run in Gecko. Assume the first attempt finds something |
+| **Any site other than Canvas** | **nothing exists.** `collectors/` has one file. Onshape is an intention, not code. The "one collector per site" shape is a claim the second collector will test, and the reporter may well need changing when it arrives |
+
 ## The honest limitation
 
 It only runs while a Canvas tab is open. Nothing here can make the data fresher

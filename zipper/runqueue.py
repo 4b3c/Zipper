@@ -320,16 +320,13 @@ def fetch_all(a, emit=True):
         ics.cmd_calendars(a)
     except Exception as e:
         print('calendar step skipped: %s' % e)
-    print('\n== canvas ==')
-    try:
-        # Submitted-vs-due comes from here and nowhere else, and the cookie it
-        # runs on is short-lived, so this must happen before `agenda` strikes
-        # items through. cmd_canvas already fails loudly and writes nothing on
-        # an expired credential -- a bad fetch must not take the rest down.
-        class C: file = None; days = 21; no_descriptions = False
-        canvas.cmd_canvas(C())
-    except Exception as e:
-        print('canvas step skipped: %s' % e)
+    # No canvas step. Canvas is no longer something this machine can pull: the
+    # reading is taken by the browser extension and POSTed to /api/canvas
+    # whenever he has Canvas open, so `Inbox/canvas.json` is already as current
+    # as it is ever going to be by the time a pass starts. The old step existed
+    # to beat `agenda` to the strike-throughs on a cookie that expired hourly;
+    # with no fetch there is no ordering left to enforce. `zipper canvas` still
+    # reports what was last read, and how long ago.
     print('\n== sync ==');   sync.cmd_sync(a)
     print('\n== agenda =='); a.days = getattr(a, 'days', 14) or 14; ics.cmd_agenda(a)
     print('\n== status =='); status.cmd_status(a)

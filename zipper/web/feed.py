@@ -384,8 +384,10 @@ def do_refresh():
         core.TODAY = datetime.date.today()
         steps = [('calendars', ics.cmd_calendars, {}),
                  ('github', gh.cmd_github, {'since_days': 30, 'full': False})]
-        if os.environ.get('CANVAS_TOKEN'):
-            steps.append(('canvas', canvas.cmd_canvas, {'file': None, 'days': 60}))
+        # Canvas is deliberately not a step. The refresh button pulls the
+        # sources this machine can reach, and Canvas is no longer one of them:
+        # the browser extension POSTs canvas.json directly, so there is nothing
+        # here to re-pull and a button that appeared to refresh it would lie.
         # Run the sources concurrently: a Canvas ICS feed alone can take ~6s to
         # generate, and GitHub has no reason to queue behind it.
         dlock = threading.Lock()
