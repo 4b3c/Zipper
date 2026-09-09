@@ -91,6 +91,23 @@ def read_turn(path):
             body = '\n'.join(b for b in blocks if b.strip())
             if body.strip():
                 last_user, last_asst, uuid_ = body, '', ''
+        elif t == 'queue-operation' and row.get('operation') == 'enqueue':
+            # **A message that arrives mid-turn never becomes a `user` row.**
+            # Claude Code queues it and records it here instead, as
+            # `{"operation": "enqueue", "content": "..."}`, then surfaces it
+            # inside the running turn. So the turn is genuinely answering it
+            # while the last `user` row still holds whatever came before --
+            # on 2026-09-08 that was an image paste from the terminal, so the
+            # hook compared the wrong text, found no delivery, and called a
+            # Discord message "typed at the keyboard". Two replies were lost
+            # this way before `forward.log` made it visible in one line.
+            #
+            # Only `enqueue` carries the prompt. `remove` and `dequeue` repeat
+            # or omit the same content as the queue drains and would just
+            # re-set what is already correct.
+            body = (row.get('content') or '').strip()
+            if body:
+                last_user, last_asst, uuid_ = body, '', ''
         elif t == 'assistant':
             for b in _text_blocks(row):
                 if b.strip():
