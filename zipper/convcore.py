@@ -272,19 +272,77 @@ def start(thread_id, prompt=None):
 def _input_line(pane):
     """What is currently typed but unsent, or None if the box isn't on screen.
 
-    The input box is the last line starting with the prompt character. Reading
-    "everything after the last ❯" instead swept up the footer, which is fine
-    until the footer is the only thing that redrew.
+    **The text is not on the ❯ line.** Claude Code draws the prompt character
+    alone on the first row of the box and the content on the rows beneath it:
+
+        ────────────────────────────────
+        ❯\xa0
+        <- typed text lands here
+        ────────────────────────────────
+          ⏵⏵ auto mode on
+
+    Reading only the ❯ line -- which is what this did until 2026-09-09 --
+    therefore returned `''` for every state the box can be in. Nothing above
+    could tell a full box from an empty one, so `_submit` saw its probe absent
+    on the first two frames of every paste and reported the message sent
+    roughly a second later, always. That is what silently ate the 08:55
+    message on 2026-09-09 and is the third and worst shape of this bug: not a
+    window too short, but a check that was never looking at the text.
+
+    So the box is the ❯ row **and every row under it** up to the rule that
+    closes it. The rule is the boundary that keeps the footer out -- the mode
+    line and the completion hint live below it, and sweeping those up is what
+    the previous version was written to avoid.
     """
-    for line in reversed((pane or '').splitlines()):
-        s = line.lstrip()
-        if s.startswith('❯'):
-            return s[1:].strip()
-    return None
+    lines = (pane or '').splitlines()
+    top = next((i for i in range(len(lines) - 1, -1, -1)
+                if lines[i].lstrip().startswith('❯')), None)
+    if top is None:
+        return None
+    body = [lines[top].lstrip()[1:]]
+    for line in lines[top + 1:]:
+        s = line.strip()
+        if s and set(s) <= {'─'}:      # the rule closing the box
+            break
+        body.append(line)
+    return ' '.join(b.replace('\xa0', ' ').strip() for b in body).strip()
 
 
-def _submit(thread_id, tgt, text, timeout=20.0):
+def _await_echo(thread_id, timeout=12.0):
+    """Wait until the pasted text is visibly sitting in the input box.
+
+    **An empty box means nothing until you have seen a full one.** Everything
+    below this function decides "it was submitted" by watching the box clear,
+    and a box that never received the paste in the first place is empty too.
+    Those two states are identical in a screen capture, so a check that only
+    looks for emptiness reports success loudest exactly when the message was
+    swallowed. That is what happened on 2026-09-09: a cold start took the
+    paste and the Enter before the TUI was listening, `_submit` sampled an
+    empty box twice, `/discord` returned 200, `note_delivery` had already
+    recorded the message, and the whole path claimed delivery for a message no
+    session ever saw. The reply was not lost -- the turn never ran.
+
+    So the echo is the precondition. Once the box has been seen non-empty, a
+    later clear is real evidence; until then it is evidence of nothing.
+
+    Emptiness rather than the text itself, because the TUI collapses a large
+    paste to `[Pasted text #1 +5 lines]` and the words never appear. Any
+    non-empty box is proof the keystrokes landed.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        line = _input_line(_pane(thread_id))
+        if line:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _submit(thread_id, tgt, timeout=20.0):
     """Press Enter until the message actually leaves the input box.
+
+    **Only call this once `_await_echo` has confirmed the box is full** -- see
+    there for why an empty box is not otherwise evidence of anything.
 
     Two things make this harder than one keystroke:
 
@@ -301,7 +359,6 @@ def _submit(thread_id, tgt, text, timeout=20.0):
     Clearing has to be seen twice in a row, and a frame with no input box at all
     counts as neither.
     """
-    probe = (text.strip().splitlines() or [''])[0][:40]
     clear = 0
     end = time.time() + timeout
     while time.time() < end:
@@ -309,7 +366,7 @@ def _submit(thread_id, tgt, text, timeout=20.0):
         line = _input_line(_pane(thread_id))
         if line is None:
             continue                       # mid-redraw: no evidence either way
-        if probe not in line:
+        if not line:
             clear += 1
             if clear >= 2:
                 return True
@@ -320,23 +377,48 @@ def _submit(thread_id, tgt, text, timeout=20.0):
     return False
 
 
+PASTE_TRIES = 3
+
+
 def paste(thread_id, text):
     """Type a block into a conversation's pane.
 
     Bracketed paste, then a separate Enter -- as keystrokes every newline in a
     multi-line message would submit a fragment.
+
+    Two confirmations, in order: the text reached the box (`_await_echo`), and
+    then it left it (`_submit`). Neither is optional and the order is the point
+    -- the second is meaningless without the first.
     """
     tgt = target(thread_id)
     if not alive(thread_id):
         return {'ok': False, 'error': 'conversation not running'}
     buf = 'zipper-%s' % thread_id
     try:
-        subprocess.run([_tmux(), 'load-buffer', '-b', buf, '-'],
-                       input=text.encode('utf-8'), check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([_tmux(), 'paste-buffer', '-b', buf, '-t', tgt, '-p', '-d'],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.4)
+        # **Paste until it is actually in the box.** A paste that lands before
+        # the TUI is listening is dropped silently, and the empty box it leaves
+        # behind is indistinguishable from a submitted one -- see `_await_echo`.
+        # `_wait_ready` returning is not enough: the prompt character is drawn
+        # well before input is accepted.
+        for _ in range(PASTE_TRIES):
+            # Reloaded every attempt: `-d` deletes the buffer as it pastes, so a
+            # retry against the buffer the first try consumed fails in tmux and
+            # surfaces as a subprocess error instead of the honest "never
+            # reached the input box" below.
+            subprocess.run([_tmux(), 'load-buffer', '-b', buf, '-'],
+                           input=text.encode('utf-8'), check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([_tmux(), 'paste-buffer', '-b', buf, '-t', tgt, '-p', '-d'],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if _await_echo(thread_id):
+                break
+            # Clear before retrying, in case that paste was merely slow rather
+            # than lost: two live pastes in the box would send the message
+            # doubled, which is worse than sending it late.
+            subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'C-u'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            return {'ok': False, 'error': 'paste never reached the input box'}
         subprocess.run([_tmux(), 'send-keys', '-t', tgt, 'Enter'], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # An Enter that arrives while the TUI is still settling is swallowed,
@@ -351,7 +433,7 @@ def paste(thread_id, text):
         # new conversation from Discord sat with "Test" in its box, and a single
         # Enter by hand a minute later submitted it instantly -- the keystroke
         # was always right, the window was too short.
-        if not _submit(thread_id, tgt, text):
+        if not _submit(thread_id, tgt):
             return {'ok': False, 'error': 'message stayed in the input box'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
