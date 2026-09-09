@@ -18,6 +18,8 @@
     }
   ],
 
+  "permissions": ["storage"],
+
   "optional_host_permissions": ["http://*/*", "https://*/*"],
 
   "options_ui": {

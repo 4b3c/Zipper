@@ -91,6 +91,12 @@ wrong, with nothing on the page admitting it.
   Chrome 121+ / Firefox 121+.
 - `const api = globalThis.browser ?? globalThis.chrome;` covers the namespace.
 - `browser_specific_settings.gecko` is required by Firefox and ignored by Chrome.
+- **Chrome warns `'background.scripts' requires manifest version of 2 or lower`
+  on load. That is expected and harmless** — it is Chrome telling you it does not
+  understand Firefox's key, having already found and used `service_worker`. The
+  warning is the price of one manifest for two browsers. If the noise ever
+  matters, the fix is a build step emitting a per-browser manifest, not deleting
+  the key: without `scripts` the extension has no background at all in Firefox.
 - **Written for Chrome's service worker**, which is killed aggressively and keeps
   no globals. Hence no module-level state in `background.js` — everything that
   must outlive a wake-up is in `storage`. Firefox's event page does not need

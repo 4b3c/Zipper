@@ -25,9 +25,24 @@ function originOf(value) {
   return new URL(value).origin + '/*';
 }
 
-api.storage.sync.get('endpoint').then(({ endpoint }) => {
-  if (endpoint) $('endpoint').value = endpoint;
-});
+/* Listeners are attached before anything that can throw.
+ *
+ * They were not, once, and the failure was silent in the worst way: the
+ * manifest was missing the `storage` permission, so `api.storage` was undefined,
+ * the first line of this file threw, and execution stopped before a single
+ * addEventListener ran. The page rendered perfectly and both buttons were dead.
+ * Nothing on screen said why. Anything that can fail now happens *after* the UI
+ * is wired and reports itself in the status line.
+ */
+function loadSaved() {
+  if (!api?.storage?.sync) {
+    return say('storage API unavailable — the manifest is missing its '
+               + '"storage" permission.', 'bad');
+  }
+  api.storage.sync.get('endpoint')
+    .then(({ endpoint }) => { if (endpoint) $('endpoint').value = endpoint; })
+    .catch((e) => say('Could not read saved settings: ' + e, 'bad'));
+}
 
 $('save').addEventListener('click', async () => {
   const raw = $('endpoint').value.trim().replace(/\/+$/, '');
@@ -68,3 +83,7 @@ $('test').addEventListener('click', async () => {
         + ' — is this machine on the tailnet?', 'bad');
   }
 });
+
+// Last: the UI is fully wired by this point, so a failure here is reportable
+// rather than fatal.
+loadSaved();
