@@ -377,6 +377,39 @@ def _submit(thread_id, tgt, timeout=20.0):
     return False
 
 
+def _user_rows(thread_id):
+    """How many user messages the session has actually recorded.
+
+    **The only witness to a delivery that is not the screen.** Every check
+    above this reads the TUI, and the TUI has now been wrong in three
+    different ways about the same question -- a window too short, a line the
+    text was never on, and (2026-09-10) a box that filled and then emptied
+    without the message ever reaching Claude. Each fix made the reader sharper
+    and left the evidence in the same place: a rendering of what a terminal
+    looked like for a moment.
+
+    The transcript is Claude's own record. If a user row appeared, the session
+    received the message; if none did, it did not, whatever the pane showed.
+    That is not a better heuristic, it is a different kind of fact, which is
+    why this is the last word rather than another frame check.
+    """
+    try:
+        with open(transcript(thread_id), 'rb') as fh:
+            return sum(1 for raw in fh if b'"type":"user"' in raw)
+    except OSError:
+        return 0                       # no transcript yet: a new conversation
+
+
+def _await_recorded(thread_id, before, timeout=25.0):
+    """Wait for the session to write the message down. See `_user_rows`."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if _user_rows(thread_id) > before:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 PASTE_TRIES = 3
 
 
@@ -394,6 +427,7 @@ def paste(thread_id, text):
     if not alive(thread_id):
         return {'ok': False, 'error': 'conversation not running'}
     buf = 'zipper-%s' % thread_id
+    recorded_before = _user_rows(thread_id)
     try:
         # **Paste until it is actually in the box.** A paste that lands before
         # the TUI is listening is dropped silently, and the empty box it leaves
@@ -435,6 +469,20 @@ def paste(thread_id, text):
         # was always right, the window was too short.
         if not _submit(thread_id, tgt):
             return {'ok': False, 'error': 'message stayed in the input box'}
+        # **A clear box is not proof the message was sent.** On 2026-09-10 a
+        # cold start took the paste, showed it in the box, and then cleared it
+        # without ever handing it to Claude: `_await_echo` passed, `_submit`
+        # saw the box empty twice and called it delivered, `/discord` returned
+        # 200, and the thread got no transcript, no turn and no reply. The
+        # screen said everything had gone right at each step.
+        #
+        # So the pane's verdict is now provisional and the session's own
+        # transcript decides. This is the one check in the chain that cannot be
+        # fooled by what a terminal looked like for a moment.
+        if not _await_recorded(thread_id, recorded_before):
+            return {'ok': False,
+                    'error': 'the message left the input box but the session '
+                             'never recorded it -- it was swallowed, not sent'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
     touch(thread_id, active=True)
@@ -530,13 +578,43 @@ def delivered(thread_id, text):
     return bool(d.get('key')) and d['key'] == key
 
 
+def clear_delivery(thread_id):
+    """Take back a delivery record for a message that never arrived.
+
+    `note_delivery` has to run *before* the paste -- the turn it describes can
+    end at any moment once the message lands, and the Stop hook reads this to
+    decide whether to forward the reply. The cost of writing it early is that a
+    failed delivery leaves a fingerprint claiming the session was handed
+    something it never saw.
+
+    That record does not sit still. It is the newest entry, so the *next* turn
+    in that conversation -- very likely one he typed at the keyboard, having
+    given up waiting -- is measured against a message the session never
+    received, and the hook's answer to "did this come from Discord?" is drawn
+    from a delivery that did not happen. A lie about the past tense becomes a
+    misrouted reply in the present one.
+    """
+    with mutate() as d:
+        row = d.get(str(thread_id))
+        if row:
+            row.pop('last_delivered', None)
+
+
 def deliver(thread_id, text, source='discord'):
-    """The whole Discord path in one call: start or resume, then hand it over."""
+    """The whole Discord path in one call: start or resume, then hand it over.
+
+    Provenance is written first and **withdrawn if the handover fails**, so the
+    registry never claims a message reached a session that never saw it.
+    """
     note_delivery(thread_id, text)
     if alive(thread_id):
         res = paste(thread_id, text)
-        if res['ok']:
-            return dict(res, state='live')
-        return res
+        if not res.get('ok'):
+            clear_delivery(thread_id)
+            return res
+        return dict(res, state='live')
     r = start(thread_id, prompt=text)
+    if not r.get('ok'):
+        clear_delivery(thread_id)
+        return r
     return dict(r, state='resumed' if r.get('resumed') else 'new')
