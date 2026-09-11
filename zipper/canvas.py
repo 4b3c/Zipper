@@ -137,32 +137,6 @@ def is_done(r):
     return bool(r.get('submitted') or r.get('done_by_hand'))
 
 
-def is_dead_end(r):
-    """Canvas hosts the deadline but not the work, and never will.
-
-    An assignment whose body says it lives on PrairieLearn (or Gradescope, or
-    zyBooks -- see `EXTERNAL_PLATFORMS`) is submitted and graded on that
-    platform. Canvas is told nothing, so `submitted` stays false **permanently**:
-    there is no future read in which this row clears itself.
-
-    That makes it categorically different from outstanding work. A row that can
-    still change state is a thing to do; a row that cannot is a thing to ignore,
-    and listing the two together means every surface quietly over-reports the
-    load and re-proposes finished homework forever.
-
-    **This is not a claim that it is done.** It says Canvas cannot answer, which
-    is why the answer must not be read off Canvas. Crossing it off by hand is
-    still how he asserts it *is* done -- `is_done` wins, and a crossed-off row
-    keeps its strike-through rather than vanishing.
-    """
-    return bool(r.get('elsewhere')) and not is_done(r)
-
-
-def is_open(r):
-    """Actionable: not done, and not a row Canvas can never resolve."""
-    return not is_done(r) and not is_dead_end(r)
-
-
 def toggle_override(key):
     """Cross an item off, or put it back. Returns the new state.
 
@@ -345,12 +319,12 @@ def ingest(items, assignments=None, source='extension'):
     return rows, skipped, described
 
 
-def _report(rows, skipped=None, described=None, stamp=None, dead_ends=False):
+def _report(rows, skipped=None, described=None, stamp=None):
     stamp_overrides(rows)
     done = sum(1 for r in rows if r['submitted'])
     crossed = [r for r in rows if r.get('done_by_hand') and not r['submitted']]
     print('canvas: %d item(s), %d submitted, %d outstanding%s%s%s'
-          % (len(rows), done, sum(1 for r in rows if is_open(r)),
+          % (len(rows), done, sum(1 for r in rows if not is_done(r)),
              ', %d crossed off' % len(crossed) if crossed else '',
              '  (%d skipped)' % skipped if skipped is not None else '',
              '  read %s' % stamp if stamp else ''))
@@ -360,31 +334,21 @@ def _report(rows, skipped=None, described=None, stamp=None, dead_ends=False):
         # Named rather than merely counted: this is the one number in the report
         # that rests on his word instead of on Canvas, and it should be possible
         # to see what he took responsibility for without opening a JSON file.
-        # Phrased as settled, not pending. "Canvas still calls these
-        # unsubmitted" read as an open discrepancy to go and check, and got one
-        # of these handed back to him as work he had already done.
-        print('  done on his word (Canvas disagrees, and is wrong) -- not outstanding:')
+        print('  crossed off by hand -- Canvas still calls these unsubmitted:')
         for r in crossed:
             print('    %s %s  (%s)' % (r['course'], r['title'][:40],
                                        r['done_by_hand'][:10]))
-    # One line, counted not enumerated. These are excluded from the outstanding
-    # count and from every actionable surface, so naming them row by row would
-    # re-propose the same finished homework on every single run -- which is the
-    # exact noise this exclusion exists to remove. The count is here so the
-    # exclusion is visible rather than silent.
-    ext = [r for r in rows if is_dead_end(r)]
+    ext = [r for r in rows if r.get('elsewhere') and not is_done(r)]
     if ext:
-        print('  %d item(s) hosted off Canvas (%s) -- excluded; `--dead-ends` to list'
-              % (len(ext), ', '.join(sorted(set(r['elsewhere'] for r in ext)))))
-        if dead_ends:
-            for r in ext:
-                print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
-    late = [r for r in rows if is_open(r) and (r['missing'] or r['late'])]
+        print('  graded elsewhere -- Canvas cannot see these submitted:')
+        for r in ext:
+            print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
+    late = [r for r in rows if not is_done(r) and (r['missing'] or r['late'])]
     if late:
         print('  MISSING: ' + '; '.join('%s %s' % (r['course'], r['title'][:40]) for r in late))
     by_day = {}
     for r in rows:
-        if is_open(r) and r['due']:
+        if not is_done(r) and r['due']:
             by_day.setdefault(r['due'][:10], []).append(r)
     for d in sorted(by_day)[:6]:
         print('  %s  %d outstanding: %s' % (d, len(by_day[d]),
@@ -410,7 +374,7 @@ def cmd_canvas(a):
             items, assignments = body, None
         rows, skipped, described = ingest(items, assignments,
                                           source='file:' + os.path.basename(a.file))
-        _report(rows, skipped, described, dead_ends=a.dead_ends)
+        _report(rows, skipped, described)
         print('  -> %s' % rel(CANVAS_JSON))
         return 0
 
@@ -428,8 +392,7 @@ def cmd_canvas(a):
         age = ' (%dh ago)' % (secs // 3600) if secs >= 3600 else ' (%dm ago)' % (secs // 60)
     except (TypeError, ValueError):
         pass
-    _report(rows, stamp='%s%s via %s' % (stamp, age, blob.get('source', '?')),
-            dead_ends=a.dead_ends)
+    _report(rows, stamp='%s%s via %s' % (stamp, age, blob.get('source', '?')))
     # Staleness here is a fact about his browsing, not a fault to fix. Say it
     # plainly and do not prescribe: the reading is as old as the last time he
     # had Canvas open, and no amount of nagging from a server changes that.

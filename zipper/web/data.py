@@ -86,11 +86,8 @@ def canvas_items():
 
 
 def canvas_outstanding():
-    """`is_open`, not `not is_done`: an assignment hosted on PrairieLearn can
-    never report itself submitted, so it would otherwise sit on this list for
-    the rest of the semester. See `canvas.is_dead_end`."""
     return [r for r in canvas_items()
-            if canvas.is_open(r) and r['due'][:10] >= core.TODAY.isoformat()]
+            if not canvas.is_done(r) and r['due'][:10] >= core.TODAY.isoformat()]
 
 
 def task_text(raw):
@@ -146,15 +143,8 @@ def ranked(limit=10):
     # own decision reflected back; a row that vanishes is indistinguishable from
     # the cross-off having failed, which is the complaint this whole mechanism
     # exists to answer.
-    #
-    # A dead end is the opposite case and *is* dropped. A crossed-off row can
-    # still change state -- he can put it back -- so showing it struck through
-    # is feedback. A row Canvas can never resolve has no state to show, and
-    # leaving it here is how finished PrairieLearn homework kept being ranked as
-    # work to do. It is named once in `zipper canvas`, not on this list.
     for r in canvas_items():
-        if (r['submitted'] or canvas.is_dead_end(r)
-                or r['due'][:10] < core.TODAY.isoformat()):
+        if r['submitted'] or r['due'][:10] < core.TODAY.isoformat():
             continue
         items.append({'source': 'canvas', 'title': r['title'], 'due': r['due'][:10],
                       'tag': r['course'], 'url': r['url'], 'points': r.get('points'),

@@ -203,19 +203,3 @@ footer .fresh{margin:0 0 10px}
 a.plain{color:inherit;text-decoration:none;border-bottom:1px solid var(--line)}
 a.plain:hover{border-bottom-color:var(--accent)}
 """
-
-
-# The favicon: a 16x16 pixel-art Z that reads as a face. The top bar of the Z is
-# the brow with two eyes knocked out of it, the diagonal is the nose, the bottom
-# bar is the mouth. Drawn on the grid rather than as a glyph so it stays crisp at
-# 16px, where a font-rendered Z turns to mush. Maroon is --accent in light mode;
-# it is a fixed colour here because a tab icon cannot follow the page theme.
-FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" \
-shape-rendering="crispEdges"><rect width="16" height="16" rx="3" fill="#8c1d40"/>\
-<g fill="#f7f2ea"><rect x="3" y="3" width="10" height="3"/>\
-<rect x="9" y="6" width="2" height="1"/><rect x="8" y="7" width="2" height="1"/>\
-<rect x="7" y="8" width="2" height="1"/><rect x="6" y="9" width="2" height="1"/>\
-<rect x="5" y="10" width="2" height="1"/>\
-<rect x="3" y="11" width="10" height="2"/></g>\
-<g fill="#8c1d40"><rect x="4" y="3" width="2" height="2"/>\
-<rect x="10" y="3" width="2" height="2"/></g></svg>"""
