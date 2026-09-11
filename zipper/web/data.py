@@ -86,19 +86,22 @@ def canvas_items():
 
 
 def class_notes():
-    """`{code: note title}` from `Classes/` -- 'FSE 501' -> 'Entrepreneurship Class'.
+    """Two maps over `Classes/`: code -> note title, and note title -> course id.
 
-    The mapping already exists as the `code:` field, and a Canvas row carries the
-    code, so the note a course's work belongs to is derivable rather than
-    something to hand-maintain twice. Nothing guesses: a course with no `code:`
-    simply gets no link.
+    Both mappings already exist as the `code:` and `canvas_course_id:` fields, so
+    the note a course's work belongs to -- and the Canvas course a task about a
+    class points at -- are derivable rather than hand-maintained twice. Nothing
+    guesses: a course note missing either field simply gets no link.
     """
-    out = {}
+    by_code, course_of = {}, {}
     for p in glob.glob(os.path.join(core.VAULT, 'Classes', '*.md')):
-        code = dict(core.read_note(p)[0]).get('code')
-        if code:
-            out[str(code).strip()] = core.title_of(p)
-    return out
+        fm = dict(core.read_note(p)[0])
+        title = core.title_of(p)
+        if fm.get('code'):
+            by_code[str(fm['code']).strip()] = title
+        if fm.get('canvas_course_id'):
+            course_of[title] = str(fm['canvas_course_id']).strip()
+    return by_code, course_of
 
 
 def canvas_outstanding():
@@ -124,9 +127,20 @@ def open_tasks():
             raw = m.group(2)
             due = re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
             proj = re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
+            # Every note the line names, `project::` first and no duplicates.
+            # A task is often about one project and done with another team's
+            # work, and linking only `project::` sent the one about five CSE 423
+            # documents to the Orbitscape note. What he wrote down is the
+            # evidence; nothing here infers a link he did not type.
+            links = [proj.group(1)] if proj else []
+            for n in re.findall(r'\[\[([^\]|#]+)', raw):
+                n = n.strip()
+                if n and n not in links:
+                    links.append(n)
             out.append({'text': task_text(raw),
                         'due': due.group(1) if due else '',
                         'project': proj.group(1) if proj else '',
+                        'links': links,
                         'next': '#next' in raw,
                         'overdue': bool(due and due.group(1) < core.TODAY.isoformat())})
     return out
@@ -154,7 +168,7 @@ def priority(it):
 def ranked(limit=10):
     """Canvas work and self-reported tasks in one list, most pressing first."""
     items = []
-    cls = class_notes()
+    cls, course_of = class_notes()
     # Not `canvas_outstanding()`: crossed-off work stays on this list and sinks,
     # rather than disappearing from it. A struck-through row is him seeing his
     # own decision reflected back; a row that vanishes is indistinguishable from
@@ -171,12 +185,16 @@ def ranked(limit=10):
                       'tag': r['course'], 'url': r['url'], 'points': r.get('points'),
                       'next': False, 'elsewhere': r.get('elsewhere', ''),
                       'desc': r.get('description', ''), 'kind': r.get('type', ''),
-                      'note': cls.get(r['course'], ''),
-                      'done': bool(r.get('done_by_hand'))})
+                      'links': [cls[r['course']]] if r['course'] in cls else [],
+                      'course': '', 'done': bool(r.get('done_by_hand'))})
     for t in open_tasks():
         items.append({'source': 'task', 'title': t['text'], 'due': t['due'],
                       'tag': t['project'], 'url': '', 'points': 0,
-                      'desc': '', 'kind': '', 'note': t['project'],
+                      'desc': '', 'kind': '', 'links': t['links'],
+                      # Canvas assignments are what a class-backed task is
+                      # actually about, so the course page is the link it wants
+                      # -- the note is context, not the work.
+                      'course': course_of.get(t['project'], ''),
                       'next': t['next'], 'done': False})
     for it in items:
         it['score'] = priority(it)

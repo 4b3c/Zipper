@@ -288,8 +288,12 @@ def _detail_html(it):
     if it.get('url'):
         acts.append('<a href="%s" target="_blank" rel="noopener">open in Canvas</a>'
                     % esc(it['url']))
-    if it.get('note'):
-        acts.append('<a href="%s">open %s</a>' % (_obsidian(it['note']), esc(it['note'])))
+    if it.get('course'):
+        acts.append('<a href="%s/courses/%s/assignments" target="_blank" rel="noopener">'
+                    'course assignments</a>'
+                    % (esc(canvas.CANVAS_HOST.rstrip('/')), esc(it['course'])))
+    for n in (it.get('links') or []):
+        acts.append('<a href="%s">open %s</a>' % (_obsidian(n), esc(n)))
     if it.get('points'):
         acts.append('<span class="sub">%s pts</span>' % esc(str(it['points'])))
     if it.get('kind'):
@@ -309,7 +313,11 @@ def _item_li(it, show_score=True, detail=False):
     was supposed to carry urgency is on half the open tasks, so it stopped
     discriminating. The score is the only thing that actually orders the list,
     so it says so out loud."""
-    title = esc(it['title'])
+    # Display only. `data.task_text` keeps the brackets because the ledger and
+    # the queue key a task by that exact string -- stripping them there would
+    # orphan every existing cross-off. The note is reachable from the detail
+    # panel, so the title only has to read well.
+    title = esc(re.sub(r'\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]', r'\1', it['title']))
     if it['url']:
         title = '<a class="plain" href="%s" target="_blank" rel="noopener">%s</a>' % (esc(it['url']), title)
     meta = []
