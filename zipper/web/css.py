@@ -33,6 +33,16 @@ li.row:last-child{border-bottom:0}
 .rowtitle{line-height:1.35}
 .rowmeta{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
 li.crossed .rowtitle,li.crossed .rowtitle a{text-decoration:line-through;color:var(--dim)}
+li.has-det{cursor:pointer}
+li.has-det .more{color:var(--accent)}
+li.has-det.open .more{opacity:.5}
+.rowdet{display:none;margin:6px 0 2px;padding:8px 10px;border-left:2px solid var(--accent);
+        background:rgba(255,255,255,.03);font-size:12px;line-height:1.5;max-height:22em;overflow-y:auto}
+li.has-det.open .rowdet{display:block}
+.rowdet p{margin:0 0 6px}
+.rowdet ul.dl{margin:0 0 6px;padding-left:16px}
+.rowdet ul.dl li{margin:2px 0}
+.rowdet .dacts{margin:8px 0 0;display:flex;flex-wrap:wrap;gap:10px;align-items:baseline}
 .t{color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px;min-width:46px}
 /* the schedule grid: one column of the day, height = duration */
 .grid{position:relative;margin:2px 0 4px}

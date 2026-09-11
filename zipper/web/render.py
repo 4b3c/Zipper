@@ -260,7 +260,48 @@ def _qnotes_html(rows):
             '<code>python3 -m zipper commit "msg"</code></p>')
 
 
-def _item_li(it, show_score=True):
+def _obsidian(note):
+    return ('obsidian://open?vault=%s&amp;file=%s'
+            % (urllib.parse.quote(os.path.basename(core.VAULT)),
+               urllib.parse.quote(note)))
+
+
+# The assignment body is prose with list structure flattened into it by
+# `canvas._html_to_text`. Splitting on the bullet glyph is enough to get it back
+# to something scannable -- and scannable is the whole requirement, because the
+# question being answered is "what is this and who does it", not "render Canvas
+# faithfully".
+def _detail_html(it):
+    """What a row expands into. Empty string when there is nothing to add."""
+    bits = []
+    if it.get('desc'):
+        txt = re.sub(r'\s+', ' ', it['desc']).strip()
+        parts = [p.strip(' -') for p in re.split(r'\s+-\s+', txt) if p.strip(' -')]
+        if len(parts) > 1:
+            head, rest = parts[0], parts[1:]
+            bits.append('<p>%s</p><ul class="dl">%s</ul>'
+                        % (esc(head[:400]),
+                           ''.join('<li>%s</li>' % esc(p[:300]) for p in rest[:24])))
+        else:
+            bits.append('<p>%s</p>' % esc(txt[:1200]))
+    acts = []
+    if it.get('url'):
+        acts.append('<a href="%s" target="_blank" rel="noopener">open in Canvas</a>'
+                    % esc(it['url']))
+    if it.get('note'):
+        acts.append('<a href="%s">open %s</a>' % (_obsidian(it['note']), esc(it['note'])))
+    if it.get('points'):
+        acts.append('<span class="sub">%s pts</span>' % esc(str(it['points'])))
+    if it.get('kind'):
+        acts.append('<span class="sub">%s</span>' % esc(it['kind']))
+    if acts:
+        bits.append('<p class="dacts">%s</p>' % ' &middot; '.join(acts))
+    if not bits:
+        return ''
+    return '<div class="rowdet">%s</div>' % ''.join(bits)
+
+
+def _item_li(it, show_score=True, detail=False):
     """One task row. Title leads; everything else drops to a dim second line.
 
     Priority leads that second line. It was a tooltip for a while, on the theory
@@ -284,18 +325,23 @@ def _item_li(it, show_score=True):
         # than nagging about something already handed in.
         meta.append('<span class="elsewhere">on %s &mdash; Canvas can\'t tell</span>'
                     % esc(it['elsewhere']))
-    return ('<li class="row %s" title="priority %d">'
+    det = _detail_html(it) if detail else ''
+    if det:
+        meta.append('<span class="more">details</span>')
+    return ('<li class="row %s%s" title="priority %d">'
             '<button class="tick" data-key="%s" aria-label="cross off">%s</button>'
             '<span class="rowbody"><span class="rowtitle">%s</span>'
-            '<span class="rowmeta">%s</span></span></li>'
-            % ('crossed' if it.get('done') else '', it['score'], esc(it['key']),
-               '&#10003;' if it.get('done') else '', title, ' &middot; '.join(meta)))
+            '<span class="rowmeta">%s</span>%s</span></li>'
+            % ('crossed' if it.get('done') else '', ' has-det' if det else '',
+               it['score'], esc(it['key']),
+               '&#10003;' if it.get('done') else '', title,
+               ' &middot; '.join(meta), det))
 
 
-def _side(items, empty):
+def _side(items, empty, detail=False):
     if not items:
         return '<p class="sub">%s</p>' % empty
-    return '<ul>' + ''.join(_item_li(i) for i in items) + '</ul>'
+    return '<ul>' + ''.join(_item_li(i, detail=detail) for i in items) + '</ul>'
 
 
 def panels_html(day=None):
@@ -379,7 +425,10 @@ def _list_page(kind):
     _, allitems = ranked()
     items = [i for i in allitems if i['source'] == kind]
     label = 'Canvas' if kind == 'canvas' else 'Tasks'
-    body = _side(items, 'Nothing here.')
+    # Detail only here, never on the front card. The card answers "what is most
+    # pressing" in one glance and a description would bury the ranking; this page
+    # is where he has already asked about one specific thing.
+    body = _side(items, 'Nothing here.', detail=True)
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
 <style>%s</style></head><body><div class="wrap">

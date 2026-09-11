@@ -85,6 +85,22 @@ def canvas_items():
     return canvas.items()
 
 
+def class_notes():
+    """`{code: note title}` from `Classes/` -- 'FSE 501' -> 'Entrepreneurship Class'.
+
+    The mapping already exists as the `code:` field, and a Canvas row carries the
+    code, so the note a course's work belongs to is derivable rather than
+    something to hand-maintain twice. Nothing guesses: a course with no `code:`
+    simply gets no link.
+    """
+    out = {}
+    for p in glob.glob(os.path.join(core.VAULT, 'Classes', '*.md')):
+        code = dict(core.read_note(p)[0]).get('code')
+        if code:
+            out[str(code).strip()] = core.title_of(p)
+    return out
+
+
 def canvas_outstanding():
     return [r for r in canvas_items()
             if not canvas.is_done(r) and r['due'][:10] >= core.TODAY.isoformat()]
@@ -138,6 +154,7 @@ def priority(it):
 def ranked(limit=10):
     """Canvas work and self-reported tasks in one list, most pressing first."""
     items = []
+    cls = class_notes()
     # Not `canvas_outstanding()`: crossed-off work stays on this list and sinks,
     # rather than disappearing from it. A struck-through row is him seeing his
     # own decision reflected back; a row that vanishes is indistinguishable from
@@ -146,13 +163,20 @@ def ranked(limit=10):
     for r in canvas_items():
         if r['submitted'] or r['due'][:10] < core.TODAY.isoformat():
             continue
+        # `desc` is the assignment body the extension reads. It is the answer to
+        # "what even is this" -- a title says when a thing is due and nothing
+        # about what the work is or who is supposed to produce it, which is how
+        # six team documents with templates read as nine personal essays.
         items.append({'source': 'canvas', 'title': r['title'], 'due': r['due'][:10],
                       'tag': r['course'], 'url': r['url'], 'points': r.get('points'),
                       'next': False, 'elsewhere': r.get('elsewhere', ''),
+                      'desc': r.get('description', ''), 'kind': r.get('type', ''),
+                      'note': cls.get(r['course'], ''),
                       'done': bool(r.get('done_by_hand'))})
     for t in open_tasks():
         items.append({'source': 'task', 'title': t['text'], 'due': t['due'],
                       'tag': t['project'], 'url': '', 'points': 0,
+                      'desc': '', 'kind': '', 'note': t['project'],
                       'next': t['next'], 'done': False})
     for it in items:
         it['score'] = priority(it)

@@ -636,4 +636,18 @@ document.addEventListener('click', e=>{
   window.__showdone = !window.__showdone;
   drawQueue(window.__feed);
 });
+// Expanding a row. Same gesture as a Today block, and the same two exclusions: a
+// click on the tick box is a cross-off, a click on a link is navigation, and
+// neither should also toggle the panel underneath. Unlike the Today grid this
+// does *not* close its siblings -- the reason to open two assignments at once is
+// to compare them, which is most of why the descriptions are here at all.
+document.addEventListener('click', e=>{
+  if(e.target.closest('.tick') || e.target.closest('a')) return;
+  const li = e.target.closest('li.has-det'); if(!li) return;
+  li.classList.toggle('open');
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape') document.querySelectorAll('li.has-det.open')
+                               .forEach(li=>li.classList.remove('open'));
+});
 """
