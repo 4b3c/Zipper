@@ -334,13 +334,21 @@ def _report(rows, skipped=None, described=None, stamp=None):
         # Named rather than merely counted: this is the one number in the report
         # that rests on his word instead of on Canvas, and it should be possible
         # to see what he took responsibility for without opening a JSON file.
-        print('  crossed off by hand -- Canvas still calls these unsubmitted:')
+        # Phrased as settled, not pending. "Canvas still calls these
+        # unsubmitted" reads as an open discrepancy to go and check, and got one
+        # of these handed back to him as work he had already done.
+        print('  done on his word (Canvas disagrees, and is wrong) -- not outstanding:')
         for r in crossed:
             print('    %s %s  (%s)' % (r['course'], r['title'][:40],
                                        r['done_by_hand'][:10]))
     ext = [r for r in rows if r.get('elsewhere') and not is_done(r)]
     if ext:
-        print('  graded elsewhere -- Canvas cannot see these submitted:')
+        # Still listed, still outstanding. `elsewhere` is a *label*: it says
+        # Canvas will never mark this submitted, so the cross-off is the only
+        # thing that will ever clear it. It is not itself evidence of anything
+        # being done, and must not suppress the row -- an assignment he has not
+        # started is exactly as visible as any other.
+        print('  on another platform -- only a cross-off will clear these:')
         for r in ext:
             print('    %s %s (%s)' % (r['course'], r['title'][:40], r['elsewhere']))
     late = [r for r in rows if not is_done(r) and (r['missing'] or r['late'])]
