@@ -70,6 +70,8 @@ def main():
     # No --days and no fetch: the browser extension takes the reading, this
     # reports it. --file still ingests a saved planner dump.
     s = sub.add_parser('canvas'); s.add_argument('--file')
+    s.add_argument('--dead-ends', action='store_true',
+                   help='name the items hosted off Canvas rather than only counting them')
     s.set_defaults(fn=canvas.cmd_canvas)
     s = sub.add_parser('conversations'); s.add_argument('--close', metavar='THREAD')
     s.add_argument('--force', action='store_true',

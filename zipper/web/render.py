@@ -365,7 +365,8 @@ def _views_page(page_key):
                      % (esc(v['title']), v['count'], _view_html(v)))
     stamp = blob.get('generated', '')[:16].replace('T', ' ')
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>%s</title>
 <style>%s</style></head><body><div class="wrap">
 <h1>%s</h1><p class="sub">%s</p>
 <p class="sub vnavbar"><a class="plain" href="/">&larr; today</a> &middot; %s</p>
@@ -381,7 +382,8 @@ def _list_page(kind):
     label = 'Canvas' if kind == 'canvas' else 'Tasks'
     body = _side(items, 'Nothing here.')
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>%s</title>
 <style>%s</style></head><body><div class="wrap">
 <h1>%s <span class="sub">&middot; %d</span></h1>
 <p class="sub"><a class="plain" href="/">&larr; back to today</a></p>
@@ -429,6 +431,7 @@ def render():
     live = bool(current_conversation())
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>Zipper</title><style>%s</style></head><body><div class="wrap">
 <h1><span id="pagedate">%s</span> <button id="dorefresh" class="btn">refresh</button></h1><div class="sub" id="status"></div>
 

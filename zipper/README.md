@@ -308,6 +308,32 @@ it outstanding in the others and the next visit to Canvas brought it back everyw
 `zipper canvas` names what has been crossed off, because that is the one line in the report
 resting on Abram's word rather than on Canvas.
 
+#### Dead ends — work Canvas hosts but does not receive
+
+An assignment whose description says it lives on **PrairieLearn** (or Gradescope, zyBooks,
+Codio — `canvas.EXTERNAL_PLATFORMS`) is submitted and graded there. Canvas is told nothing,
+so `submitted` stays false **forever**: there is no future read in which the row clears
+itself. Detecting that and then listing the item anyway is how finished homework kept being
+ranked as work to do, indefinitely.
+
+So there are three predicates, and the distinction between them is the point:
+
+| | means | shown where |
+|---|---|---|
+| `is_done` | handed in, **or** crossed off by hand | struck through, kept on the list |
+| `is_dead_end` | hosted off Canvas, and not crossed off | **dropped** from every actionable surface |
+| `is_open` | neither — genuinely outstanding | the counts, *Due today*, *What to work on* |
+
+A crossed-off row **stays visible and sinks**, because he can put it back and seeing the
+strike-through is how he knows the cross-off took. A dead end has no state to show, so it is
+**removed** and counted once in the `zipper canvas` report — `--dead-ends` names them — which
+keeps the exclusion visible rather than silent.
+
+**A dead end is not a claim the work is done.** It says Canvas cannot answer, which is
+exactly why the answer must not be read off Canvas. The cost is real and deliberate: an
+*unstarted* PrairieLearn assignment is invisible here too, so that deadline lives on the
+course page and in `Tasks/`, not on this dashboard.
+
 **Paste:** text paste works. Image paste stores the bytes on the VPS and types the *path*,
 which Claude Code opens — the browser and the session are on different machines, so the
 pasteboard itself never crosses.

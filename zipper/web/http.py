@@ -15,6 +15,7 @@ from .data import content_sig, toggle_done
 from .feed import (SUBS, SUBS_LOCK, do_refresh, emit_diff, feed_load, feed_mark,
                    feed_mark_all, feed_rows, feed_watch, notes_watch, publish,
                    snapshot_data)
+from .css import FAVICON
 from .render import _list_page, _views_page, panels_html, render, views_blob
 
 
@@ -65,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
         core.TODAY = datetime.date.today()
         if self.path == '/':
             self._send(200, render())
+        elif self.path == '/favicon.svg':
+            self._send(200, FAVICON, 'image/svg+xml')
         elif self.path == '/events':
             self._events()
         elif self.path.split('?')[0] == '/api/tmuxbuffer':
