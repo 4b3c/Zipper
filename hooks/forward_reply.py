@@ -272,6 +272,33 @@ def _unclaim(conversations, tid, uuids):
         pass
 
 
+def _close_state(state_path, state):
+    """Mark the turn's stream state finished, so the next turn cannot adopt it.
+
+    **A finished message must never be written into again.** `stream_watch`
+    adopts an *unclosed* state file so that a watcher killed mid-turn can pick
+    up the message already in flight. Nothing distinguished that from a turn
+    that had simply ended a moment ago, so a question asked ~20 seconds after
+    the previous answer landed was streamed into the previous answer's messages
+    and then laid over them by the correction below: 3410 characters written on
+    top of a reply he had already read, and no new message in the thread at all
+    (2026-09-15, reported as "I didn't get a response in Discord").
+
+    The watcher also marks this on its way out. This is the other half, because
+    a watcher can be killed before it gets there.
+    """
+    if not state_path:
+        return
+    try:
+        state['closed'] = True
+        tmp = state_path + '.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(state, fh)
+        os.replace(tmp, state_path)
+    except Exception:
+        pass
+
+
 def _log(line):
     """Why this hook did what it did, appended to `Inbox/forward.log`.
 
@@ -332,7 +359,7 @@ def main():
     # ten-minute turn showed nothing for ten minutes and then everything.
     live = payload.get('hook_event_name') == 'PostToolUse'
 
-    state = {}
+    state, state_path = {}, ''
 
     last_user, msgs, closed = read_turn(path)
     if live:
@@ -442,6 +469,7 @@ def main():
             _unclaim(conversations, tid, [u for u, _b, _p in pending])
             return
         _log('fixed %s %d chars over %d message(s)' % (tid, len(whole), n))
+        _close_state(state_path, state)
         return
 
     for i, (uuid_, body, _pre) in enumerate(pending):

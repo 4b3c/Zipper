@@ -196,8 +196,13 @@ def _unfoot(chat, tid, carrying):
         pass
 
 
-def note(state_path, ids, turn, tid):
+def note(state_path, ids, turn, tid, closed=False):
     """Record which Discord messages this turn owns, in order.
+
+    **`closed` is what stops the next turn adopting these.** A state file is
+    adoptable only while its turn is still running; once the turn has ended its
+    messages are finished and corrected, and writing into them again overwrites
+    a reply he has already read. See the adoption guard in `main`.
 
     That is the whole handover to the correction pass -- **a list of ids, not a
     description of their contents.** An earlier version stored a text key per
@@ -210,7 +215,8 @@ def note(state_path, ids, turn, tid):
     try:
         tmp = state_path + '.tmp'
         with open(tmp, 'w') as fh:
-            json.dump({'turn': turn, 'thread': tid, 'ids': [str(i) for i in ids]}, fh)
+            json.dump({'turn': turn, 'thread': tid, 'closed': bool(closed),
+                       'ids': [str(i) for i in ids]}, fh)
         os.replace(tmp, state_path)
     except Exception:
         pass
@@ -295,13 +301,30 @@ def main():
     # dead watcher left and once in full. Seen on 2026-09-15 at 18:48:51 and
     # 18:49:22, the second opening with the first's sentence.
     #
-    # A file older than this is the previous turn's and must not be adopted,
-    # because its messages are finished and already corrected.
+    # **Adoptable means the turn is still running -- not that it ended
+    # recently.** The first version of this guard used the state file's age
+    # alone, on the assumption that a file younger than 90 seconds belonged to a
+    # turn still in flight. It does not: a turn that *ended* 20 seconds ago
+    # leaves a file just as young, and a conversation is exactly where a reply
+    # arrives seconds after the last one. On 2026-09-15 a second question asked
+    # ~20s after the first answer landed was streamed into the first answer's
+    # messages and then laid over them by `Stop` -- 3410 characters written on
+    # top of a reply he had already read, and **no new message in the thread at
+    # all**. He reported it as not getting a response. This failure destroys the
+    # previous turn rather than duplicating this one, which makes it the worse
+    # of the two directions to get wrong.
+    #
+    # So the turn says when it is over: `closed` is written by the watcher on
+    # its way out and by the `Stop` pass after the correction. An unclosed file
+    # is a watcher that died mid-turn, which is the only case worth adopting.
+    # The age check stays as a second gate, for a state file whose writer was
+    # killed hard enough to never mark it.
     ids = []            # the Discord messages this turn owns, in order
     try:
         if time.time() - os.path.getmtime(state_path) < 90:
             prev = json.load(open(state_path))
-            if str(prev.get('thread') or '') == str(tid):
+            if (str(prev.get('thread') or '') == str(tid)
+                    and not prev.get('closed')):
                 ids = [str(i) for i in (prev.get('ids') or [])]
     except Exception:
         ids = []
@@ -401,6 +424,11 @@ def main():
     # correction pass would also remove it, but only if it runs.
     if ids:
         _unfoot(chat, tid, (ids[-1], full[head:].strip()))
+
+    # **Leaving is what closes the turn.** The ids stay on disk -- the `Stop`
+    # correction still needs them -- but they are now finished messages, and the
+    # next watcher must post rather than adopt.
+    note(state_path, ids, turn, tid, closed=True)
 
     try:
         os.remove(state_path + '.stop')
