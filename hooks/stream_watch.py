@@ -196,6 +196,11 @@ def _unfoot(chat, tid, carrying):
         pass
 
 
+def full_text(done, shown):
+    """The turn's text so far: finished blocks plus the one being written."""
+    return '\n\n'.join(done + ([shown] if shown else []))
+
+
 def note(state_path, ids, turn, tid, closed=False):
     """Record which Discord messages this turn owns, in order.
 
@@ -289,6 +294,14 @@ def main():
         os.remove(state_path + '.stop')
     except OSError:
         pass
+    # **A stale seal is worse than no seal.** The counter it carries belongs to
+    # the previous turn, so a leftover `3` would make this turn's real second
+    # prompt (`2`) look like old news and never seal at all. Same reasoning as
+    # the stop sentinel above, and the same fix.
+    try:
+        os.remove(state_path + '.seal')
+    except OSError:
+        pass
 
     turn = time.time()
     started = time.time()
@@ -340,11 +353,51 @@ def main():
     shown = ''          # the block being written, as last captured
     last_body = ''
     last_edit = 0.0
+    prompts = 1         # how many prompts this turn is answering; see the seal
     note(state_path, ids, turn, tid)
 
     while time.time() - started < MAX_IDLE:
         if os.path.exists(state_path + '.stop'):
             break
+
+        # **A message that arrives mid-turn ends the message being written.**
+        # One Discord message per turn is right until he asks something *during*
+        # the turn: Claude Code answers it in the same turn, so the watcher kept
+        # growing the message it was already on -- and that message sits *above*
+        # his new question in the thread. On 2026-09-15 a reply posted at 12:24
+        # was edited afterwards to answer a question asked at 12:24 and shown
+        # below it, so the thread read as an answer arriving before its
+        # question. One message per *prompt*, not per turn.
+        #
+        # The signal comes from `forward_reply`, which reads the transcript and
+        # sees the `enqueue` row unambiguously -- the pane cannot tell a
+        # submitted prompt from one he is still typing into the input box.
+        #
+        # **Known limitation:** a sealed message keeps its pane-scraped text.
+        # The `Stop` correction only rewrites the *current* segment, because
+        # `read_turn` also resets its message list on an `enqueue` and hands
+        # back only what was said after the last prompt. The two agree, which is
+        # what matters; the cost is that text written before an interrupt stays
+        # approximate rather than exact. Visible, not destructive -- the right
+        # way round for this to be wrong.
+        #
+        # Same one-writer-each-way pattern as `.stop`: it writes the count, this
+        # removes the file.
+        try:
+            with open(state_path + '.seal') as fh:
+                want = int((fh.read() or '0').strip() or 0)
+            os.remove(state_path + '.seal')
+            if want > prompts:
+                prompts = want
+                if ids:
+                    _unfoot(chat, tid, (ids[-1], full_text(done, shown)[head:].strip()))
+                # Everything so far belongs to the message just sealed. Start
+                # clean so the next poll *posts* rather than edits.
+                ids, done, shown, head, last_body = [], [], '', 0, ''
+                note(state_path, ids, turn, tid)
+        except Exception:
+            pass
+
         pane = pane_text(session)
         text = current_message(pane)
         foot = status(pane)
@@ -375,7 +428,7 @@ def main():
                 if shown not in done:
                     done.append(shown)   # a new block began; the old one is final
             shown = text
-        full = '\n\n'.join(done + ([shown] if shown else []))
+        full = full_text(done, shown)
 
         body = full[head:]
         body_now = (body + ('\n-# ' + foot if foot else '')).strip()
@@ -437,10 +490,11 @@ def main():
     # next watcher must post rather than adopt.
     note(state_path, ids, turn, tid, closed=True)
 
-    try:
-        os.remove(state_path + '.stop')
-    except Exception:
-        pass
+    for leftover in ('.stop', '.seal'):
+        try:
+            os.remove(state_path + leftover)
+        except Exception:
+            pass
     return 0
 
 

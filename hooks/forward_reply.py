@@ -104,7 +104,7 @@ def read_turn(path):
     call back in, not a person speaking -- taking it as the prompt would mean
     every turn looked like it came from the terminal.
 
-    Returns `(last_user, messages, closed)`, where `messages` is a list of
+    Returns `(last_user, messages, closed, turn_users)`, where `messages` is a list of
     `(uuid, text, is_preamble)` in the order they were written and `closed` says
     whether the turn's final assistant row -- the one whose `stop_reason` is
     *not* `tool_use` -- is on disk yet.
@@ -127,6 +127,14 @@ def read_turn(path):
     closing row at all, and those messages are still worth delivering.
     """
     last_user, msgs, closed = '', [], False
+    # **A turn can be prompted by more than one message, through more than one
+    # door.** The opening message starts it; anything he sends while it runs
+    # arrives as an `enqueue` and is answered by the same turn. They do not all
+    # come from the same place -- a turn opened from Discord can be interrupted
+    # from the dashboard and vice versa -- so "did this turn come from Discord?"
+    # cannot be answered from the most recent message alone. Every prompt this
+    # turn is answering is collected here and `main` asks about all of them.
+    turn_users = []
     for row in _tail(path):
         t = row.get('type')
         if t == 'user':
@@ -134,6 +142,8 @@ def read_turn(path):
             body = '\n'.join(b for b in blocks if b.strip())
             if body.strip():
                 last_user, msgs, closed = body, [], False
+                # A `user` row is a new turn, so the previous turn's prompts go.
+                turn_users = [body]
         elif t == 'queue-operation' and row.get('operation') == 'enqueue':
             # **A message that arrives mid-turn never becomes a `user` row.**
             # Claude Code queues it and records it here instead, as
@@ -151,6 +161,11 @@ def read_turn(path):
             body = (row.get('content') or '').strip()
             if body:
                 last_user, msgs, closed = body, [], False
+                # An `enqueue` never *starts* a turn -- it interrupts one that
+                # is already running -- so it adds to this turn's prompts rather
+                # than replacing them. That is what keeps a Discord-opened turn
+                # recognisable after he types something in the dashboard.
+                turn_users.append(body)
         elif t == 'assistant':
             # Joined, not overwritten: if one row carries more than one text
             # block they are all part of the one message, and keeping only the
@@ -169,7 +184,7 @@ def read_turn(path):
             # never coming is how the hook would hang on its own timeout.
             if not pre:
                 closed = True
-    return last_user, msgs, closed
+    return last_user, msgs, closed, turn_users
 
 
 def _correct(chat, tid, ids, text):
@@ -361,7 +376,7 @@ def main():
 
     state, state_path = {}, ''
 
-    last_user, msgs, closed = read_turn(path)
+    last_user, msgs, closed, turn_users = read_turn(path)
     if live:
         # **Never wait in the live pass.** This hook sits between a tool
         # finishing and the model seeing its result, so every second here is a
@@ -379,7 +394,7 @@ def main():
             if closed:
                 break
             time.sleep(0.5)
-            last_user, msgs, closed = read_turn(path)
+            last_user, msgs, closed, turn_users = read_turn(path)
 
     if not last_user or not msgs:
         if not live:
@@ -436,7 +451,7 @@ def main():
 
     ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
 
-    if not conversations.delivered(tid, last_user):
+    if not any(conversations.delivered(tid, u) for u in (turn_users or [last_user])):
         # **Messages already in the thread outrank the registry.** The watcher
         # does not consult `delivered()` -- it streams whatever the pane shows
         # -- so when this check said "typed" and returned, the pane-scraped text
@@ -460,6 +475,19 @@ def main():
         _log('note  %s not in the delivery registry, but %d message(s) are '
              'already in the thread -- correcting rather than abandoning them'
              % (tid, len(ids)))
+
+    # **Tell the watcher when a new prompt arrived mid-turn.** It streams from
+    # the pane, where a submitted prompt and one he is still typing look the
+    # same; the transcript's `enqueue` row is unambiguous. Without this the
+    # watcher keeps growing the message it is already on, and that message sits
+    # *above* his new question in the thread -- an answer shown before the thing
+    # it answers. One message per prompt, not per turn.
+    if STREAM and state_path and len(turn_users) > 1:
+        try:
+            with open(state_path + '.seal', 'w') as fh:
+                fh.write(str(len(turn_users)))
+        except Exception:
+            pass
 
     pending = _claim(conversations, tid, msgs)
     if not pending:
