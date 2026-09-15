@@ -48,7 +48,7 @@ when the turn ends. **Live but approximate, then exact.** That split is what
 makes scraping tolerable: a rendering artefact is visible for a second or two
 and then corrected, rather than being what he keeps.
 """
-import os, sys, re, json, time, subprocess
+import os, sys, re, json, time, fcntl, subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -249,9 +249,52 @@ def main():
     # rewrite another thread's messages.
     state_path = os.path.join(INBOX, 'stream-%s.json' % tid)
 
+    # **One watcher per conversation, enforced rather than assumed.** Two of
+    # these on the same thread would both post and both edit, and the thread
+    # would show every message twice. The lock is held for the life of the
+    # process, so it also releases if this is killed -- which is how the extra
+    # ones appear in the first place, by a restart racing a survivor.
+    lock = open(state_path + '.lock', 'a+')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0                        # someone else is already watching
+
+    # **A stop sentinel belongs to the turn that wrote it.** `Stop` drops
+    # `<state>.stop` to tell the *previous* watcher to let go, and that watcher
+    # removes it on its way out -- unless it was killed first, or crashed, and
+    # then the file outlives it. The next watcher would start, see a stop it was
+    # never sent, exit before its first poll and stream nothing: the whole reply
+    # then arrives in one message at the end of the turn, which looks exactly
+    # like the feature being off. Clearing it here is safe because no other
+    # watcher for this conversation can still be running -- the file is
+    # per-thread and this process is starting one.
+    try:
+        os.remove(state_path + '.stop')
+    except OSError:
+        pass
+
     turn = time.time()
     started = time.time()
+
+    # **A watcher starting mid-turn adopts what is already in flight.** Normally
+    # one starts per turn, on `UserPromptSubmit`, with nothing to adopt. But if
+    # one is killed or crashes while a turn is running, the replacement would
+    # otherwise start from nothing: it posts the accumulated text as a *new*
+    # message, and the thread shows the same reply twice -- once as the stub the
+    # dead watcher left and once in full. Seen on 2026-09-15 at 18:48:51 and
+    # 18:49:22, the second opening with the first's sentence.
+    #
+    # A file older than this is the previous turn's and must not be adopted,
+    # because its messages are finished and already corrected.
     ids = []            # the Discord messages this turn owns, in order
+    try:
+        if time.time() - os.path.getmtime(state_path) < 90:
+            prev = json.load(open(state_path))
+            if str(prev.get('thread') or '') == str(tid):
+                ids = [str(i) for i in (prev.get('ids') or [])]
+    except Exception:
+        ids = []
     done = []           # prose blocks already finished on the pane
     head = 0            # how much of the turn's text earlier messages hold
     shown = ''          # the block being written, as last captured
