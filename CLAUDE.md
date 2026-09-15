@@ -95,6 +95,30 @@ gitignored, and it may hold secret feed URLs. Nothing there is authoritative.
   comment nobody can check.
 - **Verify UI changes in a browser, not in the HTML string.** Served bytes are not rendered
   pixels. Several bugs here were invisible in the markup and obvious in a screenshot.
+- **Nothing here runs one-at-a-time, so never write code that assumes it does.** Before
+  calling a change done, walk it through four scenarios. They are not hypothetical: the
+  streaming feature shipped on 2026-09-15 and broke five times the same morning, once per
+  scenario skipped.
+  - **Several conversations at once.** One live Claude per Discord thread, plus the
+    dashboard's terminal. Anything holding per-turn state needs the thread id **in the
+    filename and checked inside it** — a single shared `state.json` means whichever process
+    wrote last owns it, and the others write into its messages.
+  - **Messages arriving mid-turn, from either door.** A message can land from Discord or the
+    dashboard while a turn is running, and the next turn can begin seconds after the last
+    one ended. So *recently written* never means *still running*: state has to say when it
+    is finished rather than leave it inferred from a clock.
+  - **A process killed at any line.** Watchers, hooks and services get restarted mid-turn.
+    Ask what a half-written file, an orphaned sentinel or a surviving lock does to the next
+    start — and whether the failure is distinguishable from the feature being switched off.
+  - **Two components answering the same question differently.** The watcher streamed without
+    consulting the delivery registry while the `Stop` hook refused to correct because it did;
+    the gap between them left a truncated reply standing as the final answer.
+
+  Two rules of thumb earned the same day. **Overwriting is worse than duplicating** — a
+  duplicate is visible and merely annoying, an overwrite silently destroys a message Discord
+  keeps no history of and still logs success. And **a freshness check fed by the thing it is
+  checking measures nothing**: the watcher rewrote its own state file on every post, so the
+  mtime it was gated on never aged out.
 - Timestamps from APIs are UTC; the vault dates everything local. Convert, never slice.
 - ICS feeds are UTC too, and recurring events are not pre-expanded. `parse_ics` handles
   both; changing it without a fixture is how a semester becomes one event.
