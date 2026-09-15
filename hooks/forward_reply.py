@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Forward a finished reply to the Discord thread that asked for it.
+"""Forward what a turn says to the Discord thread that asked for it.
 
-Wired to Claude Code's **Stop** hook, which fires once when a turn ends and
-hands over `transcript_path` on stdin.
+Wired to two of Claude Code's hooks, both handing over `transcript_path` on
+stdin: **PostToolUse**, which fires after every tool call and forwards what has
+been said so far, and **Stop**, which fires once when the turn ends and forwards
+what is left. `hook_event_name` in the payload says which pass this is.
 
 Why this exists
 ---------------
@@ -38,13 +40,20 @@ Rules that matter
   2 *prevents the turn ending* and feeds stderr back to the model. A Discord
   outage must not trap a session in a loop, so every failure here is swallowed.
   Silence is the correct failure mode -- the terminal still has the answer.
-- **Dedupe on the assistant message uuid.** The hook can fire more than once for
-  a turn; forwarding is not idempotent from Discord's side.
+- **Every message of the turn is forwarded, in order, as it is written** -- the
+  ones written before tool calls as well as the one that ends the turn. A turn
+  that ends *on* a tool use is still delivered rather than lost.
+- **Dedupe on the assistant message uuid**, per message and not per turn, and
+  **claimed before the send** -- see `_claim`. Both hooks fire against the same
+  transcript, parallel tool calls fire the live one concurrently with itself,
+  and forwarding is not idempotent from Discord's side.
+- **The live pass never blocks.** It runs between a tool finishing and the model
+  seeing the result; time spent here is time added to the turn.
 - **Skip `local-` threads.** `new_conversation()` falls back to a local id when
   Discord is unreachable, precisely so a conversation can still start without
   it. There is no thread to post to, and that is not an error.
 """
-import os, sys, json
+import os, sys, json, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -77,20 +86,42 @@ def _text_blocks(row):
 
 
 def read_turn(path):
-    """The last user message, and the last assistant text of this turn.
+    """The last user message, and **every** assistant message of this turn.
 
     A user row carrying only `tool_result` blocks is the harness feeding a tool
     call back in, not a person speaking -- taking it as the prompt would mean
     every turn looked like it came from the terminal.
+
+    Returns `(last_user, messages, closed)`, where `messages` is a list of
+    `(uuid, text, is_preamble)` in the order they were written and `closed` says
+    whether the turn's final assistant row -- the one whose `stop_reason` is
+    *not* `tool_use` -- is on disk yet.
+
+    **Every text block is a message, including the ones that precede tool
+    calls.** "Let me check the reply path." is written before the tools and the
+    answer lands minutes later; both are things that were said, and the thread
+    now shows both, in order. This reverses the 2026-09-14 rule that treated a
+    preamble as unforwardable -- that rule was aimed at a real bug (95
+    characters of throat-clearing forwarded *instead of* the 3057-character
+    answer behind it), and the fix for that bug is ordering and completeness,
+    not suppression. A preamble can no longer displace an answer because it
+    does not compete with it: each is sent once, on its own uuid.
+
+    `closed` is what remains of the race. The hook fires and reads the file in
+    the same second Claude Code is appending the final row, so the answer is
+    sometimes not flushed yet; `main` waits for `closed` before sending. It
+    gives up eventually rather than forever, because a turn that ends *on* a
+    tool use -- interrupted, or stopped by another hook -- never produces a
+    closing row at all, and those messages are still worth delivering.
     """
-    last_user, last_asst, uuid_ = '', '', ''
+    last_user, msgs, closed = '', [], False
     for row in _tail(path):
         t = row.get('type')
         if t == 'user':
             blocks = _text_blocks(row)
             body = '\n'.join(b for b in blocks if b.strip())
             if body.strip():
-                last_user, last_asst, uuid_ = body, '', ''
+                last_user, msgs, closed = body, [], False
         elif t == 'queue-operation' and row.get('operation') == 'enqueue':
             # **A message that arrives mid-turn never becomes a `user` row.**
             # Claude Code queues it and records it here instead, as
@@ -107,12 +138,79 @@ def read_turn(path):
             # re-set what is already correct.
             body = (row.get('content') or '').strip()
             if body:
-                last_user, last_asst, uuid_ = body, '', ''
+                last_user, msgs, closed = body, [], False
         elif t == 'assistant':
-            for b in _text_blocks(row):
-                if b.strip():
-                    last_asst, uuid_ = b, row.get('uuid') or ''
-    return last_user, last_asst, uuid_
+            # Joined, not overwritten: if one row carries more than one text
+            # block they are all part of the one message, and keeping only the
+            # last is the same "not the full message" bug in miniature.
+            body = '\n\n'.join(b for b in _text_blocks(row) if b.strip())
+            # A row that stopped to call a tool is **finished being written**:
+            # the tool could not have run otherwise. That is what makes it safe
+            # to forward mid-turn, and it is the only kind of row the
+            # `PostToolUse` pass will send.
+            pre = (row.get('message') or {}).get('stop_reason') == 'tool_use'
+            if body:
+                msgs.append((row.get('uuid') or '', body, pre))
+            # The closing row is the one that did *not* stop to call a tool. A
+            # row with no text still closes the turn -- a turn can end on a tool
+            # result with nothing said after it, and waiting for words that are
+            # never coming is how the hook would hang on its own timeout.
+            if not pre:
+                closed = True
+    return last_user, msgs, closed
+
+
+def _claim(conversations, tid, msgs):
+    """Take the messages nobody has forwarded yet, and mark them taken.
+
+    **Claim before sending, not after.** Since 2026-09-15 this runs on every
+    tool call as well as at the end of the turn, and *parallel* tool calls fire
+    parallel copies of this hook -- same transcript, same pending message, two
+    processes. Read-then-send-then-record leaves a window between the read and
+    the record where the other copy sees an unclaimed message and posts it
+    again, and Discord has no idea the two are the same. Claiming inside the
+    registry's flock closes it: exactly one process comes out of `mutate` with
+    the uuid in hand.
+
+    The cost is that a claimed message which then fails to send is claimed and
+    unsent, which is why `_unclaim` exists. Losing a message is worse than
+    sending it twice, but both are avoidable, so avoid both.
+
+    Bounded, because this is a dedupe window and not a history -- a turn's worth
+    of messages plus room to spare.
+    """
+    taken = []
+    with conversations.mutate() as d:
+        row = d.setdefault(str(tid), {})
+        seen = [u for u in (row.get('forwarded') or []) if u]
+        # A registry written before per-message dedupe existed.
+        if row.get('last_forwarded') and row['last_forwarded'] not in seen:
+            seen.append(row['last_forwarded'])
+        for uuid_, body, pre in msgs:
+            if uuid_ and uuid_ in seen:
+                continue
+            taken.append((uuid_, body, pre))
+            if uuid_:
+                seen.append(uuid_)
+        if taken:
+            row['forwarded'] = seen[-40:]
+            row['last_forwarded'] = taken[-1][0] or row.get('last_forwarded')
+    return taken
+
+
+def _unclaim(conversations, tid, uuids):
+    """Put unsent messages back, so the next firing retries them."""
+    drop = set(u for u in uuids if u)
+    if not drop:
+        return
+    try:
+        with conversations.mutate() as d:
+            row = d.setdefault(str(tid), {})
+            row['forwarded'] = [u for u in (row.get('forwarded') or []) if u not in drop]
+            if row.get('last_forwarded') in drop:
+                row['last_forwarded'] = (row['forwarded'] or [''])[-1]
+    except Exception:
+        pass
 
 
 def _log(line):
@@ -157,10 +255,44 @@ def main():
 
     from zipper import conversations, chat
 
-    last_user, reply, uuid_ = read_turn(path)
-    if not last_user or not reply.strip():
-        _log('skip  empty turn (user=%d reply=%d)' % (len(last_user), len(reply)))
+    # **Two firings, one job.** `PostToolUse` runs after every tool call and
+    # sends what has been said so far; `Stop` runs once at the end and sends
+    # whatever is left. The live pass is what makes a long turn readable from a
+    # phone -- before it, the whole turn arrived in one burst at the end, so a
+    # ten-minute turn showed nothing for ten minutes and then everything.
+    live = payload.get('hook_event_name') == 'PostToolUse'
+
+    last_user, msgs, closed = read_turn(path)
+    if live:
+        # **Never wait in the live pass.** This hook sits between a tool
+        # finishing and the model seeing its result, so every second here is a
+        # second added to the turn. Nothing needs waiting for either: a row that
+        # stopped to call a tool is on disk by definition, which is exactly the
+        # set the live pass sends.
+        msgs = [m for m in msgs if m[2]]
+    else:
+        # **The closing row is often not on disk yet.** Stop fires and this reads
+        # the transcript inside the same second Claude Code is appending the final
+        # assistant message; on 2026-09-14 it lost that race twice in one
+        # conversation. Waiting costs nothing when the row is already there, and the
+        # hook's own timeout is 20s, so a few seconds is well inside it.
+        for _ in range(12):
+            if closed:
+                break
+            time.sleep(0.5)
+            last_user, msgs, closed = read_turn(path)
+
+    if not last_user or not msgs:
+        if not live:
+            _log('skip  empty turn (user=%d msgs=%d closed=%s)'
+                 % (len(last_user), len(msgs), closed))
         return
+    if not closed and not live:
+        # The turn ended on a tool use -- interrupted, or stopped by another
+        # hook -- so there is no closing row to wait for. What was said before
+        # the tools was still said, and it is the only thing he will ever get
+        # for this turn. Send it rather than letting the turn vanish.
+        _log('note  turn never closed; forwarding %d message(s) anyway' % len(msgs))
 
     # Which conversation is this? The env var is set for every per-thread
     # instance; the registry lookup by session id covers a conversation that was
@@ -184,27 +316,45 @@ def main():
              % (tid, last_user[:60]))
         return
 
-    row = conversations.load().get(str(tid)) or {}
-    if uuid_ and row.get('last_forwarded') == uuid_:
-        _log('skip  %s already forwarded %s' % (tid, uuid_))
+    pending = _claim(conversations, tid, msgs)
+    if not pending:
+        _log('skip  %s nothing new (%d message(s) already forwarded)' % (tid, len(msgs)))
         return
 
-    try:
-        chat.discord_send(reply, thread_id=tid)
-    except Exception as e:
-        # Never block the turn on Discord -- but never fail invisibly either,
-        # and never leave the thread showing a typing indicator for an answer
-        # that is not coming. That combination is what made him wait in Discord
-        # long after the reply had been written to a terminal he wasn't reading.
-        _log('FAIL  %s send failed after %d chars: %s: %s'
-             % (tid, len(reply), type(e).__name__, e))
+    for i, (uuid_, body, _pre) in enumerate(pending):
         try:
-            chat.discord_typing(False, tid)
+            chat.discord_send(body, thread_id=tid)
+        except Exception as e:
+            # Never block the turn on Discord -- but never fail invisibly
+            # either, and never leave the thread showing a typing indicator for
+            # an answer that is not coming. That combination is what made him
+            # wait in Discord long after the reply had been written to a
+            # terminal he wasn't reading.
+            #
+            # Stop at the first failure rather than pressing on: the rest would
+            # arrive out of order behind a gap. Everything not sent goes back on
+            # the queue, so the next firing -- the next tool call, or `Stop` --
+            # picks up exactly where this left off.
+            _log('FAIL  %s send failed after %d chars: %s: %s'
+                 % (tid, len(body), type(e).__name__, e))
+            _unclaim(conversations, tid, [u for u, _b, _p in pending[i:]])
+            try:
+                chat.discord_typing(False, tid)
+            except Exception:
+                pass
+            return
+        _log('sent  %s %d chars uuid=%s%s'
+             % (tid, len(body), uuid_, '  (live)' if _pre else ''))
+
+    if live:
+        # `discord_send` clears the typing indicator, because from its point of
+        # view the turn is over. Mid-turn it is not: more is coming, and a
+        # thread that stops showing Zipper as typing after a preamble reads as
+        # an answer that ended there. Put it back.
+        try:
+            chat.discord_typing(True, tid)
         except Exception:
             pass
-        return
-    _log('sent  %s %d chars uuid=%s' % (tid, len(reply), uuid_))
-    conversations.touch(tid, last_forwarded=uuid_)
 
 
 if __name__ == '__main__':

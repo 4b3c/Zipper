@@ -11,6 +11,27 @@ call site, stated in the present tense, because someone editing that line needs 
 
 ---
 
+## 2026-09-15 — last-block-only forwarding
+
+For a day `hooks/forward_reply.py` posted exactly one message per turn: the assistant text
+block whose row did not stop to call a tool. Earlier blocks were classed as preamble and
+deliberately dropped, so the Discord thread read as clean question-and-answer while the
+working narration stayed in the terminal.
+
+That rule was introduced on 2026-09-14 to fix a real ordering bug — a 95-character "let me
+check" forwarded *instead of* the 3057-character answer behind it — and it fixed it by
+suppression, which was the wrong axis. The cost: a phone showed nothing while a long turn
+ran, and nothing at all for a turn that ended on a tool call, since no closing row was ever
+written. A turn could be worked and still deliver silence.
+
+Replaced by forwarding every block in order, deduped per message uuid. A preamble cannot
+displace an answer when the two are not competing for one slot.
+
+Forwarding every block, but still only on `Stop`, lasted about ten minutes in use: the whole
+turn arrived in one burst at the end, which is the same silence as before with a longer
+message at the end of it. The hook now also runs on `PostToolUse`, so narration reaches the
+thread while the turn is still working.
+
 ## 2026-09-07 — the removal archaeology moved here
 
 The comments this file opens with were, until today, in `zipper/web/conv.py`,

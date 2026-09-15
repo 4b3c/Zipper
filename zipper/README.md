@@ -364,9 +364,12 @@ to the channel.
 
 ### Replies are forwarded, not sent
 
-`hooks/forward_reply.py` runs on Claude Code's **`Stop`** hook — once per turn, with the
-transcript path. It takes the last assistant text block and posts it to this conversation's
-thread, but **only if that turn came from Discord**: the bot records what it delivered
+`hooks/forward_reply.py` runs on **two** hooks, doing one job. **`PostToolUse`** fires after
+every tool call and forwards whatever has been said since the last one; **`Stop`** fires once
+at the end of the turn and forwards what is left — normally just the closing answer. So the
+thread fills in as the turn happens rather than arriving in a burst at the end. Both passes
+post to this conversation's thread in the order the messages were written, and **only if the
+turn came from Discord**: the bot records what it delivered
 (`conversations.note_delivery`) and the hook compares the transcript's last user message
 against that record. Typed at the keyboard, and nothing is sent — the answer is already on
 screen.
@@ -384,14 +387,36 @@ Three rules the hook cannot break:
 - **It always exits 0.** Exit code 2 on a `Stop` hook *prevents the turn ending* and feeds
   stderr back to the model, so a Discord outage would trap a session in a loop. Every failure
   is swallowed; the terminal still has the answer.
-- **It dedupes on the assistant message uuid**, because the hook can fire more than once for
-  a turn and posting is not idempotent from Discord's side.
+- **It dedupes on the assistant message uuid** — per message, in `conversations.forwarded` —
+  because the hook can fire more than once for a turn and posting is not idempotent from
+  Discord's side.
 - **It skips `local-` thread ids**, the fallback `new_conversation()` uses when Discord is
   unreachable. There is no thread to post to, and that is not an error.
 
-Interstitial narration stays in the terminal for free: those are earlier text blocks in the
-turn, and only the last one is forwarded. The thread reads as clean question-and-answer while
-the terminal keeps the working detail.
+**Interstitial narration is forwarded too**, as its own message when it is written, so the
+thread shows the same sequence the terminal does, at roughly the same time. Until 2026-09-15
+only the closing block went: the thread read as clean question-and-answer, at the cost of a
+phone showing nothing at all while a long turn worked, and showing nothing *ever* for a turn
+that ended on a tool call — interrupted, or stopped by another hook. Completeness won over
+tidiness; a message that was written is a message that gets delivered.
+
+The ordering bug that motivated the old rule is handled by sending rather than choosing. A
+preamble can no longer arrive *instead of* an answer, because the two do not compete for one
+slot — each is sent once, keyed on its own uuid.
+
+Three things the two passes have to get right:
+
+- **The live pass never waits and never blocks.** It sits between a tool finishing and the
+  model seeing the result, so its cost is added to the turn. It forwards only rows whose
+  `stop_reason` is `tool_use`, which are on disk by definition — the thing the `Stop` pass
+  waits up to 6s for (the closing row being flushed) cannot apply to them.
+- **A message is claimed inside the registry's flock, before it is sent.** Parallel tool
+  calls fire parallel copies of the hook against the same transcript; recording the send
+  afterwards leaves a window where both see the same unclaimed message and post it twice.
+  A send that then fails is put back by `_unclaim`, so the next firing retries it.
+- **The live pass re-asserts the typing indicator**, which `discord_send` clears on the way
+  out. Mid-turn that clear is a lie: more is coming, and a thread that stops showing Zipper
+  as typing reads as an answer that ended at the preamble.
 
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
