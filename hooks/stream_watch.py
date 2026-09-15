@@ -317,8 +317,15 @@ def main():
     # So the turn says when it is over: `closed` is written by the watcher on
     # its way out and by the `Stop` pass after the correction. An unclosed file
     # is a watcher that died mid-turn, which is the only case worth adopting.
-    # The age check stays as a second gate, for a state file whose writer was
-    # killed hard enough to never mark it.
+    #
+    # **The age check is a weak second gate and must not be mistaken for a real
+    # one.** `note` rewrites this file on every post, so an active conversation
+    # refreshes its mtime continuously and it effectively never ages out: on
+    # 2026-09-15 a file first written at 12:06 was still inside the 90-second
+    # window at 12:14, and that turn adopted ids from two turns earlier and
+    # overwrote both of them. `closed` is the only thing that actually separates
+    # one turn from the next. This catches a writer killed before it could mark
+    # anything, and nothing else.
     ids = []            # the Discord messages this turn owns, in order
     try:
         if time.time() - os.path.getmtime(state_path) < 90:
