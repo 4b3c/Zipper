@@ -32,6 +32,26 @@ turn arrived in one burst at the end, which is the same silence as before with a
 message at the end of it. The hook now also runs on `PostToolUse`, so narration reaches the
 thread while the turn is still working.
 
+## 2026-09-15 — `/stream`, the reveal that made delivery slower
+
+A `bot/server.py` endpoint that posted a message and then edited it forward a few words at a
+time, on a one-second tick, so a reply appeared to type itself. It lived about half an hour.
+
+It was built to answer "would streaming look good in Discord", and it answered a different
+question, because **the text was already complete before the first word was posted.** Nothing
+upstream streamed: hooks hand over finished messages. So the effect was a typewriter playing
+back a finished reply — six seconds to deliver something that had been ready at zero. Strictly
+worse latency, no information sooner, and it spent the channel's whole edit budget doing it.
+
+The measurements it produced are the part worth keeping, and they moved to
+`hooks/stream_watch.py`: editing once per 0.3s asks ~3.3 edits/s against a limit of about 5
+per 5s, discord.py absorbs the 429 by sleeping *inside* the bot, and the visible result is a
+stream that freezes for five seconds and lurches — 51 word-by-word edits took 57.9s against a
+requested 15.3s, p90 latency 4.51s. At ~1 edit/s the same text took 15.4s, p90 0.99s.
+
+Replaced by reading the tmux pane, which is the only place the words exist before the turn
+ends.
+
 ## 2026-09-07 — the removal archaeology moved here
 
 The comments this file opens with were, until today, in `zipper/web/conv.py`,

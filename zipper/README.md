@@ -362,6 +362,62 @@ both `zipper discord send` and the reply-forwarding hook reach the right thread 
 session having to know its own id. Unset in the dashboard's own terminal, where a send goes
 to the channel.
 
+### Replies are streamed live, then corrected
+
+**`hooks/stream_watch.py` reads the tmux pane.** It is started by the
+`UserPromptSubmit` hook, one per turn, and four times a second it captures the pane, finds
+the message being written and posts or grows the matching Discord message — so the thread
+fills in *while* the words are being typed, a second or so behind the terminal.
+
+Scraping a screen is an ugly way to get text, and it is the only way. The alternatives were
+measured on 2026-09-15 before this existed: the transcript JSONL is appended **one row per
+completed message** (sampled every 0.25s during a reply: four writes of 1247, 4585, 1537 and
+6647 bytes, each whole, each landing when its message finished), and no hook fires on a
+token — `PostToolUse` is the finest grain Claude Code offers and it fires *between* messages.
+The pane is the only place the words exist before the turn ends.
+
+**One message per turn.** Everything Claude says between one of his messages and the next —
+the paragraphs either side of every tool call — goes into a single Discord message that
+grows. A second message starts only when the first hits Discord's 2000-character cap, and the
+seam is placed on a paragraph break.
+
+That is a simplification, not a style choice. While each block was streamed as its own
+message, the watcher and the correction pass had to agree afterwards about *which* message was
+which, and they did it by comparing text prefixes. It kept failing: a reply opening "Hi." was
+filed under three characters, nothing could match it back, and the whole reply was posted a
+second time (18:24:32 and 18:24:42 on 2026-09-15). One message per turn needs no matching —
+the watcher records the ids it posted, in order, and that is the entire handover.
+
+**Live but approximate, then exact.** The pane is rendered and lossy: markdown styled, text
+wrapped at the pane width, no scrollback in fullscreen TUI mode. So the watcher records its
+message ids in `Inbox/stream.json`, and the `Stop` pass lays the turn's true text from the
+transcript back over them — chunk *i* into id *i*, extra chunks sent after, and **any message
+the true text no longer needs deleted** (`/delete` on the bot). The live split is computed on
+pane text and the real one on source text, so the two disagree about how many messages a long
+turn takes; leaving the leftovers would show a duplicated tail.
+
+The hook stops the watcher **before** correcting — a still-polling watcher would write the
+wrapped pane text back over the fixed version. And while the watcher is live, the
+`PostToolUse` pass sends nothing at all: it claims the messages so they cannot be sent twice
+and leaves the thread to the watcher.
+
+Two things that had to be got right, each of which was wrong first:
+
+- **The `Stop` pass clears the typing indicator at its single exit.** `discord_send` clears it
+  in a `finally`, which covered everything back when sending was the only way a message reached
+  Discord — but a corrected message is a raw `/edit`, and a streamed turn sends nothing at all,
+  so the indicator stayed on after the answer had been read.
+- **Exactly one message wears the status footer** — `✽ Misting… (5m 10s · ↓ 10.2k tokens)`,
+  Claude Code's own spinner line in Discord subtext, word included. It comes off when the turn
+  ends. A frozen stopwatch under a finished paragraph reads as a message that stalled.
+
+Before the first sentence exists the footer goes out **alone**, within a second of his message,
+and then grows into the reply — the gap it covers is model latency, which nothing local can
+shorten; what it can do is stop the wait from looking like silence.
+
+`ZIPPER_STREAM=0` in `/opt/zipper/.env` turns the watcher off; the forwarding below then finds
+no entries and behaves exactly as it did before.
+
 ### Replies are forwarded, not sent
 
 `hooks/forward_reply.py` runs on **two** hooks, doing one job. **`PostToolUse`** fires after

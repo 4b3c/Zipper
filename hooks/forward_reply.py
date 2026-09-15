@@ -53,9 +53,21 @@ Rules that matter
   Discord is unreachable, precisely so a conversation can still start without
   it. There is no thread to post to, and that is not an error.
 """
-import os, sys, json, time
+import os, sys, re, json, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# **Messages this turn already posted live.** `hooks/stream_watch.py` scrapes
+# the tmux pane while Claude is typing and posts what it sees, so by the time
+# this runs a message may already be in the thread -- approximate, wrapped, and
+# possibly truncated. The `Stop` pass overwrites each one with the real text
+# instead of sending it again. `ZIPPER_STREAM=0` disables the watcher; this side
+# then finds no entries and behaves exactly as it did before.
+STREAM = os.environ.get('ZIPPER_STREAM', '1') != '0'
+
+# Set as soon as the pass knows them, so the exit can clear the typing
+# indicator no matter which of the returns below it leaves by.
+_TID, _LIVE = '', True
 
 
 def _tail(path, limit=1_000_000):
@@ -160,6 +172,53 @@ def read_turn(path):
     return last_user, msgs, closed
 
 
+def _correct(chat, tid, ids, text):
+    """Rewrite the turn's live messages with what was actually written.
+
+    The watcher posts what the pane showed -- markdown already rendered, wrapped
+    at the pane width, split wherever it happened to hit the limit. This is the
+    moment the true text is known, so the whole turn is laid back over the
+    messages it already occupies: chunk *i* into id *i*, any extra chunks sent
+    after, and any message the true text no longer needs deleted.
+
+    **Deleting the surplus matters.** The live split is made on pane text and
+    the real split on source text, so the two disagree about how many messages a
+    long turn takes. Leaving the leftovers would show him a duplicated tail.
+    """
+    from utils.text import smart_split
+    chunks = smart_split(text) or ['']
+    for n, chunk in enumerate(chunks):
+        if n < len(ids):
+            chat._bot('/edit', {'message_id': ids[n], 'thread_id': tid,
+                                'content': chunk}, timeout=20)
+        else:
+            chat._bot('/send', {'message': chunk, 'thread_id': tid}, timeout=20)
+    for spare in ids[len(chunks):]:
+        try:
+            chat._bot('/delete', {'message_id': spare, 'thread_id': tid}, timeout=20)
+        except Exception:
+            pass
+    return len(chunks)
+
+
+def _stop_watcher(state_path):
+    """Tell the watcher the turn is over, and wait for it to let go.
+
+    **Order matters.** Corrections come next, and a watcher still polling would
+    see the pane, decide the message had changed, and write the wrapped pane
+    text back over the corrected version -- the last writer wins and it would be
+    the wrong one.
+    """
+    try:
+        open(state_path + '.stop', 'w').close()
+    except Exception:
+        return
+    for _ in range(12):                 # the poll is 0.4s; this is generous
+        if not os.path.exists(state_path + '.stop'):
+            return
+        time.sleep(0.1)
+
+
 def _claim(conversations, tid, msgs):
     """Take the messages nobody has forwarded yet, and mark them taken.
 
@@ -244,6 +303,17 @@ def _log(line):
 
 
 def main():
+    """The `Stop` pass owns turning the typing indicator off.
+
+    **It cannot be left to the send.** `discord_send` clears typing in a
+    `finally`, which covered every exit while sending was the only way a message
+    reached Discord. It no longer is: a streamed message is *corrected* with a
+    raw `/edit`, and a turn whose messages were all streamed sends nothing at
+    all -- so the indicator stayed on after the answer had been delivered and
+    read. Every early return below is also an exit from a finished turn, so the
+    clear belongs in one `finally` around the whole pass rather than on the path
+    that happens to send.
+    """
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -261,6 +331,21 @@ def main():
     # phone -- before it, the whole turn arrived in one burst at the end, so a
     # ten-minute turn showed nothing for ten minutes and then everything.
     live = payload.get('hook_event_name') == 'PostToolUse'
+
+    # What the pane watcher has already put in the thread this turn. On the
+    # `Stop` pass the watcher is told to stop first: corrections and a live
+    # poll would otherwise race, and the poll would win with the wrong text.
+    state, state_path = {}, ''
+    if STREAM:
+        try:
+            from zipper.core import INBOX
+            state_path = os.path.join(INBOX, 'stream.json')
+            if not live:
+                _stop_watcher(state_path)
+            with open(state_path) as fh:
+                state = json.load(fh)
+        except Exception:
+            state = {}
 
     last_user, msgs, closed = read_turn(path)
     if live:
@@ -307,6 +392,8 @@ def main():
     if not tid or tid.startswith('local-'):
         _log('skip  no discord thread (tid=%r)' % tid)
         return
+    global _TID, _LIVE
+    _TID, _LIVE = tid, live
 
     if not conversations.delivered(tid, last_user):
         # Typed at the keyboard; he already saw it. Logged anyway, because
@@ -321,20 +408,41 @@ def main():
         _log('skip  %s nothing new (%d message(s) already forwarded)' % (tid, len(msgs)))
         return
 
+    ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
+
+    if ids and live:
+        # The watcher owns the thread until the turn ends: it is still polling,
+        # and anything written now would be overwritten by its next edit. Claim
+        # the messages so they are not sent twice, and say nothing.
+        _log('held  %s %d message(s) streaming live' % (tid, len(pending)))
+        return
+
+    if ids:
+        # **One turn, one rewrite.** Everything Claude said is laid over the
+        # messages the watcher already posted -- no per-message matching, which
+        # is the thing that kept going wrong while each block was tracked
+        # separately.
+        whole = '\n\n'.join(b for _u, b, _p in msgs if b.strip())
+        try:
+            n = _correct(chat, tid, ids, whole)
+        except Exception as e:
+            _log('FAIL  %s correct failed: %s: %s' % (tid, type(e).__name__, e))
+            _unclaim(conversations, tid, [u for u, _b, _p in pending])
+            return
+        _log('fixed %s %d chars over %d message(s)' % (tid, len(whole), n))
+        return
+
     for i, (uuid_, body, _pre) in enumerate(pending):
         try:
             chat.discord_send(body, thread_id=tid)
         except Exception as e:
             # Never block the turn on Discord -- but never fail invisibly
             # either, and never leave the thread showing a typing indicator for
-            # an answer that is not coming. That combination is what made him
-            # wait in Discord long after the reply had been written to a
-            # terminal he wasn't reading.
+            # an answer that is not coming.
             #
             # Stop at the first failure rather than pressing on: the rest would
             # arrive out of order behind a gap. Everything not sent goes back on
-            # the queue, so the next firing -- the next tool call, or `Stop` --
-            # picks up exactly where this left off.
+            # the queue, so the next firing picks up exactly where this left off.
             _log('FAIL  %s send failed after %d chars: %s: %s'
                  % (tid, len(body), type(e).__name__, e))
             _unclaim(conversations, tid, [u for u, _b, _p in pending[i:]])
@@ -362,4 +470,12 @@ if __name__ == '__main__':
         main()
     except Exception:
         pass                            # see the module docstring: always exit 0
+    # The turn is over; nothing is being typed. See `main`'s docstring for why
+    # this is here and not on the send path.
+    if _TID and not _LIVE:
+        try:
+            from zipper import chat as _chat
+            _chat.discord_typing(False, _TID)
+        except Exception:
+            pass
     sys.exit(0)
