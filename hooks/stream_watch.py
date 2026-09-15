@@ -24,7 +24,20 @@ where they are being printed. So this polls it.
 
 What it does
 ------------
-Started by the `UserPromptSubmit` hook, one per turn. Four times a second it
+Started by the `UserPromptSubmit` hook, one per turn -- **but only for a turn
+that started in Discord.** The session's thread says the conversation *can* be
+reached there, not that this turn came from there: he works in the dashboard
+terminal all day in the same session, and streaming those replies puts his
+terminal conversation on his phone. The hook payload carries the prompt, which
+is checked against what the bot recorded delivering, and a turn he typed is not
+watched at all. That check has to happen here rather than at `Stop`, because by
+then a whole reply has already been sent.
+
+Reading the payload is why this detaches itself rather than being backgrounded
+by the shell: `nohup … &` put `/dev/null` on stdin, which is where the payload
+arrives.
+
+Four times a second it
 captures the pane, finds the message currently being written, and -- no faster
 than about once a second, which is the per-channel edit budget -- posts or grows
 the matching Discord message. It exits when the turn ends.
@@ -245,7 +258,40 @@ def cut(text, limit):
     return limit
 
 
+def _daemonize():
+    """Detach, so the `UserPromptSubmit` hook returns immediately.
+
+    **This used to be the shell's job** -- the hook ran `nohup … &`. That
+    backgrounding is also what put `/dev/null` on stdin, and stdin is where
+    Claude Code hands over the payload carrying the prompt. Without the prompt
+    the watcher could not tell a turn typed at the keyboard from one that came
+    from Discord, so it streamed every turn to the thread. Reading stdin first
+    and detaching here is what makes the origin knowable at all.
+
+    Everything before this point must be fast and must not block: until it
+    returns, the turn has not started.
+    """
+    if os.fork() > 0:
+        os._exit(0)
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    fd = os.open(os.devnull, os.O_RDWR)
+    for n in (0, 1, 2):
+        os.dup2(fd, n)
+
+
 def main():
+    # The `UserPromptSubmit` payload, which carries `prompt`. Read before
+    # anything slow, and never allowed to raise: a hook that dies here would
+    # take the turn with it.
+    payload = {}
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    prompt = (payload.get('prompt') or '').strip()
+
     session = os.environ.get('ZIPPER_TMUX') or ''
     tid = os.environ.get('ZIPPER_DISCORD_THREAD') or ''
     if not tid or tid.startswith('local-'):
@@ -262,6 +308,28 @@ def main():
             pass
     if not session:
         return 0
+
+    # **Only a turn that started in Discord streams to Discord.** The thread on
+    # this session says a conversation *can* be reached there, not that this
+    # turn came from there -- he works in the dashboard terminal all day in the
+    # same session. Checking the turn's own prompt against what the bot recorded
+    # delivering is the only thing that separates them, and it has to happen
+    # here: by the time the `Stop` hook could judge it, a whole reply has
+    # already been streamed to his phone. Deleting it afterwards was tried on
+    # 2026-09-15 and is not a fix -- the message is visible for the length of
+    # the turn, which on a long pass is the entire time he is reading it.
+    #
+    # An empty prompt means the payload did not arrive. Fail *closed*: not
+    # streaming is a feature that looks switched off, while streaming the wrong
+    # way puts his terminal conversation on his phone.
+    from zipper import conversations
+    if not prompt or not conversations.delivered(tid, prompt):
+        return 0
+
+    # Everything above is the hook blocking the turn; everything below is the
+    # watcher. Detach here, before the lock, so the flock belongs to the process
+    # that actually holds it rather than being inherited from one that exited.
+    _daemonize()
 
     from zipper import chat
     from zipper.core import INBOX
