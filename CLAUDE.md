@@ -176,3 +176,12 @@ Environment only — see `.env.example`. `ZIPPER_VAULT` is the one that matters:
 seam between this code and somebody's life. Everything else (GitHub user and orgs, Canvas
 host, tokens) has an empty or generic default, and the code must stay that way. **A default
 that names a real person, school, or host is a bug in this repository.**
+
+**The hooks are wired in `~/.claude/settings.json`, which is in neither repo.** Three entries,
+all pointing at `hooks/`: `Stop` and `PostToolUse` run `forward_reply.py`, `UserPromptSubmit`
+runs `stream_watch.py`. That last one must **not** be backgrounded by the shell — it was
+`nohup … &` until 2026-09-15, and the redirect put `/dev/null` on stdin, which is where Claude
+Code hands over the payload carrying the prompt. Without the prompt the watcher cannot tell a
+turn typed in the dashboard from one that came from Discord, and streams both. The script
+reads stdin and detaches itself instead; the command is a plain `python3 …/stream_watch.py`.
+Since the file is unversioned, a rebuilt box needs these re-added by hand.
