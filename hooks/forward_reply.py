@@ -449,7 +449,16 @@ def main():
         except Exception:
             state = {}
 
+    # **A closed turn's ids are finished messages, and belong to no one now.**
+    # `closed` was added so the *watcher* would post rather than adopt them;
+    # this side went on reading `ids` unconditionally, which is the same
+    # overwrite through the other door -- a later turn's `Stop` laying its reply
+    # over messages from a turn that had already ended. Seen on 2026-09-15 with
+    # a typed turn whose streamed messages failed to delete: the state stayed
+    # closed with live ids in it, and the next turn picked them up.
     ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
+    if state.get('closed'):
+        ids = []
 
     if not any(conversations.delivered(tid, u) for u in (turn_users or [last_user])):
         # **The watcher streams before anyone has checked where the turn came
@@ -479,7 +488,16 @@ def main():
                     chat._bot('/delete', {'message_id': mid, 'thread_id': tid},
                               timeout=20)
                 except Exception as e:
-                    _log('FAIL  %s delete %s: %s' % (tid, mid, type(e).__name__))
+                    # **The reason is in the response body, not the exception.**
+                    # `HTTPError` on its own says only that the bot returned
+                    # 500; the body says which Discord error it was. Logging the
+                    # class alone cost a diagnosis on 2026-09-15.
+                    why = getattr(e, 'read', None)
+                    try:
+                        why = why().decode()[:200] if why else str(e)
+                    except Exception:
+                        why = str(e)
+                    _log('FAIL  %s delete %s: %s' % (tid, mid, why))
             _close_state(state_path, state)
             return
         # Typed at the keyboard; he already saw it. Logged anyway, because

@@ -193,8 +193,17 @@ async def handle_delete(request: web.Request) -> web.Response:
         target = client.get_channel(int(thread_id)) if thread_id else client.get_channel(channel_id)
         if target is None:
             return web.json_response({"error": "channel not found"}, status=404)
-        msg = await target.fetch_message(int(message_id))
-        await msg.delete()
+        # **Deleting something already gone is success, not failure.** Both
+        # callers are cleanup paths -- the correction dropping a surplus
+        # message, a typed turn removing what the watcher posted -- and either
+        # can run twice or race the other. Reporting `10008 Unknown Message` as
+        # a 500 made a finished job look broken in `forward.log` on 2026-09-15
+        # and sent someone hunting a bug that was not there.
+        try:
+            msg = await target.fetch_message(int(message_id))
+            await msg.delete()
+        except discord.NotFound:
+            return web.json_response({"ok": True, "already_gone": True})
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
