@@ -42,7 +42,8 @@ message starts only when the first hits Discord's 2000-character cap.
 
 What it does *not* do is decide the final text. The pane is wrapped, rendered
 and lossy: markdown is styled, code blocks carry box-drawing, long messages
-scroll. So every message this posts is recorded in `Inbox/stream.json`, and the
+scroll. So every message this posts is recorded in `Inbox/stream-<thread>.json`,
+one file per conversation, and the
 `Stop` hook overwrites each one with the authoritative text from the transcript
 when the turn ends. **Live but approximate, then exact.** That split is what
 makes scraping tolerable: a rendering artefact is visible for a second or two
@@ -69,9 +70,18 @@ BULLET = '●'   # the dot Claude Code prints before an assistant message
 # tell prose from furniture -- `● Running 1 shell command · 18s…` looks exactly
 # like the start of a reply. What separates them is the first word: a tool block
 # always opens with one of these verbs and a count or a name.
+#
+# **Match the stem and let the ending vary.** An explicit list of inflections
+# missed the ones nobody thought to type: `Running`, `Reading` and `Writing`
+# were spelled out but `Searching`, `Updating` and `Listing` were not, and
+# `Search\b` does not match `Searching`. The combined summary line Claude Code
+# prints while several tools run -- `Searching for 1 pattern, reading 1 file,
+# running 7 shell commands…` -- therefore read as prose, with the consequences
+# in `done` below. Inflecting the stem here is what keeps that from depending on
+# which tenses were remembered on the day.
 TOOL_HEAD = re.compile(
-    r'^(?:Running|Ran|Read|Reading|Wrote|Writing|Edit|Editing|Updated|Update|'
-    r'Search|Searched|Listed|Fetch|Fetched|Launch|Launched|Bash|Task|Thinking)\b')
+    r'^(?:Ran|Wrote|Runn|Run|Read|Writ|Edit|Updat|Search|List|Fetch|Launch|'
+    r'Creat|Delet|Bash|Task|Think|Explor)(?:e|es|ed|ing|s)?\b')
 
 # Inside a block, the line where the message stopped and the rendering began:
 # tool output (`⎿`), the spinner, the input box, the status bar, the tip.
@@ -317,7 +327,23 @@ def main():
         # also what makes the correction trivial: there is nothing to match.
         if text:
             if shown and not (text.startswith(shown[:30]) or shown.startswith(text[:30])):
-                done.append(shown)       # a new block began; the old one is final
+                # **A block boundary is a guess, and a guess that flaps must not
+                # cost text.** The boundary is decided by comparing the newest
+                # prose on a live, redrawing pane against the last -- so
+                # anything that alternates (furniture `current_message` failed
+                # to recognise, a pane that scrolls a block back into view)
+                # reads as block, other block, first block again, and each
+                # crossing appended a *permanent* copy to `done`. The body grew
+                # without bound, spilled past `LIMIT`, and posted a fresh
+                # message every time it did: on 2026-09-15 one turn became
+                # twenty messages alternating between the same two paragraphs.
+                #
+                # Appending only what is not already held makes the flap cost
+                # nothing. The real fix for any individual case is to recognise
+                # the furniture, but that is a list of things someone thought
+                # of, and this is the floor under it.
+                if shown not in done:
+                    done.append(shown)   # a new block began; the old one is final
             shown = text
         full = '\n\n'.join(done + ([shown] if shown else []))
 
