@@ -452,29 +452,42 @@ def main():
     ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
 
     if not any(conversations.delivered(tid, u) for u in (turn_users or [last_user])):
-        # **Messages already in the thread outrank the registry.** The watcher
-        # does not consult `delivered()` -- it streams whatever the pane shows
-        # -- so when this check said "typed" and returned, the pane-scraped text
-        # it had already posted became the final word: wrapped, rendered, and
-        # ending wherever the capture did. That is the reply he saw cut off
-        # mid-sentence on 2026-09-15. The same early return also left the state
-        # file unclosed, so the next turn adopted those ids and wrote over them
-        # -- which looked like the truncated message fixing itself when he sent
-        # another message, and was really the next answer landing on top of it.
+        # **The watcher streams before anyone has checked where the turn came
+        # from.** It starts on `UserPromptSubmit` for any session that has a
+        # thread at all, and never consults `delivered()` -- so by the time this
+        # runs, a turn he typed at the keyboard may already have pane text
+        # sitting in Discord. Those messages should not be there.
         #
-        # Whatever the registry lost or never recorded, ids on disk are evidence
-        # that this turn is already being streamed to this thread. Correct them.
-        if not ids:
-            # Typed at the keyboard; he already saw it. Logged anyway, because
-            # "decided it was typed" is exactly the wrong call that ate a reply
-            # twice today, and it is indistinguishable from a real one in
-            # hindsight.
-            _log('skip  %s not a delivered message -- treated as typed (%r)'
-                 % (tid, last_user[:60]))
+        # An earlier version of this branch *adopted* them instead, on the
+        # reasoning that ids on disk prove the turn is already being streamed.
+        # That was wrong in the one way that matters: ids prove only that the
+        # watcher ran, which it does for every turn. It made `delivered()` a
+        # no-op and sent every terminal-typed reply to Discord. It was also
+        # papering over a different bug -- a Discord turn interrupted from the
+        # dashboard looked typed, because only the last prompt was checked --
+        # and that is fixed at the source now, in `turn_users`.
+        # **Only on the `Stop` pass.** The watcher is stopped by then (that
+        # happens where the state is loaded, above), so what it posted stays
+        # deleted. Deleting on a live pass would race a watcher still polling:
+        # it would repost on its next poll and this would delete again, once per
+        # tool call, for the length of the turn.
+        if ids and not live:
+            _log('undo  %s typed turn, removing %d streamed message(s) (%r)'
+                 % (tid, len(ids), last_user[:40]))
+            for mid in ids:
+                try:
+                    chat._bot('/delete', {'message_id': mid, 'thread_id': tid},
+                              timeout=20)
+                except Exception as e:
+                    _log('FAIL  %s delete %s: %s' % (tid, mid, type(e).__name__))
+            _close_state(state_path, state)
             return
-        _log('note  %s not in the delivery registry, but %d message(s) are '
-             'already in the thread -- correcting rather than abandoning them'
-             % (tid, len(ids)))
+        # Typed at the keyboard; he already saw it. Logged anyway, because
+        # "decided it was typed" is exactly the wrong call that ate a reply
+        # twice today, and it is indistinguishable from a real one in hindsight.
+        _log('skip  %s not a delivered message -- treated as typed (%r)'
+             % (tid, last_user[:60]))
+        return
 
     # **Tell the watcher when a new prompt arrived mid-turn.** It streams from
     # the pane, where a submitted prompt and one he is still typing look the
