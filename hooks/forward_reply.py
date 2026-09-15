@@ -434,20 +434,41 @@ def main():
         except Exception:
             state = {}
 
+    ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
+
     if not conversations.delivered(tid, last_user):
-        # Typed at the keyboard; he already saw it. Logged anyway, because
-        # "decided it was typed" is exactly the wrong call that ate a reply
-        # twice today, and it is indistinguishable from a real one in hindsight.
-        _log('skip  %s not a delivered message -- treated as typed (%r)'
-             % (tid, last_user[:60]))
-        return
+        # **Messages already in the thread outrank the registry.** The watcher
+        # does not consult `delivered()` -- it streams whatever the pane shows
+        # -- so when this check said "typed" and returned, the pane-scraped text
+        # it had already posted became the final word: wrapped, rendered, and
+        # ending wherever the capture did. That is the reply he saw cut off
+        # mid-sentence on 2026-09-15. The same early return also left the state
+        # file unclosed, so the next turn adopted those ids and wrote over them
+        # -- which looked like the truncated message fixing itself when he sent
+        # another message, and was really the next answer landing on top of it.
+        #
+        # Whatever the registry lost or never recorded, ids on disk are evidence
+        # that this turn is already being streamed to this thread. Correct them.
+        if not ids:
+            # Typed at the keyboard; he already saw it. Logged anyway, because
+            # "decided it was typed" is exactly the wrong call that ate a reply
+            # twice today, and it is indistinguishable from a real one in
+            # hindsight.
+            _log('skip  %s not a delivered message -- treated as typed (%r)'
+                 % (tid, last_user[:60]))
+            return
+        _log('note  %s not in the delivery registry, but %d message(s) are '
+             'already in the thread -- correcting rather than abandoning them'
+             % (tid, len(ids)))
 
     pending = _claim(conversations, tid, msgs)
     if not pending:
         _log('skip  %s nothing new (%d message(s) already forwarded)' % (tid, len(msgs)))
+        if not live:
+            # The turn is over even though there was nothing new to send, and an
+            # unclosed state file is one the next turn will write into.
+            _close_state(state_path, state)
         return
-
-    ids = [str(i) for i in (state.get('ids') or [])] if STREAM else []
 
     if ids and live:
         # The watcher owns the thread until the turn ends: it is still polling,
@@ -455,6 +476,14 @@ def main():
         # the messages so they are not sent twice, and say nothing.
         _log('held  %s %d message(s) streaming live' % (tid, len(pending)))
         return
+
+    # **Everything below is a turn that has ended, so close the state here
+    # rather than on each way out.** `ids` is already in hand, so marking the
+    # file costs nothing and no later branch has to remember: a correction, a
+    # failed correction and a plain send all leave messages that must not be
+    # written into again by the next turn. Closing per-exit is how the `nothing
+    # new` branch above got missed in the first place.
+    _close_state(state_path, state)
 
     if ids:
         # **One turn, one rewrite.** Everything Claude said is laid over the
@@ -469,7 +498,6 @@ def main():
             _unclaim(conversations, tid, [u for u, _b, _p in pending])
             return
         _log('fixed %s %d chars over %d message(s)' % (tid, len(whole), n))
-        _close_state(state_path, state)
         return
 
     for i, (uuid_, body, _pre) in enumerate(pending):
