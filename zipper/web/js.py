@@ -148,8 +148,26 @@ async function goDay(n){
   window.__day = n===0 ? window.__today : shiftDay(window.__day,n);
   drawDay(); await panels();
 }
+// The week card walks in weeks, independently of the day arrows: reading
+// Thursday's schedule and reading next week's assignment load are different
+// questions, and tying them would move one every time he answered the other.
+function drawWeek(){
+  const lbl=document.getElementById('weeklabel'); if(!lbl) return;
+  const off=Math.round((new Date(window.__week+'T12:00:00')
+                       -new Date(window.__thisweek+'T12:00:00'))/604800000);
+  const m=new Date(window.__week+'T12:00:00'), s=new Date(m); s.setDate(s.getDate()+6);
+  const o={day:'numeric',month:'short'};
+  lbl.textContent = (off===0?'This week':off===1?'Next week':off===-1?'Last week':'Week of')
+    +' · '+m.toLocaleDateString(undefined,o)+' – '+s.toLocaleDateString(undefined,o);
+  const b=document.getElementById('weekthis'); if(b) b.hidden = off===0;
+}
+async function goWeek(n){
+  window.__week = n===0 ? window.__thisweek : shiftDay(window.__week,7*n);
+  drawWeek(); await panels();
+}
 async function panels(){
-  const p=await fetch('/api/panels?day='+encodeURIComponent(window.__day||''))
+  const p=await fetch('/api/panels?week='+encodeURIComponent(window.__week||'')
+                     +'&day='+encodeURIComponent(window.__day||''))
     .then(r=>r.json()).catch(()=>null); if(!p) return;
   for(const k in p.html){const el=document.getElementById(k); if(el) el.innerHTML=p.html[k];}
   window.__epochs=p.epochs; drawFresh();
@@ -186,6 +204,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(pv) pv.onclick=()=>goDay(-1);
   if(nx) nx.onclick=()=>goDay(1);
   if(td) td.onclick=()=>goDay(0);
+  const wp=document.getElementById('weekprev'), wn=document.getElementById('weeknext'),
+        wt=document.getElementById('weekthis');
+  if(wp) wp.onclick=()=>goWeek(-1);
+  if(wn) wn.onclick=()=>goWeek(1);
+  if(wt) wt.onclick=()=>goWeek(0);
+  drawWeek();
   document.addEventListener('keydown',ev=>{
     if(ev.metaKey||ev.ctrlKey||ev.altKey) return;
     const tag=(ev.target.tagName||'').toLowerCase();

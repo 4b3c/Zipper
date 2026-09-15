@@ -88,13 +88,16 @@ class Handler(BaseHTTPRequestHandler):
             day = (q.get('day') or [''])[0]
             if not re.match(r'^\d{4}-\d{2}-\d{2}$', day or ''):
                 day = None
+            week = (q.get('week') or [''])[0]
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', week or ''):
+                week = None
             ep = {}
             for k, v in freshness().items():
                 try:
                     ep[k] = datetime.datetime.fromisoformat(v).timestamp() if v else None
                 except Exception:
                     ep[k] = None
-            self._send(200, json.dumps({'epochs': ep, 'html': panels_html(day),
+            self._send(200, json.dumps({'epochs': ep, 'html': panels_html(day, week),
                                         'queue_ready': bool(_queue_prompt()),
                                         'session': bool(current_conversation()),
                                         'termup': False,

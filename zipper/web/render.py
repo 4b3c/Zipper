@@ -11,7 +11,7 @@ from .base import core, conversations, metrics, usage
 from .css import CSS
 from .js import JS, TICKJS
 from .conv import _queue_prompt, current_conversation
-from .data import flags, ranked, today_split
+from .data import flags, monday_of, ranked, today_split, week_canvas
 from .feed import feed_rows, note_rows
 
 
@@ -352,11 +352,96 @@ def _side(items, empty, detail=False):
     return '<ul>' + ''.join(_item_li(i, detail=detail) for i in items) + '</ul>'
 
 
-def panels_html(day=None):
+_DOW = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+
+def _week_li(it):
+    """One assignment inside a week column.
+
+    Narrower than `_item_li` on purpose: a column is a seventh of the card, so
+    the priority number and the due date are dropped -- the column *is* the due
+    date, and ranking is what the "What to work on" card is for. Time, course
+    and points survive, because those are what separate two things due the same
+    day. The classes are the same ones `_item_li` uses, so the delegated tick
+    and expand handlers pick these rows up with no new JavaScript.
+    """
+    title = esc(re.sub(r'\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]', r'\1', it['title']))
+    if it['url']:
+        title = ('<a class="plain" href="%s" target="_blank" rel="noopener">%s</a>'
+                 % (esc(it['url']), title))
+    meta = []
+    if it['at'] and it['at'] != '23:59':
+        # 23:59 is Canvas's default and says nothing; a real hour does.
+        meta.append('<span class="wat">%s</span>' % esc(it['at']))
+    if it['tag']:
+        meta.append(esc(it['tag']))
+    if it.get('points'):
+        meta.append('%s pts' % esc(str(it['points'])))
+    if it.get('elsewhere'):
+        meta.append('<span class="elsewhere">on %s</span>' % esc(it['elsewhere']))
+    det = _detail_html(it)
+    if det:
+        meta.append('<span class="more">details</span>')
+    mark = '&#10003;' if it['done'] else ''
+    cls = ' crossed' if it['done'] else (' wod' if it['overdue'] else '')
+    return ('<li class="row wrow%s%s"><button class="tick" data-key="%s" '
+            'aria-label="cross off"%s>%s</button>'
+            '<span class="rowbody"><span class="rowtitle">%s</span>'
+            '<span class="rowmeta">%s</span>%s</span></li>'
+            % (cls, ' has-det' if det else '', esc(it['key']),
+               ' disabled title="submitted in Canvas"' if it['submitted'] else '',
+               mark, title, ' &middot; '.join(meta), det))
+
+
+def _week_html(monday=None):
+    """The week card: seven Monday-Sunday columns of Canvas work.
+
+    A week is the unit an assignment load is actually felt in -- "what is due
+    Thursday" and "is this week heavy" are both questions the ranked list
+    cannot answer, because ranking throws the shape away. Nothing here is a new
+    source: it is `canvas_items()` bucketed by due date.
+    """
+    w = week_canvas(monday)
+    mon = datetime.date(*map(int, w['monday'].split('-')))
+    today = core.TODAY.isoformat()
+    cols = []
+    for i in range(7):
+        d = (mon + datetime.timedelta(days=i)).isoformat()
+        items = w['days'][d]
+        open_n = sum(1 for it in items if not it['done'])
+        head = ('<div class="whead"><b>%s</b> <span class="wdate">%s</span>%s</div>'
+                % (_DOW[i], esc(d[8:10]),
+                   '<span class="wn">%d</span>' % open_n if open_n else ''))
+        body = (''.join(_week_li(it) for it in items) if items else '')
+        cols.append('<div class="wcol%s%s">%s%s</div>'
+                    % (' wtoday' if d == today else '',
+                       ' wpast' if d < today else '', head,
+                       '<ul>%s</ul>' % body if body
+                       else '<p class="sub wempty">&mdash;</p>'))
+    allit = [it for day in w['days'].values() for it in day]
+    open_items = [it for it in allit if not it['done']]
+    pts = sum(it['points'] or 0 for it in open_items)
+    summary = ('%d due this week &middot; %d still open%s'
+               % (len(allit), len(open_items),
+                  ' &middot; %g pts outstanding' % pts if pts else ''))
+    carried = ''
+    if w['carried']:
+        # Only ever unfinished work, and only from before this Monday. It sits
+        # above the grid rather than inside Monday's column: it is not due then,
+        # it is late, and putting it in a column would say the wrong thing.
+        carried = ('<div class="wcarry"><h2>Carried in &middot; %d</h2><ul>%s</ul></div>'
+                   % (len(w['carried']),
+                      ''.join(_week_li(it) for it in w['carried'])))
+    return ('%s<div class="wgrid">%s</div><p class="sub wsum">%s</p>'
+            % (carried, ''.join(cols), summary))
+
+
+def panels_html(day=None, week=None):
     _, allitems = ranked()
     cv = [i for i in allitems if i['source'] == 'canvas']
     tk = [i for i in allitems if i['source'] == 'task']
     return {'p-today': _today_html(day),
+            'p-week': _week_html(week),
             'p-work-canvas': _side(cv[:8], 'Nothing outstanding in Canvas.'),
             'p-work-tasks': _side(tk[:8], 'No open tasks.')}
 
@@ -493,6 +578,10 @@ def render():
 <span class="daynav"><button id="daytoday" hidden>today</button><button id="dayprev" aria-label="previous day">&lsaquo;</button><button id="daynext" aria-label="next day">&rsaquo;</button></span></h2>
 <div class="today" id="p-today">%s</div></div>
 
+<div class="card"><h2 class="hdr"><span id="weeklabel">This week</span>
+<span class="daynav"><button id="weekthis" hidden>this week</button><button id="weekprev" aria-label="previous week">&lsaquo;</button><button id="weeknext" aria-label="next week">&rsaquo;</button></span></h2>
+<div id="p-week">%s</div></div>
+
 <div class="card"><h2>What to work on</h2>
 <div class="today">
   <div><h2>Canvas <a class="more" href="/canvas" target="_blank" rel="noopener">see all</a></h2><div id="p-work-canvas">%s</div></div>
@@ -524,10 +613,11 @@ def render():
 <div class="sub vnavbar">%s</div></footer>
 </div><script>window.__epochs=%s;window.__feed=%s;window.__session=%s;window.__mounted=false;window.__showdone=false;window.__queueready=%s;
 window.__today=%s;window.__day=window.__today;window.__canvashost=%s;
+window.__thisweek=%s;window.__week=window.__thisweek;
 window.__notes=%s;
 %s%s</script></body></html>""" % (
         CSS, core.TODAY.strftime('%A %d %B %Y'),
-        p['p-today'], p['p-work-canvas'], p['p-work-tasks'],
+        p['p-today'], p['p-week'], p['p-work-canvas'], p['p-work-tasks'],
         'running \u2014 not attached here' if live else 'not started',
         '' if live else ' hidden',
         _startbtns(live, bool(_queue_prompt())),
@@ -540,4 +630,5 @@ window.__notes=%s;
                          % (pg['key'], esc(pg['title'])) for pg in _vb.get('pages', [])),
         json.dumps(epochs), json.dumps(rows), json.dumps(bool(current_conversation())),
         json.dumps(bool(_queue_prompt())), json.dumps(core.TODAY.isoformat()),
-        json.dumps(canvas.CANVAS_HOST), json.dumps(nrows), JS, TICKJS)
+        json.dumps(canvas.CANVAS_HOST), json.dumps(monday_of().isoformat()),
+        json.dumps(nrows), JS, TICKJS)

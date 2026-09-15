@@ -97,6 +97,37 @@ li.has-det.open .rowdet{display:block}
 .elsewhere{opacity:.75;font-style:italic}
 .src{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border-radius:3px;padding:0 4px;border:1px solid var(--line);color:var(--dim)}
 .src.canvas{border-color:var(--accent);color:var(--accent)}
+/* the week card: seven equal columns, one per day. Columns are equal width and
+   not equal height -- a heavy Tuesday is supposed to look heavy. */
+.wgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:0;align-items:stretch}
+.wcol{padding:0 8px;border-left:1px solid var(--line);min-width:0}
+.wcol:first-child{border-left:0;padding-left:0}
+.wcol.wpast{opacity:.55}
+.wcol.wtoday{background:rgba(140,29,64,.05);border-radius:6px}
+@media(prefers-color-scheme:dark){.wcol.wtoday{background:rgba(224,112,143,.08)}}
+.whead{display:flex;align-items:baseline;gap:5px;padding:0 0 6px;margin-bottom:4px;
+       border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;
+       letter-spacing:.06em;color:var(--dim)}
+.wcol.wtoday .whead{color:var(--accent)}
+.whead b{font-weight:600}
+.wdate{font-variant-numeric:tabular-nums}
+.wn{margin-left:auto;font-size:10px;border:1px solid var(--line);border-radius:99px;
+    padding:0 5px;color:var(--dim)}
+.wcol.wtoday .wn{border-color:var(--accent);color:var(--accent)}
+.wempty{padding:2px 0;opacity:.5}
+li.wrow{padding:6px 0;font-size:12.5px;gap:6px;border-bottom:1px solid var(--line)}
+li.wrow:last-child{border-bottom:0}
+li.wrow .rowtitle{line-height:1.3;overflow-wrap:anywhere}
+li.wrow .rowmeta{font-size:10.5px}
+li.wrow.wod{border-left:2px solid var(--warn);padding-left:5px}
+li.wrow .tick{flex:none}
+li.wrow .tick[disabled]{opacity:.4;cursor:default}
+.wcarry{border-left:2px solid var(--warn);padding:0 0 6px 10px;margin:0 0 12px}
+.wcarry h2{color:var(--warn)!important;margin-bottom:2px}
+.wsum{margin:10px 0 0;text-align:right;font-variant-numeric:tabular-nums}
+@media(max-width:900px){.wgrid{grid-template-columns:1fr}
+  .wcol{border-left:0;border-top:1px solid var(--line);padding:8px 0 0}
+  .wcol:first-child{border-top:0}.wcol.wpast{display:none}}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media(max-width:800px){.cols{grid-template-columns:1fr}}
 .flag{color:var(--warn);font-size:13px;padding:3px 0}

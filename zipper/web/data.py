@@ -109,6 +109,56 @@ def canvas_outstanding():
             if not canvas.is_done(r) and r['due'][:10] >= core.TODAY.isoformat()]
 
 
+def monday_of(day=None):
+    """The Monday of the week containing `day`. Weeks here are Monday-Sunday."""
+    d = _d(day) if isinstance(day, str) else (day or core.TODAY)
+    d = d or core.TODAY
+    return d - datetime.timedelta(days=d.weekday())
+
+
+def week_canvas(monday=None):
+    """Every Canvas item due in one Monday-Sunday week, bucketed by day.
+
+    Everything Canvas lists is shown, submitted and crossed-off included --
+    those render struck through rather than disappearing. A week that hid what
+    was already handed in would read as a lighter week than it was, and the
+    vanishing row is exactly the ambiguity the cross-off mechanism exists to
+    remove. `carried` is separate: unfinished work due *before* this Monday,
+    which is still outstanding and belongs in the week he is looking at.
+    """
+    mon = monday if isinstance(monday, datetime.date) else monday_of(monday)
+    sun = mon + datetime.timedelta(days=6)
+    cls, _ = class_notes()
+
+    def row(r):
+        it = {'source': 'canvas', 'title': r['title'], 'due': r['due'][:10],
+              'at': r['due'][11:16], 'tag': r['course'], 'url': r['url'],
+              'points': r.get('points'), 'next': False,
+              'elsewhere': r.get('elsewhere', ''),
+              'desc': r.get('description', ''), 'kind': r.get('type', ''),
+              'links': [cls[r['course']]] if r['course'] in cls else [],
+              'course': '', 'submitted': bool(r['submitted']),
+              'done': bool(canvas.is_done(r))}
+        it['score'] = priority(it)
+        it['overdue'] = bool(it['due'] < core.TODAY.isoformat() and not it['done'])
+        it['key'] = override_key(it)
+        return it
+
+    days = {(mon + datetime.timedelta(days=i)).isoformat(): [] for i in range(7)}
+    carried = []
+    for r in canvas_items():
+        d = r['due'][:10]
+        if d in days:
+            days[d].append(row(r))
+        elif d < mon.isoformat() and not canvas.is_done(r):
+            carried.append(row(r))
+    for v in days.values():
+        v.sort(key=lambda i: (i['done'], i['at'] or '99:99', i['title']))
+    carried.sort(key=lambda i: (i['due'], i['title']))
+    return {'monday': mon.isoformat(), 'sunday': sun.isoformat(),
+            'days': days, 'carried': carried}
+
+
 def task_text(raw):
     """Exactly the engine's normalisation, so the dashboard, ledger and queue all
     key a task the same way. A naive character class stops inside [[Note]] and
