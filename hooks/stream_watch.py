@@ -244,7 +244,10 @@ def main():
 
     from zipper import chat
     from zipper.core import INBOX
-    state_path = os.path.join(INBOX, 'stream.json')
+    # One file per conversation: several of these run at once, one per live
+    # Discord thread, and a shared file meant each turn's correction could
+    # rewrite another thread's messages.
+    state_path = os.path.join(INBOX, 'stream-%s.json' % tid)
 
     turn = time.time()
     started = time.time()

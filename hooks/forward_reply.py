@@ -332,20 +332,7 @@ def main():
     # ten-minute turn showed nothing for ten minutes and then everything.
     live = payload.get('hook_event_name') == 'PostToolUse'
 
-    # What the pane watcher has already put in the thread this turn. On the
-    # `Stop` pass the watcher is told to stop first: corrections and a live
-    # poll would otherwise race, and the poll would win with the wrong text.
-    state, state_path = {}, ''
-    if STREAM:
-        try:
-            from zipper.core import INBOX
-            state_path = os.path.join(INBOX, 'stream.json')
-            if not live:
-                _stop_watcher(state_path)
-            with open(state_path) as fh:
-                state = json.load(fh)
-        except Exception:
-            state = {}
+    state = {}
 
     last_user, msgs, closed = read_turn(path)
     if live:
@@ -394,6 +381,31 @@ def main():
         return
     global _TID, _LIVE
     _TID, _LIVE = tid, live
+
+    # **The watcher's state is per conversation, and has to be.** There is more
+    # than one live Claude at a time -- one per Discord thread -- so there is
+    # more than one watcher, and a single `stream.json` meant whichever wrote
+    # last owned it. Each conversation's `Stop` pass then laid its own text over
+    # whatever ids it found, including messages belonging to the other thread,
+    # and deleted the rest as surplus. Seen happening on 2026-09-15 with two
+    # conversations open.
+    #
+    # The thread id is in the filename *and* checked inside, because a stale
+    # file from a crashed watcher is worth ignoring rather than obeying.
+    if STREAM:
+        try:
+            from zipper.core import INBOX
+            state_path = os.path.join(INBOX, 'stream-%s.json' % tid)
+            if not live:
+                _stop_watcher(state_path)
+            with open(state_path) as fh:
+                state = json.load(fh)
+            if str(state.get('thread') or '') != str(tid):
+                _log('skip  %s state file belongs to %r -- ignored'
+                     % (tid, state.get('thread')))
+                state = {}
+        except Exception:
+            state = {}
 
     if not conversations.delivered(tid, last_user):
         # Typed at the keyboard; he already saw it. Logged anyway, because
