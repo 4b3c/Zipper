@@ -65,10 +65,22 @@ heartbeat is never suppressed.
 ## The Canvas to-do panel
 
 `ui/canvas-todo.js` replaces the dashboard sidebar's *To Do* and *Coming Up*
-with the list Zipper already computes — `data.ranked()`, the same call behind
-the dashboard's "What to work on" card, served at `GET /api/worklist`. Ticking a
-row POSTs to `/api/done`, the same endpoint the dashboard's checkbox uses, so a
-cross-off lands in the vault and not in a second store.
+with **this Monday–Sunday week's Canvas work**, served at `GET /api/worklist`.
+Ticking a row POSTs to `/api/done`, the same endpoint the dashboard's checkbox
+uses, so a cross-off lands in the vault and not in a second store.
+
+It is `data.week_worklist()`, built on the `week_canvas()` behind the
+dashboard's week card — **not** `ranked()`, which is the dashboard's question:
+everything pressing, coursework and `Tasks/` lines together, cut at ten. Inside
+Canvas the surroundings have already answered half the question. He is looking
+at a course tool, about this week, and a task about emailing three coffee shops
+does not belong in a sidebar he opened to see assignments. Work due *before*
+Monday and still unfinished leads the list, marked `still open`: it is this
+week's problem whatever its own due date says.
+
+Submitted and crossed-off rows stay, struck through and sunk to the bottom,
+which is the same rule the rest of the vault follows — a row that vanished
+would be indistinguishable from the cross-off having failed.
 
 That is the whole constraint. Canvas' native list is bad in a specific way — it
 is the gradebook's ungraded columns, so it carries closed assignments and work
@@ -141,7 +153,15 @@ should not take a debugging session to find that out.
 |---|---|
 | **Chrome / Arc, Canvas** | **working end to end**, verified 2026-09-08: 110 planner items with live submitted flags, `source: "extension"` in `canvas.json` |
 | **Hash-gated sending** | written 2026-09-15, **not yet watched in a browser.** The server half is fine and the logic is small, but nobody has confirmed that a second load is actually skipped or that the 30-minute heartbeat still arrives. Watch the background console for `skipped: 'unchanged'` before believing it |
-| **The to-do panel** | written 2026-09-15, **never rendered.** `/api/worklist` returns real rows (verified with curl), but the DOM half is unverified: the `#right-side` anchor and the four `SUPERSEDED` selectors are written from how Canvas is known to build that sidebar, not from looking at this install. **Expect the first load to need the selectors corrected** — inspect the sidebar and fix the list at the top of `ui/canvas-todo.js`. Everything else is independent of those names |
+| **The to-do panel** | **rendering in Chrome, verified 2026-09-15**: mounts into `#right-side`, hides 2 native widgets, draws the week. The anchor and `SUPERSEDED` selectors were right. Ticking a row through to `/api/done` has *not* been exercised yet, nor has the unreachable-Zipper path |
+
+Two bugs worth not repeating, both invisible to every check that is not a
+browser. `node --check` passes each content script in isolation, but an
+extension gets **one isolated world per frame**, so a second file declaring
+`const api` throws `already been declared` at line 1 and never runs at all —
+hence the closure around each. And `all: initial` in a shadow root, which is
+what walls Canvas' CSS out, also resets `display` to `inline` and collapses the
+panel.
 | **Firefox** | **never loaded, in any form.** Not once, not temporarily. The manifest is written for it and the reasoning is sound, but no line of this has run in Gecko. Assume the first attempt finds something |
 | **Any site other than Canvas** | **nothing exists.** `collectors/` has one file. Onshape is an intention, not code. The "one collector per site" shape is a claim the second collector will test, and the reporter may well need changing when it arrives |
 

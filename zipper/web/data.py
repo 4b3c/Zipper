@@ -159,6 +159,36 @@ def week_canvas(monday=None):
             'days': days, 'carried': carried}
 
 
+def week_worklist(monday=None):
+    """The list the extension draws in Canvas' sidebar. One week, Canvas only.
+
+    Deliberately not `ranked()`, which answers the dashboard's question: what is
+    most pressing across everything, coursework and self-reported tasks
+    together, cut at ten. Inside Canvas the question is narrower because the
+    surroundings have already answered half of it -- he is looking at a course
+    tool, about this week, and a `Tasks/` line about emailing a coffee shop has
+    no business in a sidebar he opened to see assignments.
+
+    Built on `week_canvas` rather than a second date filter so that "this week"
+    means one thing in the vault. Carried work leads: unfinished work due before
+    Monday is this week's problem whatever its own due date says.
+    """
+    wk = week_canvas(monday)
+    items = []
+    for it in wk['carried']:
+        it['carried'] = True
+        items.append(it)
+    for day in sorted(wk['days']):
+        items.extend(wk['days'][day])
+    for it in items:
+        # Submitted and crossed-off are two routes to the same display: the row
+        # stays and goes quiet. A row that vanished would be indistinguishable
+        # from the cross-off having failed, which is the ambiguity the whole
+        # mechanism exists to remove.
+        it['done'] = bool(it['done'] or it.get('submitted'))
+    return {'items': items, 'monday': wk['monday'], 'sunday': wk['sunday']}
+
+
 def task_text(raw):
     """Exactly the engine's normalisation, so the dashboard, ledger and queue all
     key a task the same way. A naive character class stops inside [[Note]] and

@@ -206,7 +206,13 @@
       const due = document.createElement('span');
       due.className = 'due' + (it.overdue ? ' overdue'
                                : whenText(it.due) === 'today' ? ' today' : '');
-      due.textContent = whenText(it.due);
+      // Carried work is from an earlier week, so a weekday name would be a lie
+      // by omission -- "Friday" reads as this coming Friday.
+      due.textContent = it.carried
+        ? new Date(it.due + 'T00:00:00')
+            .toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+          + ' · still open'
+        : whenText(it.due);
       meta.appendChild(due);
     }
     // The reason a Canvas row can say `submitted: false` forever. Worth a badge:
@@ -223,14 +229,21 @@
     return li;
   }
 
-  function draw(items, error) {
+  function spanOf(week) {
+    if (!week || !week.monday) return '';
+    const f = (s) => new Date(s + 'T00:00:00')
+      .toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return f(week.monday) + ' – ' + f(week.sunday);
+  }
+
+  function draw(items, week, error) {
     const wrap = document.createElement('div');
     wrap.className = 'wrap';
     const h = document.createElement('h2');
-    h.textContent = 'To Do';
+    h.textContent = 'This week';
     const src = document.createElement('span');
     src.className = 'src';
-    src.textContent = 'zipper';
+    src.textContent = spanOf(week) || 'zipper';
     h.appendChild(src);
     wrap.appendChild(h);
 
@@ -242,7 +255,7 @@
     } else if (!items.length) {
       const p = document.createElement('div');
       p.className = 'empty';
-      p.textContent = 'Nothing outstanding.';
+      p.textContent = 'Nothing due this week.';
       wrap.appendChild(p);
     } else {
       const ul = document.createElement('ul');
@@ -258,12 +271,12 @@
     if (!out || out.ok === false) {
       log('could not reach zipper:', (out && out.error) || 'no reply from the '
           + 'background — is the endpoint saved in the extension options?');
-      draw([], true);
+      draw([], null, true);
       return;
     }
     const items = out.items || [];
-    log('got', items.length, 'items');
-    draw(items);
+    log('got', items.length, 'items for', out.monday, '->', out.sunday);
+    draw(items, out);
     hideNative();
   }
 
