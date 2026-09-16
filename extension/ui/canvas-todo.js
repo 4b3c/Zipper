@@ -29,6 +29,17 @@ const api = globalThis.browser ?? globalThis.chrome;
 
 const REFRESH_MS = 5 * 60 * 1000;
 
+/* Loud, unlike the collector.
+ *
+ * A collector that fails quietly is correct -- nobody is watching Canvas for
+ * evidence that a background read happened, and the data going stale is the
+ * signal. A *panel* that fails quietly is not: he is looking straight at the
+ * place it should be, and "nothing there" has half a dozen causes that look
+ * identical from the sidebar. Every decision this file makes says so.
+ */
+const log = (...a) => console.info('[zipper panel]', ...a);
+log('loaded on', location.pathname);
+
 // Canvas renders the sidebar client-side and re-renders it on navigation, so
 // the anchor is not there at document_idle and does not stay there once found.
 const ANCHOR = '#right-side';
@@ -74,7 +85,10 @@ function whenText(due) {
 }
 
 const CSS = `
-:host { all: initial; }
+/* "all: initial" is what walls Canvas' cascade out, but it also resets
+   display to inline, which collapses the panel. Put it back.
+   (No backticks in here -- this whole block is a template literal.) */
+:host { all: initial; display: block; }
 * { box-sizing: border-box; font-family: LatoWeb, Lato, system-ui, sans-serif; }
 .wrap { margin: 0 0 1.5rem; color: #2d3b45; }
 h2 { font-size: 1rem; font-weight: 700; margin: 0 0 .5rem;
@@ -122,11 +136,17 @@ function mount(anchor) {
  * says what went wrong in the space it already occupies.
  */
 function hideNative() {
+  let n = 0;
   for (const sel of SUPERSEDED) {
     for (const el of document.querySelectorAll(sel)) {
       el.style.display = 'none';
+      n++;
     }
   }
+  once('hid', n ? `hid ${n} native widget(s)`
+       : 'matched none of ' + SUPERSEDED.join(', ') + ' — the panel is drawn '
+         + 'but Canvas’ own list is still there. Inspect the sidebar and '
+         + 'correct SUPERSEDED.');
 }
 
 function row(it) {
@@ -220,24 +240,43 @@ async function refresh() {
   if (!root) return;
   const out = await zipper('/api/worklist');
   if (!out || out.ok === false) {
+    log('could not reach zipper:', (out && out.error) || 'no reply from the '
+        + 'background — is the endpoint saved in the extension options?');
     draw([], true);
     return;
   }
-  draw(out.items || []);
+  const items = out.items || [];
+  log('got', items.length, 'items');
+  draw(items);
   hideNative();
 }
 
 /* The sidebar arrives late and can be replaced under us, so the panel is
  * re-mounted whenever it goes missing rather than placed once at load.
  */
+const said = new Set();
+function once(key, ...msg) {        // ensure() runs per frame; say each thing once
+  if (said.has(key)) return;
+  said.add(key);
+  log(...msg);
+}
+
 function ensure() {
-  if (!onDashboard()) return;
+  if (!onDashboard()) {
+    once('path', 'not the dashboard, standing down:', location.pathname);
+    return;
+  }
   const anchor = document.querySelector(ANCHOR);
-  if (!anchor) return;
+  if (!anchor) {
+    once('anchor', 'no', ANCHOR, 'on the page yet — waiting. If this never '
+         + 'clears, the anchor selector is wrong for this Canvas.');
+    return;
+  }
   if (host && anchor.contains(host)) {
     hideNative();          // React re-renders reinstate the widgets we hid
     return;
   }
+  once('mount', 'mounting into', ANCHOR);
   mount(anchor);
   refresh();
 }
