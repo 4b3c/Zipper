@@ -43,8 +43,13 @@ Rules that matter
 - **Skip `local-` threads.** `new_conversation()` falls back to a local id when
   Discord is unreachable, precisely so a conversation can still start without
   it. There is no thread to post to, and that is not an error.
+- **Wait for the closing row before reading the reply.** Stop fires while Claude
+  Code is still appending the final assistant message, so the answer is often
+  not on disk yet -- see `main`.
+- **A turn can be prompted by more than one message.** Provenance is asked of
+  all of them, not only the last -- see `read_turn`.
 """
-import os, sys, json
+import os, sys, json, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -82,15 +87,37 @@ def read_turn(path):
     A user row carrying only `tool_result` blocks is the harness feeding a tool
     call back in, not a person speaking -- taking it as the prompt would mean
     every turn looked like it came from the terminal.
+
+    Returns `(last_user, reply, uuid, closed, turn_users)`.
+
+    `closed` says whether the turn's final assistant row -- the one whose
+    `stop_reason` is *not* `tool_use` -- is on disk yet. The hook fires and
+    reads the file in the same second Claude Code is appending that row, so the
+    answer is sometimes not there; `main` waits for it. Without the wait the
+    hook reads a turn whose reply is still empty, logs `empty turn`, and returns
+    -- the reply is then never forwarded at all, because Stop does not fire
+    twice. That is what ate five replies on the morning of 2026-09-16.
+
+    `turn_users` is **every** prompt this turn is answering, not just the last.
+    The opening message starts the turn; anything he sends while it runs arrives
+    as an `enqueue` and is answered by the same turn. They do not all come
+    through the same door -- a turn opened from Discord can be added to from the
+    dashboard -- so "did this turn come from Discord?" cannot be answered from
+    the most recent message alone, and answering it that way sent a Discord
+    turn's reply to a terminal nobody was reading.
     """
-    last_user, last_asst, uuid_ = '', '', ''
+    last_user, last_asst, uuid_, closed = '', '', '', False
+    turn_users = []
     for row in _tail(path):
         t = row.get('type')
         if t == 'user':
             blocks = _text_blocks(row)
             body = '\n'.join(b for b in blocks if b.strip())
             if body.strip():
-                last_user, last_asst, uuid_ = body, '', ''
+                last_user, last_asst, uuid_, closed = body, '', '', False
+                # A `user` row starts a new turn, so the previous turn's
+                # prompts go with it.
+                turn_users = [body]
         elif t == 'queue-operation' and row.get('operation') == 'enqueue':
             # **A message that arrives mid-turn never becomes a `user` row.**
             # Claude Code queues it and records it here instead, as
@@ -107,12 +134,24 @@ def read_turn(path):
             # re-set what is already correct.
             body = (row.get('content') or '').strip()
             if body:
-                last_user, last_asst, uuid_ = body, '', ''
+                last_user, last_asst, uuid_, closed = body, '', '', False
+                # An `enqueue` never *starts* a turn -- it interrupts one that
+                # is already running -- so it adds to this turn's prompts
+                # rather than replacing them. That is what keeps a
+                # Discord-opened turn recognisable after he types into the
+                # dashboard mid-turn.
+                turn_users.append(body)
         elif t == 'assistant':
             for b in _text_blocks(row):
                 if b.strip():
                     last_asst, uuid_ = b, row.get('uuid') or ''
-    return last_user, last_asst, uuid_
+            # The closing row is the one that did *not* stop to call a tool. A
+            # row with no text still closes the turn -- a turn can end on a tool
+            # result with nothing said after it, and waiting for words that are
+            # never coming is how this would hang on its own timeout.
+            if (row.get('message') or {}).get('stop_reason') != 'tool_use':
+                closed = True
+    return last_user, last_asst, uuid_, closed, turn_users
 
 
 def _log(line):
@@ -157,10 +196,26 @@ def main():
 
     from zipper import conversations, chat
 
-    last_user, reply, uuid_ = read_turn(path)
+    last_user, reply, uuid_, closed, turn_users = read_turn(path)
+    # **The closing row is often not on disk yet.** Waiting costs nothing when
+    # it is already there, and the hook's own timeout is 45s, so six seconds is
+    # well inside it.
+    for _ in range(12):
+        if closed:
+            break
+        time.sleep(0.5)
+        last_user, reply, uuid_, closed, turn_users = read_turn(path)
+
     if not last_user or not reply.strip():
-        _log('skip  empty turn (user=%d reply=%d)' % (len(last_user), len(reply)))
+        _log('skip  empty turn (user=%d reply=%d closed=%s)'
+             % (len(last_user), len(reply), closed))
         return
+    if not closed:
+        # The turn ended on a tool use -- interrupted, or stopped by another
+        # hook -- so there is no closing row to wait for. What was said before
+        # the tools was still said, and it is the only thing he will get for
+        # this turn. Send it rather than letting the turn vanish.
+        _log('note  turn never closed; forwarding %d chars anyway' % len(reply))
 
     # Which conversation is this? The env var is set for every per-thread
     # instance; the registry lookup by session id covers a conversation that was
@@ -176,7 +231,7 @@ def main():
         _log('skip  no discord thread (tid=%r)' % tid)
         return
 
-    if not conversations.delivered(tid, last_user):
+    if not any(conversations.delivered(tid, u) for u in (turn_users or [last_user])):
         # Typed at the keyboard; he already saw it. Logged anyway, because
         # "decided it was typed" is exactly the wrong call that ate a reply
         # twice today, and it is indistinguishable from a real one in hindsight.
