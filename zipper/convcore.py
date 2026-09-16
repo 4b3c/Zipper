@@ -392,12 +392,48 @@ def _user_rows(thread_id):
     received the message; if none did, it did not, whatever the pane showed.
     That is not a better heuristic, it is a different kind of fact, which is
     why this is the last word rather than another frame check.
+
+    **`type: "user"` is not the same as "a message".** Claude Code writes every
+    tool result as a user row too, so a session that is merely *working* grows
+    this count on its own, every few seconds, with nothing delivered. Counting
+    the substring therefore answers "is this session busy", not "did my message
+    arrive" -- and the two are indistinguishable at exactly the moment they
+    differ, because a message sent into a working session is the case where a
+    tool result is most likely to land first.
+
+    That cost three messages on 2026-09-16. A rewrite made this the *sole*
+    confirmation that a paste had been delivered; two of them went into sessions
+    mid-turn, a tool result ticked the counter within half a second, and
+    `paste()` reported success over text still sitting in the input box. The
+    caller logged `200`, and the thread stayed silent. It was survivable in the
+    older code only because the pane checks ran first, so a false increment
+    could never manufacture a success by itself.
+
+    So: real user turns only. Tool results carry a `tool_result` block, and a
+    subagent's rows carry `isSidechain` -- neither is this conversation being
+    spoken to.
     """
+    n = 0
     try:
         with open(transcript(thread_id), 'rb') as fh:
-            return sum(1 for raw in fh if b'"type":"user"' in raw)
+            for raw in fh:
+                if b'"type":"user"' not in raw:
+                    continue
+                try:
+                    d = json.loads(raw.decode('utf-8', 'replace'))
+                except ValueError:
+                    continue
+                if d.get('type') != 'user' or d.get('isSidechain'):
+                    continue
+                content = (d.get('message') or {}).get('content')
+                if isinstance(content, list) and any(
+                        isinstance(b, dict) and b.get('type') == 'tool_result'
+                        for b in content):
+                    continue           # a tool answering, not him
+                n += 1
     except OSError:
         return 0                       # no transcript yet: a new conversation
+    return n
 
 
 def _await_recorded(thread_id, before, timeout=25.0):
