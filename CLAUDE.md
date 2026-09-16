@@ -96,9 +96,8 @@ gitignored, and it may hold secret feed URLs. Nothing there is authoritative.
 - **Verify UI changes in a browser, not in the HTML string.** Served bytes are not rendered
   pixels. Several bugs here were invisible in the markup and obvious in a screenshot.
 - **Nothing here runs one-at-a-time, so never write code that assumes it does.** Before
-  calling a change done, walk it through four scenarios. They are not hypothetical: the
-  streaming feature shipped on 2026-09-15 and broke five times the same morning, once per
-  scenario skipped.
+  calling a change done, walk it through four scenarios. They are not hypothetical — each
+  one has already broken something here.
   - **Several conversations at once.** One live Claude per Discord thread, plus the
     dashboard's terminal. Anything holding per-turn state needs the thread id **in the
     filename and checked inside it** — a single shared `state.json` means whichever process
@@ -177,11 +176,11 @@ seam between this code and somebody's life. Everything else (GitHub user and org
 host, tokens) has an empty or generic default, and the code must stay that way. **A default
 that names a real person, school, or host is a bug in this repository.**
 
-**The hooks are wired in `~/.claude/settings.json`, which is in neither repo.** Three entries,
-all pointing at `hooks/`: `Stop` and `PostToolUse` run `forward_reply.py`, `UserPromptSubmit`
-runs `stream_watch.py`. That last one must **not** be backgrounded by the shell — it was
-`nohup … &` until 2026-09-15, and the redirect put `/dev/null` on stdin, which is where Claude
-Code hands over the payload carrying the prompt. Without the prompt the watcher cannot tell a
-turn typed in the dashboard from one that came from Discord, and streams both. The script
-reads stdin and detaches itself instead; the command is a plain `python3 …/stream_watch.py`.
-Since the file is unversioned, a rebuilt box needs these re-added by hand.
+**The hook is wired in `~/.claude/settings.json`, which is in neither repo.** One entry: `Stop`
+runs `hooks/forward_reply.py`, which posts the finished turn to the thread it belongs to. That
+is the whole wiring, and a rebuilt box needs it re-added by hand since the file is unversioned.
+
+There were briefly three entries — a `PostToolUse` forwarding every block as it was written
+and a `UserPromptSubmit` starting a stream watcher. Both are gone with the streaming feature;
+see `HISTORY.md`. **If you find yourself adding a hook that posts mid-turn, read that entry
+first.**

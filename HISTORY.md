@@ -11,6 +11,34 @@ call site, stated in the present tense, because someone editing that line needs 
 
 ---
 
+## 2026-09-15 — streaming replies to Discord, removed the same day
+
+For about two hours `hooks/stream_watch.py` posted a Discord reply as it was written,
+editing the message in place as more arrived, with `forward_reply.py` on `PostToolUse`
+forwarding each block and reconciling at `Stop`. It is gone. `Stop` alone posts the
+finished turn, which is what it did before.
+
+It was removed because Abram did not want it, not because it could not be made to work —
+by the end it did work. That is the part worth recording: the feature shipped and then
+broke five times in one morning, once per concurrency scenario nobody had walked it
+through, and each fix was sound. Several conversations sharing one state file. A turn
+that had ended being read as still running. A watcher and a hook disagreeing about
+whether a message had been delivered, leaving a truncated reply standing as the final
+answer. The cost was not the streaming; it was that live editing of a message Discord
+keeps no history of has no undo, so every bug destroyed something instead of merely
+showing it late.
+
+What survives the removal is the guidance it earned, kept in `CLAUDE.md` because it is
+not about Discord: walk every change through several conversations at once, messages
+arriving mid-turn, a process killed at any line, and two components answering the same
+question differently. Also **overwriting is worse than duplicating**, and **a freshness
+check fed by the thing it is checking measures nothing** — the watcher rewrote its own
+state file on every post, so the mtime it was gated on never aged out.
+
+The two `~/.claude/settings.json` hooks it needed (`PostToolUse`, `UserPromptSubmit`)
+were unwired at the same time. A mid-turn hook is the shape to be suspicious of: it is
+the one that cannot be tested without a live conversation to break.
+
 ## 2026-09-15 — last-block-only forwarding
 
 For a day `hooks/forward_reply.py` posted exactly one message per turn: the assistant text

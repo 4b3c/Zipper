@@ -362,70 +362,11 @@ both `zipper discord send` and the reply-forwarding hook reach the right thread 
 session having to know its own id. Unset in the dashboard's own terminal, where a send goes
 to the channel.
 
-### Replies are streamed live, then corrected
-
-**`hooks/stream_watch.py` reads the tmux pane.** It is started by the
-`UserPromptSubmit` hook, one per turn, and four times a second it captures the pane, finds
-the message being written and posts or grows the matching Discord message — so the thread
-fills in *while* the words are being typed, a second or so behind the terminal.
-
-Scraping a screen is an ugly way to get text, and it is the only way. The alternatives were
-measured on 2026-09-15 before this existed: the transcript JSONL is appended **one row per
-completed message** (sampled every 0.25s during a reply: four writes of 1247, 4585, 1537 and
-6647 bytes, each whole, each landing when its message finished), and no hook fires on a
-token — `PostToolUse` is the finest grain Claude Code offers and it fires *between* messages.
-The pane is the only place the words exist before the turn ends.
-
-**One message per turn.** Everything Claude says between one of his messages and the next —
-the paragraphs either side of every tool call — goes into a single Discord message that
-grows. A second message starts only when the first hits Discord's 2000-character cap, and the
-seam is placed on a paragraph break.
-
-That is a simplification, not a style choice. While each block was streamed as its own
-message, the watcher and the correction pass had to agree afterwards about *which* message was
-which, and they did it by comparing text prefixes. It kept failing: a reply opening "Hi." was
-filed under three characters, nothing could match it back, and the whole reply was posted a
-second time (18:24:32 and 18:24:42 on 2026-09-15). One message per turn needs no matching —
-the watcher records the ids it posted, in order, and that is the entire handover.
-
-**Live but approximate, then exact.** The pane is rendered and lossy: markdown styled, text
-wrapped at the pane width, no scrollback in fullscreen TUI mode. So the watcher records its
-message ids in `Inbox/stream.json`, and the `Stop` pass lays the turn's true text from the
-transcript back over them — chunk *i* into id *i*, extra chunks sent after, and **any message
-the true text no longer needs deleted** (`/delete` on the bot). The live split is computed on
-pane text and the real one on source text, so the two disagree about how many messages a long
-turn takes; leaving the leftovers would show a duplicated tail.
-
-The hook stops the watcher **before** correcting — a still-polling watcher would write the
-wrapped pane text back over the fixed version. And while the watcher is live, the
-`PostToolUse` pass sends nothing at all: it claims the messages so they cannot be sent twice
-and leaves the thread to the watcher.
-
-Two things that had to be got right, each of which was wrong first:
-
-- **The `Stop` pass clears the typing indicator at its single exit.** `discord_send` clears it
-  in a `finally`, which covered everything back when sending was the only way a message reached
-  Discord — but a corrected message is a raw `/edit`, and a streamed turn sends nothing at all,
-  so the indicator stayed on after the answer had been read.
-- **Exactly one message wears the status footer** — `✽ Misting… (5m 10s · ↓ 10.2k tokens)`,
-  Claude Code's own spinner line in Discord subtext, word included. It comes off when the turn
-  ends. A frozen stopwatch under a finished paragraph reads as a message that stalled.
-
-Before the first sentence exists the footer goes out **alone**, within a second of his message,
-and then grows into the reply — the gap it covers is model latency, which nothing local can
-shorten; what it can do is stop the wait from looking like silence.
-
-`ZIPPER_STREAM=0` in `/opt/zipper/.env` turns the watcher off; the forwarding below then finds
-no entries and behaves exactly as it did before.
-
 ### Replies are forwarded, not sent
 
-`hooks/forward_reply.py` runs on **two** hooks, doing one job. **`PostToolUse`** fires after
-every tool call and forwards whatever has been said since the last one; **`Stop`** fires once
-at the end of the turn and forwards what is left — normally just the closing answer. So the
-thread fills in as the turn happens rather than arriving in a burst at the end. Both passes
-post to this conversation's thread in the order the messages were written, and **only if the
-turn came from Discord**: the bot records what it delivered
+`hooks/forward_reply.py` runs on Claude Code's **`Stop`** hook — once per turn, with the
+transcript path. It takes the last assistant text block and posts it to this conversation's
+thread, but **only if that turn came from Discord**: the bot records what it delivered
 (`conversations.note_delivery`) and the hook compares the transcript's last user message
 against that record. Typed at the keyboard, and nothing is sent — the answer is already on
 screen.
@@ -443,36 +384,14 @@ Three rules the hook cannot break:
 - **It always exits 0.** Exit code 2 on a `Stop` hook *prevents the turn ending* and feeds
   stderr back to the model, so a Discord outage would trap a session in a loop. Every failure
   is swallowed; the terminal still has the answer.
-- **It dedupes on the assistant message uuid** — per message, in `conversations.forwarded` —
-  because the hook can fire more than once for a turn and posting is not idempotent from
-  Discord's side.
+- **It dedupes on the assistant message uuid**, because the hook can fire more than once for
+  a turn and posting is not idempotent from Discord's side.
 - **It skips `local-` thread ids**, the fallback `new_conversation()` uses when Discord is
   unreachable. There is no thread to post to, and that is not an error.
 
-**Interstitial narration is forwarded too**, as its own message when it is written, so the
-thread shows the same sequence the terminal does, at roughly the same time. Until 2026-09-15
-only the closing block went: the thread read as clean question-and-answer, at the cost of a
-phone showing nothing at all while a long turn worked, and showing nothing *ever* for a turn
-that ended on a tool call — interrupted, or stopped by another hook. Completeness won over
-tidiness; a message that was written is a message that gets delivered.
-
-The ordering bug that motivated the old rule is handled by sending rather than choosing. A
-preamble can no longer arrive *instead of* an answer, because the two do not compete for one
-slot — each is sent once, keyed on its own uuid.
-
-Three things the two passes have to get right:
-
-- **The live pass never waits and never blocks.** It sits between a tool finishing and the
-  model seeing the result, so its cost is added to the turn. It forwards only rows whose
-  `stop_reason` is `tool_use`, which are on disk by definition — the thing the `Stop` pass
-  waits up to 6s for (the closing row being flushed) cannot apply to them.
-- **A message is claimed inside the registry's flock, before it is sent.** Parallel tool
-  calls fire parallel copies of the hook against the same transcript; recording the send
-  afterwards leaves a window where both see the same unclaimed message and post it twice.
-  A send that then fails is put back by `_unclaim`, so the next firing retries it.
-- **The live pass re-asserts the typing indicator**, which `discord_send` clears on the way
-  out. Mid-turn that clear is a lie: more is coming, and a thread that stops showing Zipper
-  as typing reads as an answer that ended at the preamble.
+Interstitial narration stays in the terminal for free: those are earlier text blocks in the
+turn, and only the last one is forwarded. The thread reads as clean question-and-answer while
+the terminal keeps the working detail.
 
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.

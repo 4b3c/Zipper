@@ -172,43 +172,6 @@ async def handle_edit(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
-async def handle_delete(request: web.Request) -> web.Response:
-    """Delete a message by ID.
-
-    Exists for one caller: the correction pass, when a turn's true text needs
-    fewer messages than the live stream used. The live split is made on rendered
-    pane text and the real one on source text, so the two disagree about how many
-    messages a long turn takes -- and a leftover would show a duplicated tail.
-    """
-    try:
-        body = await request.json()
-        if not client.is_ready():
-            return web.json_response({"error": "discord client not ready"}, status=503)
-        message_id = body.get("message_id")
-        if not message_id:
-            return web.json_response({"error": "message_id required"}, status=400)
-        thread_id = body.get("thread_id")
-        import bot.client as _client_mod
-        channel_id = _client_mod.DISCORD_CHANNEL_ID
-        target = client.get_channel(int(thread_id)) if thread_id else client.get_channel(channel_id)
-        if target is None:
-            return web.json_response({"error": "channel not found"}, status=404)
-        # **Deleting something already gone is success, not failure.** Both
-        # callers are cleanup paths -- the correction dropping a surplus
-        # message, a typed turn removing what the watcher posted -- and either
-        # can run twice or race the other. Reporting `10008 Unknown Message` as
-        # a 500 made a finished job look broken in `forward.log` on 2026-09-15
-        # and sent someone hunting a bug that was not there.
-        try:
-            msg = await target.fetch_message(int(message_id))
-            await msg.delete()
-        except discord.NotFound:
-            return web.json_response({"ok": True, "already_gone": True})
-        return web.json_response({"ok": True})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
-
 async def handle_react(request: web.Request) -> web.Response:
     """Add a reaction to a message."""
     try:
@@ -340,7 +303,6 @@ def setup_routes(app: web.Application):
     app.router.add_post("/send", handle_send)
     app.router.add_post("/history", handle_history)
     app.router.add_post("/edit", handle_edit)
-    app.router.add_post("/delete", handle_delete)
     app.router.add_post("/react", handle_react)
     app.router.add_post("/inject", handle_inject)
     app.router.add_post("/typing", handle_typing)
