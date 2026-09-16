@@ -11,7 +11,7 @@ from .base import core, canvas, chat, conversations, events, gh, ics, metrics, u
 from .conv import (PASTE_DIR, TTYD, _prune_pastes, _queue_prompt, conversation_rows,
                    current_conversation, new_conversation, newest_buffer,
                    open_conversation, start_session)
-from .data import content_sig, toggle_done
+from .data import content_sig, ranked, toggle_done
 from .feed import (SUBS, SUBS_LOCK, do_refresh, emit_diff, feed_load, feed_mark,
                    feed_mark_all, feed_rows, feed_watch, notes_watch, publish,
                    snapshot_data)
@@ -109,6 +109,17 @@ class Handler(BaseHTTPRequestHandler):
             st['sig'] = content_sig()
             st['clients'] = SRV['clients']
             self._send(200, json.dumps(st), 'application/json')
+        elif self.path == '/api/worklist':
+            # The same list the dashboard's "What to work on" card renders, for
+            # the extension to draw inside Canvas. Deliberately `ranked()` and
+            # not a second ordering computed in the browser: two surfaces
+            # disagreeing about what is most pressing would be worse than
+            # Canvas' own list, which at least only lies in one direction.
+            # Cross-offs come back through /api/done, so the browser reads a
+            # ranking it does not own and writes through a path it does not
+            # own either.
+            top, _ = ranked(limit=12)
+            self._send(200, json.dumps({'items': top}), 'application/json')
         elif self.path == '/views' or self.path.startswith('/views/'):
             key = self.path[7:].strip('/') or (views_blob().get('pages') or [{'key': ''}])[0]['key']
             page = _views_page(key)

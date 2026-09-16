@@ -101,14 +101,23 @@ async function descriptions(courseIds) {
   return out;
 }
 
-async function run() {
+/* `reason` is the only judgement this file makes, and it is about itself
+ * rather than about the data: did this reading happen because a page opened,
+ * or because the clock came round? What that is worth is the reporter's call
+ * -- a 'load' goes out only if the reading differs from what Zipper already
+ * holds, an 'interval' goes out regardless. Deciding *here* whether the data
+ * changed would put the comparison in the browser, which is the
+ * collectors-conclude-nothing line; in the background every future collector
+ * inherits it for free.
+ */
+async function run(reason) {
   try {
     const items = await planner();
     if (!items.length) return;
     const courseIds = [...new Set(items.map((i) => i.course_id).filter(Boolean))];
     const assignments = await descriptions(courseIds);
     api.runtime.sendMessage({ type: 'zipper:data', collector: 'canvas',
-                              payload: { items, assignments } });
+                              reason, payload: { items, assignments } });
   } catch (e) {
     // Never surface anything to the page. A failed read is Zipper's problem to
     // notice by the data going stale, not an alert over his coursework.
@@ -116,10 +125,12 @@ async function run() {
   }
 }
 
-run();
+run('load');
 
 // A tab left open all day should not freeze the reading at whenever it was
 // opened. The interval lives here rather than in a background alarm because
-// this context persists as long as the tab does, and the throttle in the
-// background is what stops it becoming chatty.
-setInterval(run, REFRESH_MS);
+// this context persists as long as the tab does. It reports unconditionally:
+// a reading that has not changed in half an hour is still worth restamping,
+// because "nothing is due" read just now and read this morning are different
+// claims and only the fresh one can be trusted.
+setInterval(() => run('interval'), REFRESH_MS);

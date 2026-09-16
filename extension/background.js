@@ -17,30 +17,74 @@
 
 const api = globalThis.browser ?? globalThis.chrome;
 
-// A collector that fires on every page load would POST a dozen times while he
-// clicks around Canvas. The interesting quantity changes on the order of hours.
-const MIN_INTERVAL_MS = 15 * 60 * 1000;
+/* A floor, not a throttle.
+ *
+ * What stops the chatter is the hash below: a collector that fires on every
+ * page load now posts only when the reading actually differs from the one
+ * Zipper already has. This is the backstop for the case the hash cannot catch
+ * -- a field that flaps between two values, or two tabs loading together, both
+ * finding no stored hash and both deciding to send. It only gates
+ * change-driven sends; the scheduled heartbeat is never suppressed, because
+ * the whole point of the heartbeat is that Zipper hears from us on a known
+ * cadence whether or not anything moved.
+ */
+const FLOOR_MS = 60 * 1000;
 
 async function config() {
   const { endpoint } = await api.storage.sync.get('endpoint');
   return (endpoint || '').replace(/\/+$/, '');
 }
 
-/* Has this collector reported recently enough to skip?
+/* Fields that change without anything changing.
  *
- * Kept per collector rather than globally: Canvas being fresh says nothing
- * about Onshape, and one shared timestamp would let a chatty site starve a
- * quiet one.
+ * `new_activity` flips the moment he *looks* at an item, which is not news and
+ * would make every visit to Canvas a fresh POST -- exactly the traffic the hash
+ * exists to remove. Anything found to flap on its own belongs here.
  */
-async function throttled(name) {
-  const key = 'lastSent:' + name;
-  const store = await api.storage.local.get(key);
-  const last = store[key] || 0;
-  return Date.now() - last < MIN_INTERVAL_MS;
+const VOLATILE = new Set(['new_activity']);
+
+/* JSON with its keys in a fixed order, so the same reading always hashes the
+ * same. `JSON.stringify` preserves insertion order, and Canvas has no
+ * obligation to serialize an object's keys the same way twice; without this a
+ * reshuffle upstream would read as a change and defeat the whole mechanism.
+ */
+function canonical(v) {
+  if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+  if (v && typeof v === 'object') {
+    return '{' + Object.keys(v).sort()
+      .filter((k) => !VOLATILE.has(k))
+      .map((k) => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v === undefined ? null : v);
 }
 
-async function markSent(name) {
-  await api.storage.local.set({ ['lastSent:' + name]: Date.now() });
+async function digest(payload) {
+  const bytes = new TextEncoder().encode(canonical(payload));
+  const buf = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* Per collector, never global: Canvas being unchanged says nothing about
+ * Onshape, and one shared hash would mean a quiet site's first reading could
+ * be swallowed by a chatty one's.
+ */
+async function lastSeen(name) {
+  const keys = ['lastHash:' + name, 'lastSent:' + name];
+  const store = await api.storage.local.get(keys);
+  return { hash: store[keys[0]] || '', at: store[keys[1]] || 0 };
+}
+
+/* Written only after Zipper has acknowledged the POST.
+ *
+ * If a failed send stored the hash, the next identical reading would compare
+ * equal and be skipped, and the reading Zipper never received would never be
+ * offered again -- the data would sit wrong until something happened to change
+ * it. So the hash means "Zipper has this", not "we tried".
+ */
+async function markSent(name, hash) {
+  await api.storage.local.set({ ['lastSent:' + name]: Date.now(),
+                                ['lastHash:' + name]: hash });
 }
 
 /* POST to Zipper.
@@ -53,43 +97,109 @@ async function markSent(name) {
  * an optional permission granted on the options page: the URL is not known at
  * build time and nobody should ship a personal tailnet address in a manifest.
  */
-async function send(name, payload) {
+async function call(path, body) {
   const endpoint = await config();
   if (!endpoint) {
     console.warn('[zipper] no endpoint configured; open the extension options');
     return { ok: false, error: 'no endpoint' };
   }
-  // A collector hands over the body it wants posted; the reporter only stamps
-  // where it came from. An array is wrapped for the older `{source, items}`
-  // shape so a collector that has nothing but a list stays a one-liner.
-  const body = Array.isArray(payload) ? { items: payload } : { ...payload };
-  body.source = 'extension';
-
-  const url = endpoint + '/api/' + name;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await fetch(endpoint + path, body === undefined
+    ? { method: 'GET' }
+    : { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) });
   if (!res.ok) {
     return { ok: false, error: 'zipper returned ' + res.status };
   }
   return await res.json().catch(() => ({ ok: true }));
 }
 
+function send(name, payload) {
+  // A collector hands over the body it wants posted; the reporter only stamps
+  // where it came from. An array is wrapped for the older `{source, items}`
+  // shape so a collector that has nothing but a list stays a one-liner.
+  const body = Array.isArray(payload) ? { items: payload } : { ...payload };
+  body.source = 'extension';
+  return call('/api/' + name, body);
+}
+
+/* What a page is allowed to ask Zipper for.
+ *
+ * A content script runs in a tab alongside whatever else that origin is
+ * executing, so the reachable surface is spelled out here rather than left as
+ * "any path the page names". These two are the panel's whole vocabulary: read
+ * the ranked list, cross one thing off.
+ */
+const ALLOWED = {
+  '/api/worklist': 'GET',
+  '/api/done': 'POST',
+};
+
+/* The panel's channel.
+ *
+ * Same reason as the POST: from inside canvas.asu.edu a request to the tailnet
+ * is cross-origin and CORS refuses it, so every byte between the page and
+ * Zipper goes through here. The panel therefore still knows nothing about
+ * where Zipper lives -- it names an intent, and this file owns the address.
+ */
+api.runtime.onMessage.addListener((msg, _sender, respond) => {
+  if (!msg || msg.type !== 'zipper:call') return false;
+  (async () => {
+    try {
+      const want = ALLOWED[msg.path];
+      if (!want) {
+        respond({ ok: false, error: 'not an allowed path' });
+        return;
+      }
+      respond(await call(msg.path, want === 'POST' ? (msg.body || {}) : undefined));
+    } catch (e) {
+      respond({ ok: false, error: String(e) });
+    }
+  })();
+  return true;
+});
+
 api.runtime.onMessage.addListener((msg, _sender, respond) => {
   if (!msg || msg.type !== 'zipper:data') return false;
 
   // Not awaited inline: returning true keeps the message channel open, which is
   // the only way an async listener may reply in either browser.
+  /* Two reasons to send, and only two.
+   *
+   *   reason: 'load'      the page opened and the reading differs from the one
+   *                       Zipper already has. Changes arrive promptly.
+   *   reason: 'interval'  the tab has simply been sitting there. Goes out
+   *                       whether or not anything changed, so `canvas.json`'s
+   *                       `fetched` stamp stays honest: a reading that is
+   *                       genuinely unchanged should still be able to say it
+   *                       was taken five minutes ago rather than this morning.
+   *
+   * Which is why the heartbeat ignores the hash instead of being a special
+   * case of it. Unchanged-and-old and unchanged-and-fresh are different facts,
+   * and only the heartbeat can tell them apart.
+   */
   (async () => {
     try {
-      if (msg.force !== true && (await throttled(msg.collector))) {
-        respond({ ok: true, skipped: 'throttled' });
-        return;
+      const name = msg.collector;
+      const hash = await digest(msg.payload);
+      const heartbeat = msg.reason === 'interval';
+      const seen = await lastSeen(name);
+
+      if (msg.force !== true && !heartbeat) {
+        if (seen.hash === hash) {
+          respond({ ok: true, skipped: 'unchanged' });
+          return;
+        }
+        if (Date.now() - seen.at < FLOOR_MS) {
+          // Deliberately no hash write: the change is real and still unsent,
+          // so the next load must find it again rather than inherit a skip.
+          respond({ ok: true, skipped: 'floor' });
+          return;
+        }
       }
-      const out = await send(msg.collector, msg.payload);
-      if (out.ok !== false) await markSent(msg.collector);
+
+      const out = await send(name, msg.payload);
+      if (out.ok !== false) await markSent(name, hash);
       respond(out);
     } catch (e) {
       respond({ ok: false, error: String(e) });
