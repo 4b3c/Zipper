@@ -78,9 +78,21 @@ does not belong in a sidebar he opened to see assignments. Work due *before*
 Monday and still unfinished leads the list, marked `still open`: it is this
 week's problem whatever its own due date says.
 
-Submitted and crossed-off rows stay, struck through and sunk to the bottom,
-which is the same rule the rest of the vault follows — a row that vanished
-would be indistinguishable from the cross-off having failed.
+Submitted and crossed-off rows stay — the vault's rule, since a row that
+vanished would be indistinguishable from the cross-off having failed — but they
+live behind a **Done** tab rather than in the list. Sinking them was not enough:
+`week_worklist` sinks finished work *within* a day, so a Monday assignment
+handed in on Monday still outranked an open one due Sunday, and a real week put
+ten struck-through Sprint 0 rows above the two things he actually had to do.
+The default view is what is left; what is finished is one click away.
+
+Above the tabs, a bar for **how much of the week is behind him** — the one thing
+a list of remaining work cannot show. Grade badges go on the course cards from
+`/api/v1/courses?include[]=total_scores`; `--%` where Canvas has graded nothing
+yet, because `0%` would be a different and wrong claim. That one never touches
+Zipper: it is a number Canvas already computed, printed back onto Canvas' own
+card. Sending it to the vault would be a different feature — a course score is
+not a conclusion, and the vault holds conclusions.
 
 That is the whole constraint. Canvas' native list is bad in a specific way — it
 is the gradebook's ungraded columns, so it carries closed assignments and work
@@ -154,6 +166,7 @@ should not take a debugging session to find that out.
 | **Chrome / Arc, Canvas** | **working end to end**, verified 2026-09-08: 110 planner items with live submitted flags, `source: "extension"` in `canvas.json` |
 | **Hash-gated sending** | written 2026-09-15, **not yet watched in a browser.** The server half is fine and the logic is small, but nobody has confirmed that a second load is actually skipped or that the 30-minute heartbeat still arrives. Watch the background console for `skipped: 'unchanged'` before believing it |
 | **The to-do panel** | **rendering in Chrome, verified 2026-09-15**: mounts into `#right-side`, hides 2 native widgets, draws the week. The anchor and `SUPERSEDED` selectors were right. Ticking a row through to `/api/done` has *not* been exercised yet, nor has the unreachable-Zipper path |
+| **Tabs, the week bar, grade badges** | added 2026-09-15 off a Better Campus comparison, **not yet seen rendered.** The tab split and the percentage are verified against the live vault (17 items → 7 to do, 59%), but `.ic-DashboardCard` and the `a[href*="/courses/"]` inside it are written from how Canvas builds its cards, not from this install — same class of guess as `SUPERSEDED`, which happened to be right. The panel logs `no .ic-DashboardCard on the page` if it is wrong |
 
 Two bugs worth not repeating, both invisible to every check that is not a
 browser. `node --check` passes each content script in isolation, but an

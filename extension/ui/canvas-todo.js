@@ -56,6 +56,16 @@
   const log = (...a) => console.info('[zipper panel]', ...a);
   log('loaded on', location.pathname);
 
+  // `ensure` runs on every animation frame the page mutates, so anything it
+  // reports has to be said once or not at all. Declared up here with `log`
+  // because callers appear long before the bottom of the file.
+  const said = new Set();
+  function once(key, ...msg) {
+    if (said.has(key)) return;
+    said.add(key);
+    log(...msg);
+  }
+
   // Canvas renders the sidebar client-side and re-renders it on navigation, so
   // the anchor is not there at document_idle and does not stay there once found.
   const ANCHOR = '#right-side';
@@ -106,14 +116,44 @@
      (No backticks in here -- this whole block is a template literal.) */
   :host { all: initial; display: block; }
   * { box-sizing: border-box; font-family: LatoWeb, Lato, system-ui, sans-serif; }
-  .wrap { margin: 0 0 1.5rem; color: #2d3b45; }
-  h2 { font-size: 1rem; font-weight: 700; margin: 0 0 .5rem;
-       display: flex; align-items: baseline; gap: .5rem; }
-  h2 .src { font-size: .7rem; font-weight: 400; color: #6b7780; }
-  ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid #e8eaec; }
-  li { display: flex; gap: .55rem; padding: .5rem .1rem;
+
+  /* The panel sits at the very top of #right-side, which starts level with the
+     ASU utility nav -- so with no padding the heading collides with it and the
+     whole thing reads as cramped. This is the breathing room Canvas' own
+     sidebar gets from its widget margins and ours had to ask for. */
+  .wrap { padding: 1.5rem 0 1.25rem; color: #2d3b45; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between;
+           gap: .5rem; margin-bottom: .9rem; }
+  h2 { font-size: 1.05rem; font-weight: 700; margin: 0; letter-spacing: -.01em; }
+  .span { font-size: .72rem; color: #6b7780; white-space: nowrap; }
+
+  /* How much of the week is behind him, which is the one number the list
+     itself cannot show -- a list of what is left says nothing about what is
+     done. */
+  .prog { margin-bottom: 1rem; }
+  .bar { height: 8px; border-radius: 99px; background: #e8eaec; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #0b874b;
+           border-radius: 99px; transition: width .3s ease; }
+  .num { display: flex; justify-content: space-between; align-items: baseline;
+         margin-top: .4rem; font-size: .72rem; color: #6b7780; }
+  .num b { color: #2d3b45; font-size: .82rem; }
+
+  .tabs { display: flex; gap: .2rem; margin-bottom: .6rem;
+          background: #f2f4f6; padding: .2rem; border-radius: 6px; }
+  .tabs button { flex: 1; border: 0; background: transparent; font: inherit;
+                 font-size: .78rem; font-weight: 700; color: #6b7780;
+                 padding: .4rem .3rem; border-radius: 4px; cursor: pointer;
+                 display: flex; justify-content: center; gap: .3rem; }
+  .tabs button.on { background: #fff; color: #2d3b45;
+                    box-shadow: 0 1px 2px rgba(0,0,0,.14); }
+  .tabs .ct { font-weight: 400; opacity: .7; }
+
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; gap: .6rem; padding: .6rem .1rem;
        border-bottom: 1px solid #e8eaec; align-items: flex-start; }
-  li.done { opacity: .45; }
+  li:last-child { border-bottom: 0; }
+  li.done { opacity: .5; }
   li.done .title { text-decoration: line-through; }
   input[type=checkbox] { margin: .2rem 0 0; flex: none; cursor: pointer; }
   .body { min-width: 0; flex: 1; }
@@ -163,6 +203,79 @@
          : 'matched none of ' + SUPERSEDED.join(', ') + ' — the panel is drawn '
            + 'but Canvas’ own list is still there. Inspect the sidebar and '
            + 'correct SUPERSEDED.');
+  }
+
+/* Grades back on the course cards.
+ *
+ * The one thing here that never touches Zipper. It is a number Canvas already
+ * computed, read same-origin and printed verbatim onto Canvas' own card -- no
+ * ranking, no storage, nothing entering the vault. Sending it to the backend
+ * would be a different feature (grades as a tracked metric) and is not this
+ * one; a course score is not a conclusion about anything, and the vault holds
+ * conclusions.
+ *
+ * These badges are injected into Canvas' DOM rather than the shadow root,
+ * because they belong to cards this file does not own. Hence inline styles:
+ * a class would be at the mercy of Canvas' stylesheet.
+ */
+  let scores = null;
+
+  async function grades() {
+    try {
+      const res = await fetch('/api/v1/courses?enrollment_state=active'
+                              + '&include[]=total_scores&per_page=100',
+        { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error('courses returned ' + res.status);
+      let text = await res.text();
+      if (text.startsWith('while(1);')) text = text.slice(9);
+      const out = {};
+      for (const c of JSON.parse(text)) {
+        // A student enrollment specifically: he is an observer or TA nowhere,
+        // but `enrollments[0]` would be a guess and this is not.
+        const e = (c.enrollments || []).find((x) => x.type === 'student');
+        if (e) out[String(c.id)] = e.computed_current_score;
+      }
+      return out;
+    } catch (e) {
+      log('could not read grades:', e);
+      return {};
+    }
+  }
+
+  const BADGE = 'position:absolute;top:8px;left:8px;z-index:3;pointer-events:none;'
+    + 'background:rgba(255,255,255,.94);color:#2d3b45;border-radius:99px;'
+    + 'padding:3px 8px;font:700 12px/1.2 LatoWeb,Lato,system-ui,sans-serif;'
+    + 'box-shadow:0 1px 3px rgba(0,0,0,.25);';
+
+  function decorateCards() {
+    if (!scores) return;
+    let added = 0, seen = 0;
+    for (const card of document.querySelectorAll('.ic-DashboardCard')) {
+      const a = card.querySelector('a[href*="/courses/"]');
+      const m = a && a.getAttribute('href').match(/\/courses\/(\d+)/);
+      if (!m) continue;
+      seen++;
+      // Canvas shows no score until something is graded, and "--%" is the
+      // honest rendering of that. A 0% would be a different and wrong claim.
+      const s = scores[m[1]];
+      const text = (s === null || s === undefined) ? '--%' : s + '%';
+      const have = card.querySelector('.zipper-grade');
+      if (have) {
+        if (have.textContent !== text) have.textContent = text;
+        continue;
+      }
+      if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+      const badge = document.createElement('div');
+      badge.className = 'zipper-grade';
+      badge.style.cssText = BADGE;
+      badge.textContent = text;
+      card.appendChild(badge);
+      added++;
+    }
+    if (added) log('put grades on', added, 'of', seen, 'cards');
+    else if (seen) once('cards', 'found', seen, 'course cards');
+    else once('nocards', 'no .ic-DashboardCard on the page — grade badges '
+              + 'need that selector corrected.');
   }
 
   function row(it) {
@@ -236,30 +349,91 @@
     return f(week.monday) + ' – ' + f(week.sunday);
   }
 
+/* Which tab is showing, kept outside `draw` so a refresh does not throw him
+ * back to To Do while he is reading Done.
+ */
+  let tab = 'todo';
+
+  /* Two tabs rather than one list, because sinking done work was not enough.
+   *
+   * `week_worklist` orders by day and sinks finished work *within* a day, so a
+   * Monday assignment handed in on Monday still sits above an open one due
+   * Sunday. In a real week that meant ten struck-through Sprint 0 rows above
+   * the two things he actually had to do -- the panel was technically correct
+   * and useless. Splitting them means the default view is only what is left,
+   * and the finished work is one click away rather than in the way.
+   */
   function draw(items, week, error) {
     const wrap = document.createElement('div');
     wrap.className = 'wrap';
+
+    const head = document.createElement('header');
     const h = document.createElement('h2');
     h.textContent = 'This week';
-    const src = document.createElement('span');
-    src.className = 'src';
-    src.textContent = spanOf(week) || 'zipper';
-    h.appendChild(src);
-    wrap.appendChild(h);
+    const span = document.createElement('span');
+    span.className = 'span';
+    span.textContent = spanOf(week) || 'zipper';
+    head.append(h, span);
+    wrap.appendChild(head);
 
     if (error) {
       const p = document.createElement('div');
       p.className = 'err';
       p.textContent = 'Zipper unreachable — showing nothing rather than guessing.';
       wrap.appendChild(p);
-    } else if (!items.length) {
+      root.lastChild.replaceWith(wrap);
+      return;
+    }
+
+    const done = items.filter((i) => i.done);
+    const todo = items.filter((i) => !i.done);
+    const pct = items.length ? Math.round((done.length / items.length) * 100) : 0;
+
+    const prog = document.createElement('div');
+    prog.className = 'prog';
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    const fill = document.createElement('i');
+    fill.style.width = pct + '%';
+    bar.appendChild(fill);
+    const num = document.createElement('div');
+    num.className = 'num';
+    const b = document.createElement('b');
+    b.textContent = pct + '%';
+    const frac = document.createElement('span');
+    frac.textContent = `${done.length} / ${items.length} done`;
+    num.append(b, frac);
+    prog.append(bar, num);
+    wrap.appendChild(prog);
+
+    const tabs = document.createElement('nav');
+    tabs.className = 'tabs';
+    for (const [key, label, n] of [['todo', 'To Do', todo.length],
+                                   ['done', 'Done', done.length]]) {
+      const btn = document.createElement('button');
+      btn.className = key === tab ? 'on' : '';
+      btn.textContent = label;
+      const ct = document.createElement('span');
+      ct.className = 'ct';
+      ct.textContent = n;
+      btn.appendChild(ct);
+      btn.addEventListener('click', () => { tab = key; draw(items, week); });
+      tabs.appendChild(btn);
+    }
+    wrap.appendChild(tabs);
+
+    const shown = tab === 'done' ? done : todo;
+    if (!shown.length) {
       const p = document.createElement('div');
       p.className = 'empty';
-      p.textContent = 'Nothing due this week.';
+      p.textContent = tab === 'done'
+        ? 'Nothing finished yet this week.'
+        : items.length ? 'All clear — everything this week is done.'
+                       : 'Nothing due this week.';
       wrap.appendChild(p);
     } else {
       const ul = document.createElement('ul');
-      for (const it of items) ul.appendChild(row(it));
+      for (const it of shown) ul.appendChild(row(it));
       wrap.appendChild(ul);
     }
     root.lastChild.replaceWith(wrap);
@@ -278,18 +452,13 @@
     log('got', items.length, 'items for', out.monday, '->', out.sunday);
     draw(items, out);
     hideNative();
+    scores = await grades();
+    decorateCards();
   }
 
   /* The sidebar arrives late and can be replaced under us, so the panel is
    * re-mounted whenever it goes missing rather than placed once at load.
    */
-  const said = new Set();
-  function once(key, ...msg) {        // ensure() runs per frame; say each thing once
-    if (said.has(key)) return;
-    said.add(key);
-    log(...msg);
-  }
-
   function ensure() {
     if (!onDashboard()) {
       once('path', 'not the dashboard, standing down:', location.pathname);
@@ -303,6 +472,7 @@
     }
     if (host && anchor.contains(host)) {
       hideNative();          // React re-renders reinstate the widgets we hid
+      decorateCards();       // ...and drop the badges off the cards
       return;
     }
     once('mount', 'mounting into', ANCHOR);
