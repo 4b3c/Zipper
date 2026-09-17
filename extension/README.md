@@ -143,6 +143,42 @@ Saving asks permission for that one origin; a
 personal tailnet address does not belong in a manifest in a public repo, which
 is why it is requested at runtime instead.
 
+### Updating it after the first install
+
+An installed `.xpi` is a **copy inside the browser profile**. Pulling this repo on
+the desktop changes nothing the browser will ever read again — which is the same
+property that frees the clone from having to sit anywhere in particular.
+
+So updates run through `update_url`, which is baked into the manifest and
+therefore covered by the signature: **it has to be right before the first
+signing, not added afterwards.** Firefox polls that URL on its own schedule,
+compares versions, checks `update_hash`, and installs what it finds.
+
+```bash
+python3 -m zipper ext                 # what is built, what is being served
+python3 -m zipper ext --build         # bump, sign at AMO, publish to data/ext/
+python3 -m zipper ext --build --bump minor
+```
+
+The build writes the `.xpi` and an `updates.json` into `data/ext/`, which the
+dashboard serves at `/ext/` over the tailnet — so shipping a change is one
+command on the box and nothing at all on the desktop. Needs `AMO_JWT_ISSUER` and
+`AMO_JWT_SECRET` in `.env`, and `ZIPPER_EXT_BASE` matching the manifest's
+`update_url`.
+
+Two things that will bite:
+
+- The `.xpi` must be served as `application/x-xpinstall`. As `octet-stream`
+  Firefox downloads it as a file, which looks exactly like the update doing
+  nothing at all.
+- AMO refuses a version number it has already seen, so a failed upload may still
+  have consumed the number. `--build` leaves the bump in place on failure for
+  that reason: retrying with the same version is the one thing guaranteed not to
+  work.
+
+Develop with a temporary add-on regardless — `about:debugging` → Reload is
+instant, and signing is a minute-long round trip. Sign to *ship*, not to test.
+
 ### Four traps that are not this extension's code
 
 Getting it running in Zen on Fedora on 2026-09-17 cost four failures, none of

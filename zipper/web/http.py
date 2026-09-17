@@ -58,6 +58,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _ext(self, name):
+        """Serve a built extension artifact. Two filenames, nothing else.
+
+        Firefox will not install an .xpi served as anything but
+        `application/x-xpinstall`; as octet-stream it downloads it as a file
+        instead, which looks like the update silently doing nothing.
+        """
+        root = ext.OUT   # data/ext/, where `zipper ext build` writes
+        # A browser-supplied path joined to a directory: refuse anything that is
+        # not a plain filename, rather than trusting normalisation to save us.
+        if not name or '/' in name or '\\' in name or name.startswith('.'):
+            return self._send(404, json.dumps({'error': 'no such artifact'}),
+                              'application/json')
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            return self._send(404, json.dumps({'error': 'no such artifact'}),
+                              'application/json')
+        ctype = ('application/x-xpinstall' if name.endswith('.xpi')
+                 else 'application/json')
+        with open(path, 'rb') as fh:
+            self._send(200, fh.read(), ctype)
+
     def do_OPTIONS(self):
         self._send(204, b'')
 
@@ -118,6 +140,13 @@ class Handler(BaseHTTPRequestHandler):
             # counts as this week will disagree, and the sidebar is the one
             # place he would not think to doubt it.
             self._send(200, json.dumps(week_worklist()), 'application/json')
+        elif self.path == '/ext' or self.path.startswith('/ext/'):
+            # The extension's own update channel. Firefox polls `updates.json`
+            # on its own schedule and fetches the `.xpi` named there, so this is
+            # the only route on this server whose caller is a browser's add-on
+            # manager rather than a page. Served from data/ext/, written by
+            # `zipper ext build`.
+            self._ext(self.path[5:].strip('/'))
         elif self.path == '/views' or self.path.startswith('/views/'):
             key = self.path[7:].strip('/') or (views_blob().get('pages') or [{'key': ''}])[0]['key']
             page = _views_page(key)

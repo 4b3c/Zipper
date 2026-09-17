@@ -6,8 +6,8 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, conversations, decisions, events, gh, ghapp, ics, lint,
-               metrics, runqueue, status, sync, views)
+from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, ics,
+               lint, metrics, runqueue, status, sync, views)
 
 
 def main():
@@ -95,6 +95,12 @@ def main():
     s.add_argument('--token', dest='print_token', action='store_true',
                    help='print a raw installation token')
     s.set_defaults(fn=ghapp.cmd_ghapp)
+
+    s = sub.add_parser('ext', help='build, sign and publish the browser extension')
+    s.add_argument('--build', action='store_true', help='sign a new version')
+    s.add_argument('--bump', choices=['major', 'minor', 'patch'], default='patch')
+    s.add_argument('--set-version', dest='set_version', metavar='X.Y.Z')
+    s.set_defaults(fn=ext.cmd_ext)
 
     a = ap.parse_args()
     if not getattr(a, 'fn', None):
