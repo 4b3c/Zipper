@@ -264,6 +264,59 @@ def case_echo_mode(tid):
             time.sleep(1)
 
 
+def case_new_thread_race():
+    """Two messages to a **brand-new** thread at once. Neither may be lost.
+
+    The regression test for the 12:45 503 on 2026-09-17. With no transcript
+    yet, both deliveries compute `--session-id` before either runs; they
+    serialize on the turn lock correctly, and then the second starts against
+    the session the first created while it was waiting -- "Session ID ... is
+    already in use", a 503, and `clear_delivery` throwing the message away.
+
+    `case_busy` does not cover this: by the time it runs the conversation
+    already has a transcript, so both deliveries pick `--resume` and there is
+    nothing to collide with. The window only exists on a thread's first two
+    messages, which is an ordinary Discord shape -- a follow-up typed seconds
+    after opening a thread.
+
+    Uses its own thread id so it starts from genuinely no transcript.
+    """
+    print('\nnew-thread race (two messages, no transcript yet)')
+    tid = 'local-selftest-race-%d' % int(time.time())
+    out = {}
+
+    def send(key):
+        out[key] = convhead.deliver(tid, 'Reply with the single word %s.' % key)
+
+    ts = [threading.Thread(target=send, args=(k,)) for k in ('FIRST', 'SECOND')]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    for k in ('FIRST', 'SECOND'):
+        r = out.get(k) or {}
+        check('race: %s delivered' % k, r.get('ok'), r.get('error', '')[:110])
+
+    sid = convcore.session_id(tid)
+    rows = 0
+    p = convhead.transcript(sid)
+    if p:
+        real, convcore.transcript = convcore.transcript, lambda _t=None, _p=p: _p
+        rows = convcore._user_rows(tid)
+        convcore.transcript = real
+    check('race: both turns reached the session', rows >= 2,
+          'user rows = %d (want 2)' % rows)
+
+    with convcore.mutate() as d:
+        d.pop(tid, None)
+    for q in (convhead._lock_path(tid), p):
+        try:
+            os.remove(q)
+        except Exception:
+            pass
+
+
 def case_silent_success(tid):
     """**The negative case that actually corresponds.**
 
@@ -376,6 +429,7 @@ def main():
         case_resume(tid)
         case_busy(tid)
         case_echo_mode(tid)
+        case_new_thread_race()
         case_silent_success(tid)
         case_timeout(tid)
     finally:

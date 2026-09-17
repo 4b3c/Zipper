@@ -107,7 +107,7 @@ def transcript(sid):
     return hits[0] if hits else ''
 
 
-def _resume_flags(thread_id):
+def _resume_flags(thread_id, force_resume=False):
     """`--session-id` assigns an id; `--resume` takes one back up.
 
     They are not interchangeable -- handing `--session-id` an id Claude already
@@ -120,9 +120,34 @@ def _resume_flags(thread_id):
     """
     sid = (convcore.load().get(str(thread_id)) or {}).get('session_id') \
         or convcore.session_id(thread_id)
-    if transcript(sid):
+    if force_resume or transcript(sid):
         return ['--resume', sid], sid, True
     return ['--session-id', sid], sid, False
+
+
+def _collision(err):
+    """Did Claude reject `--session-id` because it already knows that id?
+
+    An absent transcript is not proof an id is free. Claude Code keeps its own
+    record of sessions, so `--session-id X` can fail with "Session ID X is
+    already in use" while no `X.jsonl` exists anywhere -- and `_resume_flags`
+    reads the transcript, so it cannot tell those apart. The fix is to try the
+    other flag rather than to guess better, which is the same lesson as
+    `transcript`: stop deriving what can be observed.
+
+    Two ways to reach that state, one of them ordinary:
+
+    - **Two messages to a brand-new thread in quick succession.** Both compute
+      `--session-id` before either has run, serialize on the turn lock, and the
+      second then collides with the session the first just created. That is a
+      real Discord case -- a follow-up typed seconds after the first message on
+      a new thread -- and it cost a 503 at 12:45 on 2026-09-17, found by the
+      deploy watchdog when two probes drew the same second-resolution id.
+    - A transcript removed while the id stays known: a cleanup script, log
+      rotation, or Claude pruning old sessions. That one would break a dormant
+      conversation permanently rather than once.
+    """
+    return 'already in use' in (err or '')
 
 
 def _lock_path(thread_id):
@@ -221,73 +246,108 @@ def _run_turn(thread_id, text, timeout, out, on_echo=None):
     times -- see there.
     """
     timeout = TURN_TIMEOUT if timeout is None else timeout
-    flags, sid, resumed = _resume_flags(thread_id)
-    out.update(session_id=sid, resumed=resumed)
-
     mode = os.environ.get('ZIPPER_PERMISSION_MODE', 'auto')
-    cmd = [_claude()] + BASE_FLAGS + flags + ['--permission-mode', mode]
 
     try:
         with _turn_lock(thread_id, timeout) as waited:
             out['queued_for'] = waited
-            proc = subprocess.Popen(
-                cmd, cwd=VAULT, env=_env(thread_id),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                # Its own session, so the turn is not a child that dies with
-                # `systemctl restart zipper-web`. The pane got this from tmux
-                # plus `KillMode=process`; a subprocess has to ask. The reply
-                # does not depend on us surviving either way -- the Stop hook
-                # runs inside this process and forwards it.
-                start_new_session=True)
-            try:
-                # No readiness probe. The pane needed one because a paste
-                # before the TUI was listening was dropped silently; a pipe
-                # buffers, so the write cannot be early.
-                proc.stdin.write(_message(text).encode('utf-8'))
-                proc.stdin.flush()
-                proc.stdin.close()          # this turn is the whole conversation
-
-                chunks = []
-                for ev in _events(proc, timeout):
-                    if ev is None:
-                        continue
-                    kind = ev.get('type')
-                    if kind == 'user':
-                        out['echoed'] = True
-                        if on_echo:
-                            on_echo()   # releases a `wait='echo'` caller
-                    elif kind == 'assistant':
-                        for b in (ev.get('message') or {}).get('content') or []:
-                            if isinstance(b, dict) and b.get('type') == 'text':
-                                chunks.append(b.get('text') or '')
-                    elif kind == 'result':
-                        out['recorded'] = ev.get('subtype') == 'success'
-                        if ev.get('subtype') != 'success':
-                            out['error'] = str(ev.get('subtype') or 'result not success')
-                        if ev.get('result'):
-                            chunks = [str(ev['result'])]
-                        # The session id the CLI actually used. On a first run
-                        # this confirms the derived id took; on a resume it
-                        # catches a fork we did not ask for.
-                        if ev.get('session_id'):
-                            out['session_id'] = ev['session_id']
-                out['reply'] = ''.join(chunks).strip()
-                proc.wait(timeout=10)
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait(timeout=5)
-                err = (proc.stderr.read() or b'').decode('utf-8', 'replace').strip()
-                for h in (proc.stdout, proc.stderr):
-                    with contextlib.suppress(OSError):
-                        h.close()
+            # **Decided inside the lock, and retried on collision.** Reading
+            # this before waiting is what produced the 12:45 503 on
+            # 2026-09-17: two deliveries to a thread with no transcript both
+            # chose `--session-id`, queued correctly, and then the second ran
+            # against a session the first had created while it waited. The
+            # world changes while you hold in the queue, so the decision
+            # belongs after the wait, not before it -- and `--session-id`
+            # failing is itself the evidence that `--resume` is the right flag.
+            err = ''
+            for force in (False, True):
+                flags, sid, resumed = _resume_flags(thread_id, force_resume=force)
+                out.update(session_id=sid, resumed=resumed, error='')
+                err = _attempt(
+                    [_claude()] + BASE_FLAGS + flags + ['--permission-mode', mode],
+                    thread_id, text, timeout, out, on_echo)
+                if out['echoed'] or force or not _collision(err):
+                    break
     except (TimeoutError, RuntimeError) as e:
         out['error'] = str(e)
         return out
     except OSError as e:
         out['error'] = 'could not start claude: %s' % e
         return out
+
+    if out['echoed'] and out['recorded']:
+        out['turn_ok'] = True
+        convcore.touch(thread_id, active=True, session_id=out['session_id'])
+    elif not out['echoed']:
+        out['error'] = out['error'] or (
+            'the session never acknowledged the message%s'
+            % (' -- %s' % err[:300] if err else ''))
+    elif not out['recorded']:
+        out['error'] = out['error'] or (
+            'acknowledged but the turn did not complete%s'
+            % (' -- %s' % err[:300] if err else ''))
+    return out
+
+
+def _attempt(cmd, thread_id, text, timeout, out, on_echo=None):
+    """One `claude -p` process: hand over the message, read the turn. Returns stderr.
+
+    Split out of `_run_turn` so a session-id collision can be retried with the
+    other flag without re-entering the turn lock -- see `_collision`.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=VAULT, env=_env(thread_id),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Its own session, so the turn is not a child that dies with
+        # `systemctl restart zipper-web`. The pane got this from tmux plus
+        # `KillMode=process`; a subprocess has to ask. The reply does not
+        # depend on us surviving either way -- the Stop hook runs inside this
+        # process and forwards it.
+        start_new_session=True)
+    err = ''
+    try:
+        # No readiness probe. The pane needed one because a paste before the
+        # TUI was listening was dropped silently; a pipe buffers, so the write
+        # cannot be early.
+        proc.stdin.write(_message(text).encode('utf-8'))
+        proc.stdin.flush()
+        proc.stdin.close()              # this turn is the whole conversation
+
+        chunks = []
+        for ev in _events(proc, timeout):
+            if ev is None:
+                continue
+            kind = ev.get('type')
+            if kind == 'user':
+                out['echoed'] = True
+                if on_echo:
+                    on_echo()           # releases a `wait='echo'` caller
+            elif kind == 'assistant':
+                for b in (ev.get('message') or {}).get('content') or []:
+                    if isinstance(b, dict) and b.get('type') == 'text':
+                        chunks.append(b.get('text') or '')
+            elif kind == 'result':
+                out['recorded'] = ev.get('subtype') == 'success'
+                if ev.get('subtype') != 'success':
+                    out['error'] = str(ev.get('subtype') or 'result not success')
+                if ev.get('result'):
+                    chunks = [str(ev['result'])]
+                # The session id the CLI actually used. On a first run this
+                # confirms the derived id took; on a resume it catches a fork
+                # we did not ask for.
+                if ev.get('session_id'):
+                    out['session_id'] = ev['session_id']
+        out['reply'] = ''.join(chunks).strip()
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        err = (proc.stderr.read() or b'').decode('utf-8', 'replace').strip()
+        for h in (proc.stdout, proc.stderr):
+            with contextlib.suppress(OSError):
+                h.close()
+    return err
 
     if out['echoed'] and out['recorded']:
         out['turn_ok'] = True
