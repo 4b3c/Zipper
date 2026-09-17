@@ -38,9 +38,13 @@ resumes by session id instead, which Claude Code supports directly (verified:
 turns on a lock file so the case the pane handled by queueing is handled here by
 waiting. See `deliver` for what that costs.
 
-Nothing in this module is wired into `deliver`/`serve` yet. It is additive on
-purpose: run `tests/headless.py` against it and `tests/delivery.py` against the
-pane, and compare.
+**This is the Discord path.** `convcore.deliver` routes here as of 2026-09-17,
+and no tmux session is involved in answering a Discord message any more. What
+is left of the pane serves the dashboard's terminal card and carries no thread:
+a pane and a thread deriving their ids from one value meant a Discord message
+could start a second `claude` on the session a pane was already running, which
+put a reply in the wrong thread the same afternoon. `tests/headless.py` is the
+regression net.
 """
 import os, json, glob, time, fcntl, shutil, select, threading, subprocess, contextlib
 
@@ -78,6 +82,13 @@ def _env(thread_id):
     trap that once left the terminal card claiming ttyd was not installed.
     """
     env = dict(os.environ)
+    # **Inherited, so it has to be cleared.** `ZIPPER_CONVERSATION` marks a tmux
+    # pane, and the Stop hook refuses to forward when it sees one. A turn
+    # started from inside a pane -- a test, a `zipper` command typed at the
+    # keyboard -- would otherwise pass that marker down to its child and the
+    # reply would go nowhere, silently, which is the failure mode this whole
+    # path exists to remove.
+    env.pop('ZIPPER_CONVERSATION', None)
     env['ZIPPER_DISCORD_THREAD'] = str(thread_id)
     env['ZIPPER_VAULT'] = VAULT
     env.setdefault('HOME', '/root')
