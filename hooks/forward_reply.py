@@ -217,9 +217,22 @@ def main():
         # this turn. Send it rather than letting the turn vanish.
         _log('note  turn never closed; forwarding %d chars anyway' % len(reply))
 
-    # Which conversation is this? The env var is set for every per-thread
-    # instance; the registry lookup by session id covers a conversation that was
-    # adopted after it started, whose pane never had the variable.
+    # **A pane never forwards, whatever else is in its environment.**
+    # `ZIPPER_CONVERSATION` is set only by `convcore.start`, i.e. only inside a
+    # tmux pane, and `convhead` never sets it -- so its presence is a positive
+    # identification of a conversation that has no Discord thread to answer.
+    # Checked before the thread is resolved at all, because the failure being
+    # prevented is precisely a pane resolving *some* thread and posting a
+    # keyboard reply into it (2026-09-17). Env hygiene in `start` already
+    # prevents this; this makes it an invariant rather than a convention.
+    if os.environ.get('ZIPPER_CONVERSATION'):
+        _log('skip  dashboard pane (conversation=%r) -- panes do not forward'
+             % os.environ.get('ZIPPER_CONVERSATION'))
+        return
+
+    # Which conversation is this? The env var is set by `convhead` for a
+    # headless turn answering a Discord thread; the registry lookup by session
+    # id is the fallback for a turn whose process never had it.
     tid = os.environ.get('ZIPPER_DISCORD_THREAD') or ''
     if not tid:
         sid = payload.get('session_id') or ''
