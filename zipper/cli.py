@@ -6,8 +6,8 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, conversations, decisions, events, gh, ics, lint, metrics,
-               runqueue, status, sync, views)
+from . import (canvas, chat, conversations, decisions, events, gh, ghapp, ics, lint,
+               metrics, runqueue, status, sync, views)
 
 
 def main():
@@ -88,6 +88,13 @@ def main():
     s.add_argument('--limit', type=int, default=12)
     s.add_argument('--readme-chars', type=int, default=6000)
     s.set_defaults(fn=gh.cmd_inspect)
+
+    s = sub.add_parser('ghapp', help='the bot identity: show it, mint a token, push as it')
+    s.add_argument('--push', action='store_true', help='push a repo as the App')
+    s.add_argument('--repo', help='which repo to push (default: /opt/zipper)')
+    s.add_argument('--token', dest='print_token', action='store_true',
+                   help='print a raw installation token')
+    s.set_defaults(fn=ghapp.cmd_ghapp)
 
     a = ap.parse_args()
     if not getattr(a, 'fn', None):
