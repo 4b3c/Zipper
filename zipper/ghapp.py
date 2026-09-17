@@ -180,5 +180,9 @@ def _push(repo):
     out = (p.stdout + p.stderr).replace(auth, '<origin>')
     print(out.strip())
     if p.returncode == 0:
+        # Pushing to a rewritten URL rather than the named remote means git never
+        # learns that origin moved, so `git status` reads "ahead by N" forever and
+        # the next pass's diff looks unpushed. Advance the tracking ref by hand.
+        _run(['git', 'update-ref', 'refs/remotes/origin/' + branch, 'HEAD'], repo)
         print('pushed %s %s as %s' % (os.path.basename(repo), branch, identity()[0]))
     return p.returncode
