@@ -217,8 +217,10 @@ Three properties worth keeping:
   App — it would silently stop seeing most of the evidence.
 
 `zipper ghapp` with no flags prints the identity, mints a token and reports how many repos
-the installation actually reaches. If that says `selection=all`, the install is wider than
-the design assumes and wants narrowing in GitHub's UI.
+the installation reaches. `selection=all` is the intended setting, not a mistake to correct:
+the App is meant to work across his projects, not only on its own repository. The scope that
+matters is the account boundary — it is installed on the personal account, so ASU-LL is
+unreachable with this credential no matter what.
 
 **The hook is wired in `~/.claude/settings.json`, which is in neither repo.** One entry: `Stop`
 runs `hooks/forward_reply.py`, which posts the finished turn to the thread it belongs to. That

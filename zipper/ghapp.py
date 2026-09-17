@@ -14,9 +14,16 @@ Two credentials, and the difference matters:
   an install token  what actually touches the API - expires in an hour
 
 So the secret at rest is not a key to the account; it is a key to a one-hour,
-one-permission lease. `GITHUB_TOKEN` stays in `.env` because `zipper github` reads
-144 repos and the App is installed on his account only - fetching is still his.
-This module is about *writing*.
+one-permission lease - `contents: write`, and nothing else, on whatever the
+installation covers. `GITHUB_TOKEN` stays in `.env` because `zipper github` reads
+144 repos across an org the App is not installed on; fetching is still his. This
+module is about *writing*.
+
+The installation is deliberately account-wide rather than one repo: Zipper is
+meant to work across his projects, not just its own. That trades the narrowest
+possible blast radius for reach, knowingly. What it does NOT trade away is the
+org: the App is installed on his personal account, so no ASU-LL repo is reachable
+with this token under any circumstance.
 
 Stdlib only, like the rest of the engine: RS256 is signed by shelling out to
 `openssl`, which is already on the box, rather than taking a `cryptography`
@@ -158,8 +165,7 @@ def _show():
         inst = api('/app/installations/%s' % INSTALL, _jwt())
         sel = inst.get('repository_selection', '?')
         print('token      : ok')
-        print('reaches    : %d repo(s), selection=%s%s'
-              % (n, sel, '   <-- wider than it needs to be' if sel == 'all' else ''))
+        print('reaches    : %d repo(s), selection=%s' % (n, sel))
         print('account    : %s' % inst['account']['login'])
     except Exception as e:
         print('token      : ok, but the API call failed - %s' % e); return 1
