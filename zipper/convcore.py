@@ -39,11 +39,10 @@ def session_id(thread_id):
 def tmux_name(thread_id):
     """Which tmux session holds this thread.
 
-    Normally derived, like the session id. The exception is a *bound* thread: an
-    already-running conversation adopted by a thread so it can be carried on
-    from a phone. Its pane is not ours to name, so the registry records the real
-    one. Every conversation starts with a thread, so binding is only ever the
-    adoption case.
+    Normally derived from the conversation's own id -- which for a pane is now
+    always a `local-` one, so a pane's name can no longer collide with a Discord
+    thread's. The `tmux` key is the exception, honoured for registry rows
+    written before binding was removed; see the note where `bind` used to be.
     """
     row = load().get(str(thread_id)) or {}
     return row.get('tmux') or 'zipper-%s' % thread_id
@@ -73,16 +72,12 @@ def target(thread_id):
     return '=%s:' % tmux_name(thread_id)
 
 
-def bind(thread_id, tmux, session_id=None, title=''):
-    """Point a Discord thread at a conversation that is already running.
-
-    Bound rows are pinned: the reaper must never close one, because the session
-    on the other end is something the operator is using -- closing the terminal
-    he is typing in to save a cache he isn't paying for would be a poor trade.
-    """
-    return touch(thread_id, tmux=tmux, bound=True, pinned=True,
-                 session_id=session_id or (load().get(str(thread_id)) or {}).get('session_id'),
-                 title=title, closed=False)
+# `bind()` lived here until 2026-09-17: it pointed a Discord thread at a pane
+# that was already running, so a keyboard conversation could be picked up from a
+# phone. That is the coupling this module no longer has -- a pane and a thread
+# sharing an id is what started two `claude` processes on one session -- and it
+# had no callers left when it went. A `tmux` key on an old registry row is still
+# honoured by `tmux_name` so existing rows keep resolving; nothing writes one.
 
 
 def _project_dir(path=None):
@@ -245,17 +240,32 @@ def _wait_ready(thread_id, timeout=25.0):
 
 
 def start(thread_id, prompt=None):
-    """Bring a conversation up, detached. Resumes if it has spoken before.
+    """Bring a tmux conversation up, detached. **The dashboard's terminal only.**
 
     --session-id assigns the id on a first run; --resume takes it back up. They
     are not interchangeable -- passing --session-id an id Claude already knows
     is an error -- so the transcript on disk decides which one this is.
 
+    **A pane is not a Discord thread and is not given `ZIPPER_DISCORD_THREAD`**
+    (2026-09-17). It used to be: every pane was started bound to a thread id, so
+    the Stop hook forwarded whatever was said at the keyboard straight into
+    Discord. Once `deliver` moved to the headless protocol that binding turned
+    actively harmful, because `tmux_name` and `session_id` are both derived from
+    the *same* id -- so a Discord message to a thread that also had a pane
+    started a second `claude --resume` on the session that pane was already
+    running. Two processes writing one transcript, and an answer surfacing in
+    whichever thread the hook resolved first. That is what put a reply in the
+    wrong thread on 2026-09-17.
+
+    So a pane now carries no thread at all. The dashboard opens them under
+    `local-` ids, which is the namespace `hooks/forward_reply.py` skips, and a
+    Discord conversation is a `claude -p` process with nothing in tmux at all --
+    see `convhead`.
+
     **Auto permission mode.** A conversation Zipper starts is usually one nobody
-    is watching: reached from a phone, or resumed to answer a message. In manual
-    mode the first tool call stops it dead behind a prompt only someone at the
-    keyboard can clear, and from Discord that looks exactly like Zipper having
-    gone quiet. `ZIPPER_PERMISSION_MODE` overrides it.
+    is watching. In manual mode the first tool call stops it dead behind a
+    prompt only someone at the keyboard can clear. `ZIPPER_PERMISSION_MODE`
+    overrides it.
     """
     name = tmux_name(thread_id)
     row = load().get(str(thread_id)) or {}
@@ -265,12 +275,20 @@ def start(thread_id, prompt=None):
     mode = os.environ.get('ZIPPER_PERMISSION_MODE', 'auto')
     inner = ' '.join(['exec', 'claude'] + flag + ['--permission-mode', mode])
     env = dict(os.environ)
-    env['ZIPPER_DISCORD_THREAD'] = str(thread_id)
     env['ZIPPER_VAULT'] = VAULT
     env.setdefault('HOME', '/root')
+    # **`ZIPPER_CONVERSATION`, never `ZIPPER_DISCORD_THREAD`.** The two answer
+    # different questions and conflating them is what leaked a reply into a
+    # thread. `ZIPPER_DISCORD_THREAD` means "where does a reply go", and the
+    # Stop hook reads it; a pane has nowhere for one to go, so it must not have
+    # it. `ZIPPER_CONVERSATION` means "which conversation am I", which a pane
+    # does need: `zipper commit` excludes itself from the live-conversation
+    # check by it, and without an identity every commit from a terminal would
+    # count that terminal as somebody else and demand --force.
+    env['ZIPPER_CONVERSATION'] = str(thread_id)
     subprocess.run(
         [_tmux(), 'new-session', '-d', '-s', name, '-c', VAULT,
-         '-e', 'ZIPPER_DISCORD_THREAD=%s' % thread_id,
+         '-e', 'ZIPPER_CONVERSATION=%s' % thread_id,
          '-e', 'ZIPPER_VAULT=%s' % VAULT,
          # A detached tmux gets whatever PATH the service had. Claude lives in
          # ~/.local/bin, which systemd's default PATH does not include -- the

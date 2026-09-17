@@ -490,12 +490,14 @@ def cmd_commit(a):
         # vault -- that was a deliberate call -- so the check is a warning, not
         # a mutex, and --force is the way past it.
         #
-        # `chat.default_thread()` rather than a second os.environ read: the
-        # variable is ZIPPER_DISCORD_THREAD, and a local guess at the name got
-        # it wrong (ZIPPER_THREAD, never set by anything), so every commit from
-        # inside a Discord thread counted *itself* as the other conversation
-        # and demanded --force. One reader, one name.
-        mine = chat.default_thread()
+        # `chat.current_conversation()`, not `default_thread()`: this asks who
+        # this process *is*, not where its replies go. A local guess at the name
+        # got it wrong once (ZIPPER_THREAD, never set by anything), so every
+        # commit from inside a conversation counted *itself* as the other one
+        # and demanded --force. Since 2026-09-17 a pane carries
+        # ZIPPER_CONVERSATION and no thread, so reading the thread here would
+        # bring that bug back for every commit typed at the keyboard.
+        mine = chat.current_conversation()
         live = [c for c in conversations.listing()
                 if c.get('alive') and c.get('thread_id') != mine]
     except Exception:

@@ -66,26 +66,26 @@ def current_conversation():
 
 
 def new_conversation(prompt=None):
-    """Start another conversation, closing none.
+    """Start another conversation, closing none. **It gets no Discord thread.**
 
-    It gets a Discord thread of its own straight away, so a conversation begun
-    at the keyboard can be picked up from a phone without being adopted after
-    the fact -- which is the awkward path that binding exists to patch.
+    A dashboard conversation lives in tmux and is reached at the keyboard. It
+    used to open a thread of its own so it could be picked up from a phone, and
+    that is precisely the coupling removed on 2026-09-17: a pane and a thread
+    deriving their ids from one value meant a Discord message could resume the
+    session the pane was running, and a reply typed at the keyboard could be
+    forwarded into a thread nobody was reading. Discord conversations are
+    headless now (`zipper.convhead`), so a pane has no thread to belong to.
+
+    The id is therefore always in the `local-` namespace -- the one
+    `hooks/forward_reply.py` skips, and that `_row_title` and
+    `_sync_thread_name` keep out of the Discord rename machinery. The random
+    suffix is there because two conversations opened in the same second would
+    otherwise collide on the id, and a collision here means two panes sharing
+    one session.
     """
     title = 'Dashboard \u00b7 %s' % datetime.datetime.now().strftime('%a %H:%M')
-    try:
-        r = chat._bot('/thread', {'name': title,
-                                  'message': 'New conversation started from the dashboard.'})
-        tid = str(r.get('thread_id') or '')
-    except Exception as e:
-        # No Discord, no thread -- but the conversation should still start. A
-        # local id keeps it addressable in the list; it just cannot be reached
-        # from a phone, and the reply hook skips it for exactly that reason.
-        publish('status', 'terminal    no Discord thread for this conversation: %s' % e)
-        tid = 'local-%d' % int(time.time())
-    if not tid:
-        return {'ok': False, 'error': 'could not open a Discord thread'}
-    conversations.touch(tid, title=title, auto_named=True, discord_name=title)
+    tid = 'local-%d-%s' % (int(time.time()), os.urandom(3).hex())
+    conversations.touch(tid, title=title, auto_named=True)
     r = conversations.start(tid, prompt=prompt or None)
     if not r.get('ok'):
         return r
@@ -312,9 +312,23 @@ def open_conversation(thread_id):
     A conversation closed by the reaper is resumed rather than replaced -- the
     transcript is the conversation, and picking one out of the list must never
     mean starting a stranger with the same name.
+
+    **Only a `local-` conversation can be opened in the terminal** (2026-09-17).
+    This is the last place the pane/thread coupling could come back: starting a
+    pane for a Discord thread names it after that thread and resumes that
+    thread's session, which is the same id a headless turn resumes -- so the
+    next Discord message to it would put a second `claude` on a session the pane
+    was already running. Two processes, one transcript. Refusing is the point,
+    not a limitation to work around: a Discord conversation lives in
+    `claude -p` and has no pane, by design.
     """
     if not thread_id:
         return {'ok': False, 'error': 'thread_id required'}
+    if not str(thread_id).startswith('local-'):
+        return {'ok': False,
+                'error': 'that is a Discord conversation -- it runs headless and '
+                         'has no terminal. Answer it in Discord, or start a new '
+                         'conversation here.'}
     if not conversations.alive(thread_id):
         r = conversations.start(thread_id)
         if not r.get('ok'):

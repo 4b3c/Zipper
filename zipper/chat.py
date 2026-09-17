@@ -52,14 +52,32 @@ def _bot_multipart(path, message, file_path, thread_id=None, timeout=120):
         return json.loads(r.read().decode('utf-8') or '{}')
 
 def default_thread():
-    """The thread this conversation belongs to.
+    """**Where a Discord message from this process goes.** A thread, or nothing.
 
-    Each per-thread instance is started with ZIPPER_DISCORD_THREAD in its
-    environment, so `discord send` inside it answers the thread it was spoken
-    to in, without the session having to know its own id. Unset in the
-    dashboard's own terminal, where a send goes to the main channel as before.
+    Set by `convhead` for a headless turn answering a Discord thread, so
+    `discord send` reaches the thread it was spoken to in without the session
+    having to know its own id.
+
+    **Unset in every tmux pane** as of 2026-09-17, so an out-of-band send from
+    the dashboard's terminal goes to the main channel. A pane is not a thread;
+    it used to be handed one, and the Stop hook then forwarded whatever was
+    typed at the keyboard into Discord.
     """
     return os.environ.get('ZIPPER_DISCORD_THREAD') or None
+
+
+def current_conversation():
+    """**Which conversation this process is.** An id, thread-shaped or `local-`.
+
+    Deliberately not `default_thread`, and the split is the whole point: that
+    one answers "where does a reply go", this one answers "who am I". A pane has
+    an identity but no thread, so `zipper commit` can still leave itself out of
+    the live-conversation check while a send from it correctly falls back to the
+    main channel. Reading one variable for both questions is what made a
+    keyboard reply land in a Discord thread.
+    """
+    return (os.environ.get('ZIPPER_DISCORD_THREAD')
+            or os.environ.get('ZIPPER_CONVERSATION') or None)
 
 
 def discord_typing(active, thread_id=None):
