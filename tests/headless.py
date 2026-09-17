@@ -216,6 +216,54 @@ def case_busy(tid):
           'user rows %d -> %d -> %d (want +2 overall)' % (before, mid, after))
 
 
+def case_echo_mode(tid):
+    """`wait='echo'` must return on the handover, not on the answer.
+
+    The contract the Discord door runs on, and the reason `deliver` has two
+    modes at all: `bot/client.py` holds the request for at most 300s and its
+    docstring says it "waits on delivery, not on the answer". A turn that takes
+    longer than that is normal -- so if this mode blocked to completion, the bot
+    would post "Zipper hasn't answered in 300s" into the thread while the turn
+    was running perfectly well.
+
+    So the assertion is about *timing*: a turn given real work must be
+    acknowledged quickly and still be running when this returns.
+    """
+    print("\necho mode (returns on delivery, not on completion)")
+    before = convcore._user_rows(tid)
+    t0 = time.time()
+    r = convhead.deliver(
+        tid,
+        'Using Bash, run `sleep 4 && echo one`, then `sleep 4 && echo two`, '
+        'then `sleep 4 && echo three`. Then reply DONE.',
+        wait='echo')
+    took = time.time() - t0
+
+    check('echo: reports ok on the handover', r.get('ok'), r.get('error', ''))
+    check('echo: the session acknowledged it', r.get('echoed'))
+    check('echo: returned before the turn finished', took < 20,
+          'returned in %.1fs' % took)
+    check('echo: does not claim the turn completed', not r.get('recorded'))
+    check('echo: does not claim a reply', not r.get('reply'), repr(r.get('reply'))[:40])
+
+    # The turn is still running in a daemon thread. Wait it out so the next
+    # case is not racing it, and confirm it actually landed.
+    end = time.time() + 180
+    while time.time() < end and convcore._user_rows(tid) <= before:
+        time.sleep(1)
+    check('echo: the turn completed behind us',
+          convcore._user_rows(tid) > before,
+          'user rows %d -> %d' % (before, convcore._user_rows(tid)))
+    # Let the background turn release the lock before the next case.
+    end = time.time() + 120
+    while time.time() < end:
+        try:
+            with convhead._turn_lock(tid, timeout=0.1):
+                break
+        except TimeoutError:
+            time.sleep(1)
+
+
 def case_silent_success(tid):
     """**The negative case that actually corresponds.**
 
@@ -327,6 +375,7 @@ def main():
         case_cold(tid)
         case_resume(tid)
         case_busy(tid)
+        case_echo_mode(tid)
         case_silent_success(tid)
         case_timeout(tid)
     finally:

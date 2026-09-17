@@ -42,7 +42,7 @@ Nothing in this module is wired into `deliver`/`serve` yet. It is additive on
 purpose: run `tests/headless.py` against it and `tests/delivery.py` against the
 pane, and compare.
 """
-import os, json, glob, time, fcntl, shutil, select, subprocess, contextlib
+import os, json, glob, time, fcntl, shutil, select, threading, subprocess, contextlib
 
 from .core import *          # noqa: F401,F403 -- the shared vocabulary
 from . import convcore
@@ -214,27 +214,15 @@ def _events(proc, timeout):
                 yield None
 
 
-def deliver(thread_id, text, timeout=None):
-    """Send `text` to a conversation and run the turn to completion.
+def _run_turn(thread_id, text, timeout, out, on_echo=None):
+    """Hand the message over and read the turn to its end. Fills `out` in place.
 
-    Returns the same `ok`/`error` shape `convcore.paste` returns, so the two can
-    be swapped at a call site, plus what the pane path had no way to report:
-
-        echoed      the session acknowledged the message (`user` event)
-        recorded    the turn completed (`result` event)
-        reply       the assistant text, which `paste` never saw at all
-        queued_for  seconds spent waiting on a turn already in flight
-
-    **`ok` means both echoed and recorded.** Either alone is the failure the
-    whole pane apparatus was built to catch: an echo without a result is a turn
-    that started and died, and a result without an echo would mean the process
-    answered something other than what was sent. Reporting success on one of
-    them is how 2026-09-09 and -09-10 both got a `200` over a silent thread.
+    Separated from `deliver` so the two questions can be answered at different
+    times -- see there.
     """
     timeout = TURN_TIMEOUT if timeout is None else timeout
     flags, sid, resumed = _resume_flags(thread_id)
-    out = {'ok': False, 'error': '', 'echoed': False, 'recorded': False,
-           'reply': '', 'session_id': sid, 'resumed': resumed, 'queued_for': 0.0}
+    out.update(session_id=sid, resumed=resumed)
 
     mode = os.environ.get('ZIPPER_PERMISSION_MODE', 'auto')
     cmd = [_claude()] + BASE_FLAGS + flags + ['--permission-mode', mode]
@@ -245,7 +233,13 @@ def deliver(thread_id, text, timeout=None):
             proc = subprocess.Popen(
                 cmd, cwd=VAULT, env=_env(thread_id),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
+                stderr=subprocess.PIPE,
+                # Its own session, so the turn is not a child that dies with
+                # `systemctl restart zipper-web`. The pane got this from tmux
+                # plus `KillMode=process`; a subprocess has to ask. The reply
+                # does not depend on us surviving either way -- the Stop hook
+                # runs inside this process and forwards it.
+                start_new_session=True)
             try:
                 # No readiness probe. The pane needed one because a paste
                 # before the TUI was listening was dropped silently; a pipe
@@ -261,6 +255,8 @@ def deliver(thread_id, text, timeout=None):
                     kind = ev.get('type')
                     if kind == 'user':
                         out['echoed'] = True
+                        if on_echo:
+                            on_echo()   # releases a `wait='echo'` caller
                     elif kind == 'assistant':
                         for b in (ev.get('message') or {}).get('content') or []:
                             if isinstance(b, dict) and b.get('type') == 'text':
@@ -294,7 +290,7 @@ def deliver(thread_id, text, timeout=None):
         return out
 
     if out['echoed'] and out['recorded']:
-        out['ok'] = True
+        out['turn_ok'] = True
         convcore.touch(thread_id, active=True, session_id=out['session_id'])
     elif not out['echoed']:
         out['error'] = out['error'] or (
@@ -304,4 +300,77 @@ def deliver(thread_id, text, timeout=None):
         out['error'] = out['error'] or (
             'acknowledged but the turn did not complete%s'
             % (' -- %s' % err[:300] if err else ''))
+    return out
+
+
+# How long to wait for the session to acknowledge a message, in `wait='echo'`.
+# Bounds the handover only; the turn behind it can run for as long as it likes.
+ECHO_TIMEOUT = float(os.environ.get('ZIPPER_HEAD_ECHO_TIMEOUT', 120))
+
+
+def deliver(thread_id, text, wait='turn', timeout=None):
+    """Send `text` to a conversation. `wait` decides which question is answered.
+
+    Returns the `ok`/`error` shape `convcore.paste` returns, so the two can be
+    swapped at a call site, plus what the pane path could not report:
+
+        echoed      the session acknowledged the message (`user` event)
+        recorded    the turn ran to completion (`result` event)
+        reply       the assistant text, which `paste` never saw at all
+        queued_for  seconds spent waiting on a turn already in flight
+
+    **The two witnesses answer different questions, and callers want different
+    ones.** `echoed` is delivery: Claude Code handing back the message it
+    accepted. `recorded` is completion, which can be an hour later. Treating
+    them as one flag was a mistake in the first draft of this module -- it made
+    `ok` mean "the turn finished", which is not what any caller of
+    `convcore.deliver` has ever waited for.
+
+    `wait='echo'` -- **the Discord door.** Returns as soon as the message is
+    acknowledged; the turn continues in a daemon thread. This is the contract
+    `bot/client.py` already documents ("this request waits on delivery, not on
+    the answer") and enforces with `POST_TIMEOUT = 300`. Blocking for the whole
+    turn instead would post a false "Zipper hasn't answered in 300s" into the
+    thread on any turn longer than five minutes, while the turn was in fact
+    running fine. The reply comes back the way it always has, through the Stop
+    hook -- verified to fire under `-p` -- so nothing here posts it, and
+    nothing here may, or the thread gets it twice.
+
+    `wait='turn'` -- runs to completion and reports `reply`. What the tests use,
+    and the default, because a caller that wants a reply should have to say so
+    rather than get a silently truncated one.
+
+    On `wait='echo'`, `ok` reflects the handover alone and `recorded`/`reply`
+    are necessarily still false/empty when this returns -- they belong to a turn
+    that has not finished. Do not read them in that mode.
+    """
+    out = {'ok': False, 'error': '', 'echoed': False, 'recorded': False,
+           'turn_ok': False, 'reply': '', 'session_id': '', 'resumed': False,
+           'queued_for': 0.0}
+    echoed, done = threading.Event(), threading.Event()
+
+    def run():
+        try:
+            _run_turn(thread_id, text, timeout, out, on_echo=echoed.set)
+        except Exception as e:                      # a thread dying silently is
+            out['error'] = out['error'] or repr(e)  # how a message goes missing
+        finally:
+            echoed.set()                            # never leave a caller hanging
+            done.set()
+
+    t = threading.Thread(target=run, name='head-%s' % thread_id, daemon=True)
+    t.start()
+
+    if wait == 'turn':
+        done.wait(timeout if timeout is not None else TURN_TIMEOUT)
+        out['ok'] = out['turn_ok']
+        if not done.is_set() and not out['error']:
+            out['error'] = 'the turn did not finish in time'
+        return out
+
+    # wait='echo': the handover, bounded independently of the turn.
+    echoed.wait(min(ECHO_TIMEOUT, timeout or ECHO_TIMEOUT))
+    out['ok'] = out['echoed']
+    if not out['ok'] and not out['error']:
+        out['error'] = 'the session did not acknowledge the message in %gs' % ECHO_TIMEOUT
     return out

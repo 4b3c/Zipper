@@ -474,7 +474,20 @@ PASTE_TRIES = 3
 
 
 def paste(thread_id, text):
-    """Type a block into a conversation's pane.
+    """Type a block into a conversation's pane. **The dashboard only.**
+
+    As of 2026-09-17 this is no longer how a message reaches a conversation --
+    `deliver` uses the headless protocol, and Discord does not come through
+    here at all. The one caller left is the terminal card's resume/catchup
+    button (`web/conv.py`), which hands the run queue to the pane the operator
+    is currently looking at. That is genuinely a pane operation: routing it
+    through `convhead` would deliver the text to the session while the terminal
+    on screen showed nothing happening, which is worse than either option.
+
+    So this stays until the terminal card does, and then both go together.
+    Everything below it -- `_wait_ready`, `_await_echo`, `_submit`,
+    `_input_line`, `_await_recorded` -- exists only to serve this function, and
+    is dead weight the moment it is gone. Do not add callers.
 
     Bracketed paste, then a separate Enter -- as keystrokes every newline in a
     multi-line message would submit a fragment.
@@ -661,20 +674,36 @@ def clear_delivery(thread_id):
 
 
 def deliver(thread_id, text, source='discord'):
-    """The whole Discord path in one call: start or resume, then hand it over.
+    """The whole Discord path in one call: hand the message to a conversation.
 
     Provenance is written first and **withdrawn if the handover fails**, so the
     registry never claims a message reached a session that never saw it.
+
+    **This goes through the headless protocol, not the pane** (2026-09-17).
+    There is no `alive` check and no tmux session in this path any more: a turn
+    is its own `claude -p` process, resumed by session id, so "is there a pane
+    to paste into" stopped being a question that matters. What is left of the
+    pane -- `start`, `paste`, `alive` -- serves the dashboard's terminal card
+    and nothing else; see `paste`.
+
+    The handover is confirmed by the session echoing the message back, which is
+    a fact from Claude Code rather than a reading of a screen. That is the
+    whole reason for the change: this path had four silent-delivery bugs in ten
+    days (2026-09-07, -09, -10, -16), every one of them a case of the terminal
+    looking right while nothing had been delivered.
+
+    `wait='echo'` keeps the contract `bot/client.py` documents -- return on
+    delivery, not on the answer -- so a long turn does not trip its 300s
+    timeout. The reply still comes back through the Stop hook, which fires
+    under `-p`; nothing here posts it.
     """
+    from . import convhead          # imported here: convhead imports this module
     note_delivery(thread_id, text)
-    if alive(thread_id):
-        res = paste(thread_id, text)
-        if not res.get('ok'):
-            clear_delivery(thread_id)
-            return res
-        return dict(res, state='live')
-    r = start(thread_id, prompt=text)
+    r = convhead.deliver(thread_id, text, wait='echo')
     if not r.get('ok'):
         clear_delivery(thread_id)
         return r
+    # `state` is what the dashboard's status line reads. A resumed session and a
+    # brand-new one are still worth telling apart; "live" is gone, because
+    # every turn now starts its own process and none of them is already up.
     return dict(r, state='resumed' if r.get('resumed') else 'new')
