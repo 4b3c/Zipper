@@ -86,7 +86,31 @@ def bind(thread_id, tmux, session_id=None, title=''):
 
 
 def _project_dir(path=None):
-    return os.path.join(CLAUDE_PROJECTS, (path or VAULT).replace('/', '-'))
+    """Claude's transcript directory for a working directory.
+
+    **Underscores become dashes too, not just separators.** This replaced `/`
+    only until 2026-09-17, which is correct for `/opt/vault` and wrong for any
+    path containing an `_`: `/tmp/zipper-selftest-5o2853l_` is stored as
+    `-tmp-zipper-selftest-5o2853l-`, so the derived path named a directory that
+    does not exist.
+
+    Production never saw it -- the vault's path has no underscore -- but
+    `tests/delivery.py` runs in a `mkdtemp` sandbox and draws a random suffix,
+    so it was blind whenever that suffix happened to contain one: `_user_rows`
+    opened a missing file, read zero, and reported a message that *had* been
+    delivered as lost. A delivery test that fails on a coin flip is worse than
+    no delivery test, because the failure reads as a bug in the thing it is
+    checking. Found while building `zipper.convhead`, whose first run hit
+    exactly this.
+
+    Verified against the real directories on this box: `/` and `_` both map to
+    `-`. Whether Claude also rewrites other characters is not something the
+    directories here can answer, so `convhead.transcript` locates a session by
+    globbing for its id instead of deriving the path at all -- the encoding
+    cannot be got wrong if it is never reconstructed. That approach does not fit
+    here: `convstate.detect_session` needs this as a directory to list.
+    """
+    return os.path.join(CLAUDE_PROJECTS, (path or VAULT).replace('/', '-').replace('_', '-'))
 
 
 def transcript(thread_id):
