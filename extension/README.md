@@ -117,7 +117,7 @@ pressing on exactly the days it mattered. The browser draws; Zipper decides.
 **Chrome / Arc** — `chrome://extensions`, Developer mode on, *Load unpacked*,
 choose this directory. Permanent, free, done.
 
-**Firefox** — release Firefox **cannot permanently install an unsigned
+**Firefox / Zen** — release Firefox **cannot permanently install an unsigned
 extension**, and unlike older advice there is no `xpinstall.signatures.required`
 override in release builds. Two real options:
 
@@ -143,6 +143,38 @@ Saving asks permission for that one origin; a
 personal tailnet address does not belong in a manifest in a public repo, which
 is why it is requested at runtime instead.
 
+### Four traps that are not this extension's code
+
+Getting it running in Zen on Fedora on 2026-09-17 cost four failures, none of
+them in anything here. Each looked like a bug in the extension and none was.
+
+- **A Flatpak browser cannot read the unpacked directory.** Picking
+  `manifest.json` goes through the XDG portal, which grants access to *that file
+  and nothing else*, so the manifest parses and every sibling comes back
+  **empty**. The symptoms are a blank options page, `view-source` showing
+  nothing, Quirks Mode (an empty document has no doctype) and the background
+  module failing to load — one cause wearing four hats. Load from a directory
+  the sandbox can see, `flatpak override --user --filesystem=...`, or install a
+  signed `.xpi`, which is a single file and sidesteps the sandbox entirely.
+- **HTTPS-Only Mode silently upgrades the endpoint.** Zen enables it by default.
+  A `http://…:8800` address is rewritten to `https://`, the plain-HTTP server
+  never completes the handshake, and `fetch` reports a generic CORS failure with
+  `Status code: (null)`. A normal tab offers a "continue to HTTP site" prompt;
+  an extension's `fetch` gets no prompt and just fails. **Read the scheme in the
+  error message, not the one you typed** — that is the whole tell.
+- The fix is a real certificate, not an exception: Tailscale issues one for the
+  MagicDNS name, so the dashboard is served over TLS and the upgrade succeeds
+  instead of failing. It runs on **port 9443** because **nginx already owns
+  `0.0.0.0:443`** on that box for the public sites; `tailscaled` cannot bind it,
+  the request falls through to nginx, and it answers with a public certificate
+  that does not match the tailnet name.
+- **`curl -I` proves nothing against this server.** It sends `HEAD`, which the
+  handler does not implement, so a healthy box answers `501`. Use `-i`.
+
+The general lesson is the one the *Two bugs worth not repeating* note already
+makes about browsers: every one of these was invisible to every check that was
+not the real browser on the real machine.
+
 ## Why Canvas is a content script
 
 It must run *in the page*. `canvas_session` is a SameSite cookie, so a request
@@ -164,9 +196,13 @@ should not take a debugging session to find that out.
 | | state |
 |---|---|
 | **Chrome / Arc, Canvas** | **working end to end**, verified 2026-09-08: 110 planner items with live submitted flags, `source: "extension"` in `canvas.json` |
+| **Firefox / Zen, Canvas** | **working end to end**, verified 2026-09-17 on Fedora: same 110 items, `source: "extension"`. Loaded as a temporary add-on |
 | **Hash-gated sending** | written 2026-09-15, **not yet watched in a browser.** The server half is fine and the logic is small, but nobody has confirmed that a second load is actually skipped or that the 30-minute heartbeat still arrives. Watch the background console for `skipped: 'unchanged'` before believing it |
-| **The to-do panel** | **rendering in Chrome, verified 2026-09-15**: mounts into `#right-side`, hides 2 native widgets, draws the week. The anchor and `SUPERSEDED` selectors were right. Ticking a row through to `/api/done` has *not* been exercised yet, nor has the unreachable-Zipper path |
-| **Tabs, the week bar, grade badges** | added 2026-09-15 off a Better Campus comparison, **not yet seen rendered.** The tab split and the percentage are verified against the live vault (17 items → 7 to do, 59%), but `.ic-DashboardCard` and the `a[href*="/courses/"]` inside it are written from how Canvas builds its cards, not from this install — same class of guess as `SUPERSEDED`, which happened to be right. The panel logs `no .ic-DashboardCard on the page` if it is wrong |
+| **The to-do panel** | **rendering**, Chrome 2026-09-15 and Zen 2026-09-17. Mounts into `#right-side`, hides the 2 native widgets, draws the week |
+| **Tabs, the week bar, grade badges** | **rendering, verified 2026-09-17** — first sighting in any browser. `.ic-DashboardCard` and the `a[href*="/courses/"]` inside it were guesses from how Canvas builds its cards, and they were right |
+| **Ticking through to `/api/done`** | **working both ways, verified 2026-09-17.** A tick and an untick each wrote `Inbox/overrides.json` and the store returned to its prior four entries, so the round trip closes and leaves nothing behind |
+| **The unreachable-Zipper path** | still unexercised. Stop `zipper-web` and load Canvas to see it |
+| **Hash-gated sending, watched** | still unwatched. A second load *appears* to skip — one `fetched` stamp survived several reloads — but a silent failure looks identical from the server. Only `skipped: 'unchanged'` in the background console tells them apart |
 
 Two bugs worth not repeating, both invisible to every check that is not a
 browser. `node --check` passes each content script in isolation, but an
@@ -175,7 +211,7 @@ extension gets **one isolated world per frame**, so a second file declaring
 hence the closure around each. And `all: initial` in a shadow root, which is
 what walls Canvas' CSS out, also resets `display` to `inline` and collapses the
 panel.
-| **Firefox** | **never loaded, in any form.** Not once, not temporarily. The manifest is written for it and the reasoning is sound, but no line of this has run in Gecko. Assume the first attempt finds something |
+| **Signing / permanent install** | **not done.** Everything above was a temporary add-on, gone on restart. `web-ext sign --channel=unlisted` is still ahead |
 | **Any site other than Canvas** | **nothing exists.** `collectors/` has one file. Onshape is an intention, not code. The "one collector per site" shape is a claim the second collector will test, and the reporter may well need changing when it arrives |
 
 ## The honest limitation
