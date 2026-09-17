@@ -5,8 +5,8 @@ The GitHub App identity - how Zipper acts on GitHub as itself.
 Before this existed, everything Zipper did on GitHub borrowed Abram: his personal
 token in `.env`, reaching all 144 repos including the 65 NDA'd ASU-LL ones, with
 every commit and every push indistinguishable from him at a keyboard. The App is a
-separate actor - `zipper-4b3c[bot]`, its own profile, its own noreply address, no
-square on his contribution graph.
+separate actor - a `<slug>[bot]` account with its own profile and its own noreply
+address, and no square on his contribution graph.
 
 Two credentials, and the difference matters:
 
@@ -31,15 +31,19 @@ INSTALL  = os.environ.get('ZIPPER_GH_APP_INSTALL_ID', '')
 KEYPATH  = os.environ.get('ZIPPER_GH_APP_KEY') or os.path.join(ROOT, 'zipper-app.pem')
 CACHE    = os.path.join(ROOT, 'data', 'gh-app-token.json')
 
-# Written by GitHub when the App was registered; read back by `identity()` so a
-# commit's author line is never guessed. The number is the *bot user's* id, not
-# the App's - a wrong one still commits, but the avatar never resolves.
-BOT_SLUG = os.environ.get('ZIPPER_GH_APP_SLUG', 'zipper-4b3c')
-BOT_UID  = os.environ.get('ZIPPER_GH_APP_UID', '330611607')
+# Both come from GitHub when the App is registered, and both are deliberately
+# empty here: this repository is public, and a default naming a real account
+# would be exactly the bug section 7 forbids. The number is the *bot user's* id
+# (`/users/<slug>[bot]`), not the App's - a wrong one still commits, but the
+# avatar never resolves and the commit reads as an unknown author.
+BOT_SLUG = os.environ.get('ZIPPER_GH_APP_SLUG', '')
+BOT_UID  = os.environ.get('ZIPPER_GH_APP_UID', '')
 
 
 def identity():
     """(name, email) for git. The email is what makes GitHub show the bot."""
+    if not (BOT_SLUG and BOT_UID):
+        raise RuntimeError('ZIPPER_GH_APP_SLUG / _UID are unset - see .env.example')
     return ('%s[bot]' % BOT_SLUG,
             '%s+%s[bot]@users.noreply.github.com' % (BOT_UID, BOT_SLUG))
 
@@ -135,7 +139,10 @@ def cmd_ghapp(a):
 
 
 def _show():
-    name, email = identity()
+    try:
+        name, email = identity()
+    except RuntimeError as e:
+        name, email = '(unset)', str(e)
     print('app id     : %s' % (APP_ID or '(unset)'))
     print('install id : %s' % (INSTALL or '(unset)'))
     print('key        : %s' % (KEYPATH if os.path.exists(KEYPATH)

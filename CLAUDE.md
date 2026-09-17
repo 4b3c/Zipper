@@ -196,6 +196,30 @@ seam between this code and somebody's life. Everything else (GitHub user and org
 host, tokens) has an empty or generic default, and the code must stay that way. **A default
 that names a real person, school, or host is a bug in this repository.**
 
+### Who commits, and who pushes
+
+Since **2026-09-17** this repository is written by a GitHub App, not by Abram. `git`'s
+local identity here is `<slug>[bot]` with the App's noreply address, and pushes go through
+`python3 -m zipper ghapp --push`, which mints a one-hour installation token from the private
+key and rewrites the remote URL in memory. **Never `git push origin` by hand** — that falls
+back to his stored credentials and the push lands as him, which is the exact thing this
+undoes.
+
+Three properties worth keeping:
+
+- **The key on disk mints tokens and does nothing else.** A compromised box gets an hour of
+  `contents: write`, not an account.
+- **The token never reaches `.git/config`.** `push_url()` returns it; nothing stores it, and
+  a failed push has the URL scrubbed out of stderr before it is printed. A token in a log
+  line is a token in the Discord thread.
+- **Reading is still his.** `GITHUB_TOKEN` is unchanged, because `zipper github` reads 144
+  repos across an org the App is not installed on. Do not try to move the fetcher onto the
+  App — it would silently stop seeing most of the evidence.
+
+`zipper ghapp` with no flags prints the identity, mints a token and reports how many repos
+the installation actually reaches. If that says `selection=all`, the install is wider than
+the design assumes and wants narrowing in GitHub's UI.
+
 **The hook is wired in `~/.claude/settings.json`, which is in neither repo.** One entry: `Stop`
 runs `hooks/forward_reply.py`, which posts the finished turn to the thread it belongs to. That
 is the whole wiring, and a rebuilt box needs it re-added by hand since the file is unversioned.
