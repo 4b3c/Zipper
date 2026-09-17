@@ -147,19 +147,39 @@ watching a terminal for — a long build, a scheduled run, anything triggered by
 cron. The person who started it is probably not looking at this pane.
 
 **Messages arriving from Discord.** The bot POSTs every message to Zipper's
-`/discord`, which routes it to the one Claude session:
+`/discord`, which routes it to that thread's conversation:
 
-| tmux | ttyd | what happens |
-|---|---|---|
-| live | serving | pasted straight into the conversation |
-| live | stopped | ttyd is brought back, then pasted |
-| none | — | a new conversation starts, primed with the message |
+| conversation | what happens |
+|---|---|
+| running | delivered over the headless protocol (`convhead`) |
+| closed | `claude -p --resume` takes the session back up, then delivers |
+| never spoken to | a new headless conversation starts, primed with the message |
 
-A message arrives **verbatim** — no tag, no reply instruction. A Claude session
-cannot tell a Discord message from a typed one and does not need to: the reply
-is forwarded by `hooks/forward_reply.py` on the `Stop` hook, routed on where
-*that turn's* input came from. Provenance lives in the registry
-(`conversations.note_delivery`), not in the prompt.
+**A Discord conversation is headless, and a tmux pane is never delivered to**
+(2026-09-17). `convhead.py` speaks to `claude -p` over streaming JSON; there is
+no terminal, nothing to draw, and no reading characters back to find out whether
+the message took. The dashboard's panes are a separate population under `local-`
+ids, and a pane carries no thread.
+
+That separation is load-bearing, because `tmux_name` and `session_id` both derive
+from the conversation id. While a pane and a thread could share one, a Discord
+message resumed the session a pane was already running — two `claude` processes
+on one transcript — and the `Stop` hook forwarded keyboard input into a thread.
+`bind()` is gone; do not reintroduce a path that gives a pane a thread id.
+
+Note for restarts: an already-running pane keeps the environment tmux gave it, so
+restarting `zipper-web` does not unbind a pane started by older code. Compare
+`systemctl show -p ExecMainStartTimestamp` against the commit time before
+believing a fix of this kind is in effect.
+
+A message arrives **verbatim** — no tag, no reply instruction. A session must not
+infer a given turn's origin: the reply is forwarded by `hooks/forward_reply.py`
+on the `Stop` hook, routed on where *that turn's* input came from, and provenance
+lives in the registry (`conversations.note_delivery`), not in the prompt. The
+*conversation's* kind is knowable — `ZIPPER_DISCORD_THREAD` is set for a headless
+Discord conversation and never for a pane, while `ZIPPER_CONVERSATION` carries
+identity for both — but a thread's conversation can still be typed into, so that
+tells you nothing about a single message.
 
 So **write one reply, to the terminal, and do not call `discord send` to
 answer.** Calling it as well posts the message twice. It remains the right tool
