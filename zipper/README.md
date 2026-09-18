@@ -396,10 +396,27 @@ the terminal keeps the working detail.
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
 
-**The idle close is a price signal, not a saving.** An idle instance costs nothing to leave
+**The idle sweep is a price signal, not a saving.** An idle instance costs nothing to leave
 running; what changes at the prompt-cache boundary is the price of the *next* message, which
-is re-read in full once the cache is cold. `ZIPPER_IDLE_SECONDS` (default 55 min) sets it.
-A closed conversation resumes on the next message — the transcript is on disk either way.
+is re-read in full once the cache is cold. It happens in two steps, five minutes apart, and
+they are not the same event:
+
+| | when | what |
+|---|---|---|
+| **warn** | `ZIPPER_IDLE_SECONDS`, default **55 min** | posts the notice to the thread, with the size of the re-read. The cache is still warm — answering now is still cheap, which is the only reason the warning is worth sending |
+| **close** | `ZIPPER_CACHE_TTL_SECONDS`, default **60 min** | closes the row, silently. He was already told; a notice about an expiry that has happened is not actionable |
+
+Using a conversation resets the clock — `last_active()` takes the newest of the registry
+stamp and the transcript's mtime — and `touch(active=True)` clears the warned mark, so the
+notice fires once per *idle period*, not once per conversation. A closed conversation resumes
+on the next message; the transcript is on disk either way.
+
+**Warm is not `alive()`.** The sweep asks how long a conversation has been idle, never whether
+it has a tmux session. Those were the same question until 2026-09-17, when Discord moved to
+`claude -p`: a headless conversation's process exits at the end of every turn, so every thread
+the warning exists for read as dead and the sweep skipped all of them. What expires is the
+cache, and that is a fact about idle time, not about a pane. `alive()` still means tmux
+everywhere else — the terminal card, ttyd, paste — and should stay that way.
 
 ### Traps
 

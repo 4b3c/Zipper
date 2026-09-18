@@ -29,7 +29,14 @@ NS = uuid.uuid5(uuid.NAMESPACE_URL, 'zipper-discord-thread')
 # only knows when we last spoke *to* it.
 CLAUDE_PROJECTS = os.path.expanduser('~/.claude/projects')
 
+# Two moments, five minutes apart, and they are not the same event. At
+# IDLE_NOTICE the prompt cache is still warm: a reply lands at the cache rate
+# and the warning is something he can act on. At IDLE_EXPIRY the entry is gone
+# and the row is closed -- which is what lets "closed" mean "cold" everywhere
+# else that reads it, the dashboard's full-price warning included. Warning at
+# the moment of expiry would be a weather report about yesterday.
 IDLE_NOTICE = int(os.environ.get('ZIPPER_IDLE_SECONDS', 55 * 60))
+IDLE_EXPIRY = int(os.environ.get('ZIPPER_CACHE_TTL_SECONDS', 60 * 60))
 
 
 def session_id(thread_id):
@@ -208,6 +215,11 @@ def touch(thread_id, active=False, **fields):
         row.setdefault('last_active', now)
         if active:
             row['last_active'] = now
+            # Using the conversation is what resets the cache clock, so it also
+            # clears the fact that we warned about it. Without this the notice
+            # fires once per conversation forever instead of once per idle
+            # period, and a thread he keeps answering goes quiet after one.
+            row.pop('warned_at', None)
         row.update(fields)
     return row
 

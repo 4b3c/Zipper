@@ -11,7 +11,8 @@ import os, re, json, time, shutil, subprocess, datetime
 
 from .core import *          # noqa: F401,F403
 from . import core
-from .convcore import (CLAUDE_PROJECTS, CONV_JSON, IDLE_NOTICE, _pane, _project_dir,
+from .convcore import (CLAUDE_PROJECTS, CONV_JSON, IDLE_EXPIRY, IDLE_NOTICE,
+                       _pane, _project_dir,
                        _tmux, alive, load, mutate, save, session_id, target,
                        tmux_name, touch, transcript)
 from .ttyd import _port_open, stop_ttyd
@@ -426,41 +427,61 @@ def listing():
 
 
 def reap(notify=None):
-    """Close conversations that have gone quiet for longer than the cache holds.
+    """Warn a conversation before its prompt cache expires, then close it.
 
-    Not a token saving -- an idle instance costs nothing to leave running. It
-    is a *price signal*: past this point the next message re-reads the whole
-    conversation at full input price instead of hitting the prompt cache, and
-    the operator asked to be told before that happens rather than discover it
-    on the bill.
+    Two moments, not one. At `IDLE_NOTICE` the cache is still warm, so a reply
+    still lands at the cache rate -- that is the only point where telling him is
+    something he can act on, and it is the entire reason this exists. At
+    `IDLE_EXPIRY` the entry is gone and the row is closed.
+
+    None of this is a token saving: an idle instance costs nothing to leave
+    running. It is a *price signal*, and the size in the notice is the point --
+    "re-read at full price" is not actionable without knowing how much there is
+    to re-read. A 6k conversation is worth waking without thinking; a 400k one
+    is a decision.
+
+    Liveness is deliberately **not** `alive()`. That asks whether a tmux session
+    exists, which is the right question for the terminal card and the wrong one
+    here: since 2026-09-17 a Discord conversation is a `claude -p` process that
+    exits at the end of every turn, so every thread this was written for read as
+    dead and the sweep passed over all of them. What expires is the cache, and
+    that is a fact about idle time and the transcript, not about a pane.
     """
     closed = []
     for row in listing():
-        if not row['alive'] or row.get('idle_for') is None:
+        if row.get('closed') or row.get('idle_for') is None:
             continue
-        if row.get('pinned'):
-            continue          # a bound conversation is somebody's live terminal
-        if row['idle_for'] < IDLE_NOTICE:
+        # A bound or pinned row is a terminal the operator is sitting in front
+        # of. `close()` refuses it anyway, so an earlier version warned it every
+        # sweep and then failed to close it -- a notice every two minutes for as
+        # long as it stayed quiet. Skip it outright.
+        if row.get('pinned') or row.get('bound'):
             continue
-        tid = row['thread_id']
-        if notify:
-            # The size is the whole point of the notice: "re-read at full price"
-            # is a warning he cannot act on without knowing how much there is to
-            # re-read. A 6k conversation is worth waking without thinking; a
-            # 400k one is a decision. Omitted rather than guessed when the
-            # transcript has no usage to read yet.
+        tid, idle = row['thread_id'], row['idle_for']
+        if idle >= IDLE_EXPIRY:
+            # Closed without a notice. Either he was warned at IDLE_NOTICE and
+            # let it lapse, or the row predates the warning -- and telling him
+            # about an expiry that has already happened gives him nothing to do
+            # about it. The warning was the message; this is just bookkeeping.
+            close(tid, reason='idle')
+            closed.append(tid)
+        elif idle >= IDLE_NOTICE and not row.get('warned_at'):
             size = fmt_tokens(row.get('context_tokens'))
+            mins = max(1, (IDLE_EXPIRY - idle) // 60)
             try:
-                notify(tid, '_[conversation idle, closing — the prompt cache has expired, '
-                            'so picking this up again re-reads %s at full price]_'
-                            % ('all ~%s tokens' % size if size else 'it'))
+                notify and notify(tid,
+                    '_[idle %dm — this conversation\'s prompt cache expires in '
+                    '~%dm. Answer before then and it stays cheap; after that, '
+                    'picking it up re-reads %s at full price]_'
+                    % (idle // 60, mins,
+                       'all ~%s tokens' % size if size else 'the whole transcript'))
             except Exception:
-                # Discord being down must not stop the sweep: the close below is
-                # the part that keeps the registry honest, and it happens either
-                # way. The notice is a courtesy.
-                pass
-        close(tid, reason='idle')
-        closed.append(tid)
+                # Left unmarked on purpose: Discord being down should mean the
+                # notice is retried on the next sweep, not silently skipped for
+                # the rest of the idle period. It is self-limiting -- once
+                # IDLE_EXPIRY passes, the branch above closes the row regardless.
+                continue
+            touch(tid, warned_at=datetime.datetime.now().isoformat(timespec='seconds'))
     return closed
 
 
@@ -497,6 +518,7 @@ def cmd_conversations(a):
                                             r.get('session_id', '')[:8]))
     print('\ncontext is what the next message to that conversation would carry --\n'
           'the size of the re-read once its cache is cold.')
-    print('idle close at %d min. A closed conversation resumes on the next message;\n'
-          'its transcript is on disk either way.' % (IDLE_NOTICE // 60))
+    print('idle warning at %d min, close at %d min -- the warning lands while the\n'
+          'cache is still warm. A closed conversation resumes on the next message;\n'
+          'its transcript is on disk either way.' % (IDLE_NOTICE // 60, IDLE_EXPIRY // 60))
     return 0

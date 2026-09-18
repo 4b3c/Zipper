@@ -147,6 +147,14 @@ class Handler(BaseHTTPRequestHandler):
             # the ordering is -- two surfaces that decide for themselves what
             # counts as this week will disagree, and the sidebar is the one
             # place he would not think to doubt it.
+            # Log the caller for the same reason `/ext/` does: `tailscale serve`
+            # makes every request arrive from 127.0.0.1, so without this a rate
+            # measured here cannot be attributed to a machine -- and "is the
+            # panel refetching too often" is a question about one browser.
+            sys.stderr.write('worklist: %s | %s\n' % (
+                self.headers.get('X-Forwarded-For', 'local'),
+                self.headers.get('User-Agent', '-')[:60]))
+            sys.stderr.flush()
             self._send(200, json.dumps(week_worklist()), 'application/json')
         elif self.path == '/ext' or self.path.startswith('/ext/'):
             # The extension's own update channel. Firefox polls `updates.json`
@@ -438,11 +446,14 @@ BOOKMARKLET = (
 
 
 def conversation_reaper():
-    """Close conversations once their prompt cache has gone cold.
+    """Warn conversations before their prompt cache goes cold, then close them.
 
     The message is the point, not the kill: an idle instance costs nothing, but
     the next message to a cold one is re-read from scratch at full price. The
-    operator asked to know that before he types, not after.
+    operator asked to know that before he types, not after -- which is why the
+    notice goes out at `IDLE_NOTICE`, while answering is still cheap, and the
+    close follows at `IDLE_EXPIRY`. `reap` returns only what it closed; the
+    warnings announce themselves in the thread.
     """
     def notify(tid, text):
         chat.discord_send(text, thread_id=tid)
