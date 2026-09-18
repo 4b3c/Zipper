@@ -298,7 +298,13 @@ def override_key(it):
     """
     if it['source'] == 'canvas':
         return canvas._ov_key(it['tag'], it['title'])
-    return 'task:%s|%s' % (it['tag'], it['title'])
+    # `|` is the delimiter, and a project link may legitimately carry an alias --
+    # `[project:: [[Others#Mercy|Mercy]]]` captures as `Others#Mercy|Mercy` and
+    # puts a second delimiter in the key. `toggle_done` then splits on the first
+    # one and looks for a task called "Mercy|Buy Mercy a birthday present",
+    # which exists nowhere, so the tick box silently does nothing. Keep the link
+    # target and drop the display alias.
+    return 'task:%s|%s' % (str(it['tag'] or '').split('|')[0], it['title'])
 
 def toggle_done(key):
     """Cross something off by hand.

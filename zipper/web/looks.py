@@ -170,6 +170,36 @@ def task_rows():
     return [i for i in allitems if i['source'] == 'task']
 
 
+def done_task_rows():
+    """Ticked `Tasks/` lines. `data.open_tasks` drops these by design, so the
+    Done tab needs its own pass over the same files.
+
+    Keyed exactly like an open task -- `data.override_key`'s task branch -- so
+    the tick box un-ticks the real markdown line rather than orphaning it.
+    """
+    from .data import task_text
+    out = []
+    for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
+        for line in open(p, encoding='utf-8'):
+            m = core.TASK_RE.match(line)
+            if not m or m.group(1).lower() != 'x':
+                continue
+            raw = m.group(2)
+            proj = re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
+            due = re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
+            text = task_text(raw)
+            tag = proj.group(1) if proj else ''
+            out.append({'source': 'task', 'title': text, 'tag': tag,
+                        'due': due.group(1) if due else '', 'done': True,
+                        'overdue': False, 'points': 0, 'url': '', 'at': '',
+                        # Same alias trap as `data.override_key` -- the tag must
+                        # not contain the delimiter or the title cannot be read
+                        # back out of the key.
+                        'key': 'task:%s|%s' % (tag.split('|')[0], text),
+                        'score': 0})
+    return out
+
+
 def _page(title, css, body, extra_js=''):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -357,6 +387,24 @@ li.row{display:flex;gap:9px;padding:5px 0;align-items:flex-start}
 .flag{color:var(--warn);font-size:13px;padding:3px 0;line-height:1.45}
 .wsum{font:10.5px/1 var(--mono);color:var(--dim);letter-spacing:.06em;text-align:right;
   margin:11px 0 0}
+/* Two tabs per card, not a filter toggle: "open" and "done" are both real
+   readings of the same list, and the count sits on the tab so the done pile is
+   legible without being in the way. Open is what the card shows at rest. */
+.tabs{display:flex;gap:4px;margin-left:auto}
+.tabb{font:10px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;background:none;
+  border:1px solid var(--line);color:var(--dim);border-radius:99px;padding:4px 10px;cursor:pointer}
+.tabb:hover{color:var(--fg)}
+.tabb.on{color:var(--accent);border-color:var(--accent);background:var(--paper)}
+.tabb .c{opacity:.7;margin-left:4px}
+/* Three per project, then the rest on request. A project with eleven open
+   todos should read as one heavy project, not eleven rows. */
+li.hid{display:none}
+.grp.expand li.hid{display:flex}
+.moretog{font:10px/1.6 var(--mono);letter-spacing:.06em;color:var(--accent);background:none;
+  border:0;padding:3px 0 0;cursor:pointer;text-align:left}
+.moretog:hover{text-decoration:underline}
+.grp.expand .moretog .lbl:after{content:'show less'}
+.moretog .lbl:after{content:'show all'}
 """
 
 
@@ -471,35 +519,73 @@ def look_rail(day=None):
         carry = ('<div class="carry"><div class="ch">Carried in &middot; %d</div><ul>%s</ul></div>'
                  % (len(wk['carried']),
                     ''.join(_rail_row(it, showdue=True, pill=True) for it in wk['carried'])))
-    secs = []
-    for i, dd in enumerate(days):
-        items = wk['days'][dd]
-        openn = sum(1 for it in items if not it['done'])
-        dd_d = datetime.date(*map(int, dd.split('-')))
-        secs.append('<div class="grp%s"><div class="grph"><span class="nm%s">%s %s</span>%s'
-                    '<span class="w">%s</span></div>%s</div>'
-                    % (' sel' if dd == day else '',
-                       ' dayhd' + (' on' if dd == today_iso else ''),
-                       DOW[i], dd_d.strftime('%d'),
-                       '<span class="today">today</span>' if dd == today_iso else '',
-                       ('%d open' % openn) if openn else ('%d done' % len(items)) if items else '',
-                       ('<ul>%s</ul>' % ''.join(_rail_row(it, pill=True) for it in items)) if items
-                       else '<div class="dash">&mdash;</div>'))
+    def day_sections(pred, keep_empty):
+        """The week, sectioned by day. `keep_empty` holds the seven headings
+        open even where nothing matches -- the open tab keeps the week's shape
+        visible, the done tab has no shape worth keeping."""
+        out = []
+        for i, dd in enumerate(days):
+            items = [it for it in wk['days'][dd] if pred(it)]
+            if not items and not keep_empty:
+                continue
+            dd_d = datetime.date(*map(int, dd.split('-')))
+            out.append('<div class="grp%s"><div class="grph"><span class="nm%s">%s %s</span>%s'
+                       '<span class="w">%s</span></div>%s</div>'
+                       % (' sel' if dd == day else '',
+                          ' dayhd' + (' on' if dd == today_iso else ''),
+                          DOW[i], dd_d.strftime('%d'),
+                          '<span class="today">today</span>' if dd == today_iso else '',
+                          len(items) or '',
+                          ('<ul>%s</ul>' % ''.join(_rail_row(it, pill=True) for it in items))
+                          if items else '<div class="dash">&mdash;</div>'))
+        return ''.join(out)
+
     allit = [it for v in wk['days'].values() for it in v]
     nopen = sum(1 for it in allit if not it['done'])
+    ndone = len(allit) - nopen
     pts = sum(it['points'] or 0 for it in allit if not it['done'])
+    secs_open = day_sections(lambda it: not it['done'], True)
+    secs_done = day_sections(lambda it: it['done'], False)
 
     # --- Tasks: by project ----------------------------------------------
+    def project_groups(rows, by_score):
+        """Projects, each showing three todos.
+
+        Ordered by the priority of the project's *best* item, not by how many
+        it has: the project holding the single most pressing thing belongs at
+        the top even if it holds only that one, and a project with eleven
+        low-priority todos should not outrank it by sheer volume. Done work has
+        no priority, so that pane falls back to count.
+        """
+        byproj = {}
+        for t in rows:
+            byproj.setdefault(t['tag'] or 'unfiled', []).append(t)
+        if by_score:
+            order = sorted(byproj, key=lambda k: (-max(t['score'] for t in byproj[k]), k))
+        else:
+            order = sorted(byproj, key=lambda k: (-len(byproj[k]), k))
+        out = []
+        for tag in order:
+            items = sorted(byproj[tag], key=lambda t: (-t['score'], t['due'] or '9999',
+                                                       t['title']))
+            shown = ''.join(
+                _rail_row(t, showat=False, showdue=True).replace(
+                    '<li class="row', '<li class="row hid', 1) if n >= 3
+                else _rail_row(t, showat=False, showdue=True)
+                for n, t in enumerate(items))
+            extra = len(items) - 3
+            out.append('<div class="grp"><div class="grph"><span class="nm" %s>%s</span>'
+                       '<span class="w">%s%d</span></div><ul>%s</ul>%s</div>'
+                       % (_style('--hue:%d' % hue(tag)), esc(tag),
+                          'top %d of ' % 3 if extra > 0 else '', len(items), shown,
+                          '<button class="moretog"><span class="lbl"></span> '
+                          '&middot; %d more</button>' % extra if extra > 0 else ''))
+        return ''.join(out)
+
     tasks = task_rows()
-    byproj = {}
-    for t in tasks:
-        byproj.setdefault(t['tag'] or 'unfiled', []).append(t)
-    tgroups = ''.join(
-        '<div class="grp"><div class="grph"><span class="nm" %s>%s</span>'
-        '<span class="w">%d</span></div><ul>%s</ul></div>'
-        % (_style('--hue:%d' % hue(tag)), esc(tag), len(byproj[tag]),
-           ''.join(_rail_row(t, showat=False, showdue=True) for t in byproj[tag]))
-        for tag in sorted(byproj, key=lambda t: (-len(byproj[t]), t)))
+    donetasks = done_task_rows()
+    tgroups = project_groups(tasks, True)
+    tgroups_done = project_groups(donetasks, False)
 
     fl = flags()
     label = ('Today' if is_today else
@@ -511,21 +597,46 @@ def look_rail(day=None):
             '<div class="panel"><h2>%s <span class="n">%d</span></h2>'
             '<div class="band">%s</div></div>'
             '<div class="cols">'
-            '<div class="panel"><h2>Due this week <span class="n">%d open</span></h2>'
-            '%s%s<p class="wsum">%d this week &middot; %d open%s</p></div>'
-            '<div class="panel"><h2>Tasks <a class="lk" href="/tasks" target="_blank" '
-            'rel="noopener">see all</a></h2>%s</div>'
+            '<div class="panel" data-tabs><h2>Due this week'
+            '<span class="tabs"><button class="tabb on" data-tab="open">open'
+            '<span class="c">%d</span></button>'
+            '<button class="tabb" data-tab="done">done<span class="c">%d</span></button>'
+            '</span></h2>'
+            '<div data-pane="open">%s%s<p class="wsum">%d this week &middot; %d open%s</p></div>'
+            '<div data-pane="done" hidden>%s</div></div>'
+            '<div class="panel" data-tabs><h2>Tasks'
+            '<span class="tabs"><button class="tabb on" data-tab="open">open'
+            '<span class="c">%d</span></button>'
+            '<button class="tabb" data-tab="done">done<span class="c">%d</span></button>'
+            '<a class="tabb" href="/tasks" target="_blank" rel="noopener">all</a>'
+            '</span></h2>'
+            '<div data-pane="open">%s</div>'
+            '<div data-pane="done" hidden>%s</div></div>'
             '</div>%s</div>'
             % (looknav(1), esc(d.strftime('%A %d %B')), esc(label),
                '' if is_today else '<a class="back" href="/look/1">back to today &rarr;</a>',
                ''.join(chips), esc(label), len(blocks), ''.join(rail),
-               nopen, carry, ''.join(secs), len(allit), nopen,
+               nopen, ndone, carry, secs_open, len(allit), nopen,
                ' &middot; %g pts' % pts if pts else '',
+               secs_done or '<p class="empty">Nothing handed in this week yet.</p>',
+               len(tasks), len(donetasks),
                tgroups or '<p class="empty">No open tasks.</p>',
+               tgroups_done or '<p class="empty">Nothing ticked off yet.</p>',
                ('<div class="panel"><h2>Flags <span class="n">%d</span></h2>%s</div>'
                 % (len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)))
                if fl else ''))
-    return _page('Look 1 - Rail', RAIL_CSS, body)
+    return _page('Look 1 - Rail', RAIL_CSS, body, RAIL_JS)
+
+
+RAIL_JS = """
+// Reveal the rest of a project's todos in place. Deliberately not a link to
+// /tasks: the question "what else is on Pantry" is asked while looking at
+// Pantry, and leaving the page to answer it loses the other fifteen projects.
+document.addEventListener('click',e=>{
+  const b=e.target.closest('.moretog'); if(!b) return;
+  b.closest('.grp').classList.toggle('expand');
+});
+"""
 
 
 LOOKS[1] = ('Rail', 'horizontal day, week by day, sections by subject', look_rail)
