@@ -296,7 +296,7 @@
         li.classList.toggle('done', box.checked);
       }
       box.disabled = false;
-      refresh();
+      refresh(true);   // he just changed it; the cache is stale by definition
     });
 
     const body = document.createElement('div');
@@ -372,7 +372,11 @@
     h.textContent = 'This week';
     const span = document.createElement('span');
     span.className = 'span';
-    span.textContent = spanOf(week) || 'zipper';
+    // The installed version, so an auto-update is visible rather than inferred.
+    // `getManifest()` reads the running extension, not the source on disk, which
+    // is the only thing that answers "has the new build arrived here yet".
+    const v = (api.runtime.getManifest && api.runtime.getManifest().version) || '?';
+    span.textContent = (spanOf(week) || 'zipper') + '  \u00b7  v' + v;
     head.append(h, span);
     wrap.appendChild(head);
 
@@ -439,8 +443,24 @@
     root.lastChild.replaceWith(wrap);
   }
 
-  async function refresh() {
+  /* Canvas' React replaces the sidebar often, and every replacement re-mounts
+   * the panel. Re-mounting is necessary; re-asking Zipper is not. The last
+   * payload is reused for a few seconds so a burst of re-renders costs one
+   * round trip instead of six -- the timer, a tab becoming visible, and a tick
+   * all still force a real fetch, because those are the moments the answer can
+   * actually have changed.
+   */
+  let cached = null, cachedAt = 0;
+  const CACHE_MS = 30 * 1000;
+
+  async function refresh(force) {
     if (!root) return;
+    if (!force && cached && Date.now() - cachedAt < CACHE_MS) {
+      draw(cached.items || [], cached);
+      hideNative();
+      decorateCards();
+      return;
+    }
     const out = await zipper('/api/worklist');
     if (!out || out.ok === false) {
       log('could not reach zipper:', (out && out.error) || 'no reply from the '
@@ -449,6 +469,7 @@
       return;
     }
     const items = out.items || [];
+    cached = out; cachedAt = Date.now();
     log('got', items.length, 'items for', out.monday, '->', out.sunday);
     draw(items, out);
     hideNative();
@@ -495,8 +516,8 @@
   ensure();
   new MutationObserver(scheduleEnsure)
     .observe(document.body, { childList: true, subtree: true });
-  setInterval(refresh, REFRESH_MS);
+  setInterval(() => refresh(true), REFRESH_MS);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) refresh();
+    if (!document.hidden) refresh(true);
   });
 })();

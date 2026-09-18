@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zipper Collector",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Reads what only a logged-in browser can see, and hands it to Zipper. Collects; never concludes.",
 
   "background": {
