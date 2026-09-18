@@ -49,6 +49,29 @@ def _lanes(timed):
                 free[i] = b['e']; b['lane'] = i; break
         else:
             b['lane'] = len(free); free.append(b['e'])
+    # How wide a block may be is a question about *its own* collisions, not the
+    # day's. Splitting every block by the day's worst pile-up meant one pair of
+    # overlapping evening meetings halved the width of a morning class that
+    # collided with nothing. So group the blocks into clusters of transitively
+    # overlapping events and give each block the lane count of its own cluster.
+    #
+    # The greedy assignment above is still sound cluster-locally: a block only
+    # takes lane i when every lower lane is held by something ending after it
+    # starts -- that is, by something it overlaps, which is in its cluster. So a
+    # block's lane index never exceeds its own cluster's count.
+    cluster, end = [], None
+    for b in blocks:
+        if end is not None and b['s'] >= end:
+            n = max(x['lane'] for x in cluster) + 1
+            for x in cluster:
+                x['nlanes'] = n
+            cluster, end = [], None
+        cluster.append(b)
+        end = b['e'] if end is None else max(end, b['e'])
+    if cluster:
+        n = max(x['lane'] for x in cluster) + 1
+        for x in cluster:
+            x['nlanes'] = n
     return blocks, max(1, len(free))
 
 
@@ -138,7 +161,7 @@ def _schedule_html(timed, is_today=True):
         cls = 'blk' + (' past' if b['e'] <= nowm else '') + (' noted' if rec else '')
         style = ('--top:%.1fpx;--h:%.1fpx;--l:%.4f%%;--w:%.4f%%'
                  % ((b['s'] - lo) * PX_PER_MIN, h,
-                    b['lane'] * 100.0 / nlanes, 100.0 / nlanes))
+                    b['lane'] * 100.0 / b['nlanes'], 100.0 / b['nlanes']))
         span = '%02d:%02d\u2013%02d:%02d' % (b['s'] // 60, b['s'] % 60,
                                              b['e'] // 60, b['e'] % 60)
         meta = [span, core._dur(b['e'] - b['s'])]

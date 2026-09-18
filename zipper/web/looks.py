@@ -74,7 +74,7 @@ def _blocks(day, is_today):
     seven-column week grid without a second set of numbers.
     """
     _, timed = today_split(day)
-    laned, nlanes = _lanes(timed)
+    laned, _daywide = _lanes(timed)
     notes = events.event_note_map()
     now = datetime.datetime.now()
     nowm = now.hour * 60 + now.minute if is_today else None
@@ -88,7 +88,9 @@ def _blocks(day, is_today):
             'ev': e, 'rec': notes.get((e.get('uid', ''), core._fmt_dt(e['start']))),
             'top': (s - DAY_LO) * 100.0 / SPAN,
             'h': max(en - s, 16) * 100.0 / SPAN,
-            'lane': b['lane'], 'nlanes': nlanes, 'hue': hue(e['label']),
+            # `_lanes` sets this per overlap cluster, so a block that collides
+            # with nothing stays full width however busy the rest of the day is.
+            'lane': b['lane'], 'nlanes': b['nlanes'], 'hue': hue(e['label']),
             'past': bool(nowm is not None and b['e'] <= nowm),
             'live': bool(nowm is not None and b['s'] <= nowm < b['e']),
             'span': '%02d:%02d–%02d:%02d' % (b['s'] // 60, b['s'] % 60,
@@ -318,8 +320,6 @@ h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
 .wd.on b,.wd.today b{color:var(--accent)}
 .wd .num{font:600 18px/1.25 var(--mono)}
 .wd .sub{font:9.5px/1.4 var(--mono);color:var(--dim);display:flex;gap:5px;align-items:center}
-.wd .bars{display:flex;gap:2px;height:3px;margin-top:4px}
-.wd .bars i{width:11px;border-radius:2px}
 
 /* --- 2. the day, vertical and whole ------------------------------------ */
 /* 06:00 to 23:00 compressed to fit the panel exactly -- no scrolling, and no
@@ -475,20 +475,18 @@ def look_rail(day=None):
         items = [it for it in wk['days'][dd] if not it['done']]
         nmeet = len(today_split(dd)[1])
         dd_d = datetime.date(*map(int, dd.split('-')))
-        bars = ''.join('<i %s></i>' % _style('background:hsl(%d 55%% 50%%)' % hue(it['tag']))
-                       for it in items[:4])
+        # Counts only. The colour bars repeated what the course pills in the
+        # Canvas panel already say, at a size too small to name anything.
         sub = []
-        if items:
-            sub.append('%d due' % len(items))
         if nmeet:
             sub.append('%d mtg' % nmeet)
+        if items:
+            sub.append('%d due' % len(items))
         wdays.append('<a class="wd%s%s" href="/look/1?day=%s"><b>%s</b>'
-                     '<span class="num">%s</span>'
-                     '<span class="sub">%s</span>%s</a>'
+                     '<span class="num">%s</span><span class="sub">%s</span></a>'
                      % (' on' if dd == day else '', ' today' if dd == today_iso else '',
                         dd, DOW[i], dd_d.strftime('%d'),
-                        esc(' &middot; '.join(sub)) if sub else '&mdash;',
-                        '<span class="bars">%s</span>' % bars if bars else ''))
+                        ' &middot; '.join(sub) if sub else '&mdash;'))
 
     # --- 2. the day -----------------------------------------------------
     grid = []
