@@ -213,6 +213,13 @@ document.addEventListener('click',e=>{
   const b=e.target.closest('.blk'); if(!b||e.target.closest('a')) return;
   b.classList.toggle('open');
 });
+// A row opens on a click anywhere in it except the two things that already mean
+// something: the tick box crosses it off, a link opens the assignment.
+document.addEventListener('click',e=>{
+  const r=e.target.closest('li.row.has');
+  if(!r||e.target.closest('a')||e.target.closest('.tick')) return;
+  r.classList.toggle('open');
+});
 document.querySelectorAll('[data-tabs]').forEach(w=>{
   w.addEventListener('click',e=>{
     const t=e.target.closest('[data-tab]'); if(!t) return;
@@ -243,9 +250,17 @@ li.crossed .rowtitle{text-decoration:line-through}
    which is what made a list of forty read as a wall of text rather than as
    forty things. */
 .rowtitle{font:500 15.5px/1.32 var(--sans);letter-spacing:-.005em;overflow-wrap:anywhere}
-/* Two lines, then a fade. The file holds the rest. */
-.rowdesc{font:12.5px/1.45 var(--sans);opacity:.62;overflow-wrap:anywhere;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* Closed by default; the whole of it on click. */
+.rowdesc{display:none;font:12.5px/1.5 var(--sans);opacity:.68;overflow-wrap:anywhere;
+  padding:1px 0 2px}
+.row.open .rowdesc{display:block}
+/* The caret is the only thing that says a row has more in it, so it is on the
+   title line where the eye already is -- and it only exists on rows that do. */
+.row.has{cursor:pointer}
+.row.has .rowtitle:after{content:'\203a';display:inline-block;margin-left:6px;
+  font:400 14px/1 var(--mono);opacity:.35;transform:translateY(-1px)}
+.row.has:hover .rowtitle:after{opacity:.7}
+.row.has.open .rowtitle:after{transform:translateY(-1px) rotate(90deg)}
 .rowmeta{font:10.5px/1.45 var(--mono);opacity:.62;letter-spacing:.03em}
 .nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center;
   font:11px/1 var(--mono);padding:10px 0 0;letter-spacing:.05em}
@@ -743,9 +758,10 @@ def _row(it, showat=True, showdue=False, pill=False):
     tag = ('<span class="pill" %s>%s</span>'
            % (_style('--hue:%d' % hue(it.get('tag'))), esc(it['tag']))
            if pill and it.get('tag') else '')
-    # The description is the rest of what he wrote, kept off the title line.
-    # Two lines of it, then a fade -- a row is a thing to recognise, and the
-    # whole of it is one click away in the file.
+    # The description is the rest of what he wrote, kept off the title line and
+    # **closed until the row is clicked**. A list is for finding the thing you
+    # meant; the reasons are for after you have found it. Open, it shows in
+    # full -- there is no second click, so there is nothing to truncate to.
     #
     # A task's description is always shown: he wrote it, and the title rule
     # means it is where the content deliberately went. A Canvas one is only
@@ -757,10 +773,11 @@ def _row(it, showat=True, showdue=False, pill=False):
     if it.get('source') == 'canvas' and len(d) > 140:
         d = ''
     desc = '<span class="rowdesc">%s</span>' % esc(plain(d)) if d else ''
-    return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
+    return ('<li class="row%s%s"><button class="tick" data-key="%s"%s>%s</button>'
             '<span class="rowbody"><span class="rowtitle">%s</span>%s'
             '<span class="rowmeta">%s</span></span>%s</li>'
-            % (' crossed' if it.get('done') else '', esc(it['key']),
+            % (' crossed' if it.get('done') else '', ' has' if desc else '',
+               esc(it['key']),
                ' disabled title="submitted in Canvas"' if it.get('submitted') else '',
                '&#10003;' if it.get('done') else '', title, desc,
                ' &middot; '.join(meta), tag))
