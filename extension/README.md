@@ -117,8 +117,13 @@ pressing on exactly the days it mattered. The browser draws; Zipper decides.
 **Chrome / Arc** — `chrome://extensions`, Developer mode on, *Load unpacked*,
 choose this directory. Permanent, free, done.
 
-**Firefox / Zen** — release Firefox **cannot permanently install an unsigned
-extension**, and unlike older advice there is no `xpinstall.signatures.required`
+**Firefox / Zen** — **every machine installs this by hand, once.** Firefox Sync
+will not carry it: sync replicates a list of add-on ids and each machine
+reinstalls them from AMO's public catalog, and an unlisted add-on is by
+definition not in that catalog. Future versions *do* arrive on their own, per
+machine, through `update_url`.
+
+Release Firefox **cannot permanently install an unsigned extension**, and unlike older advice there is no `xpinstall.signatures.required`
 override in release builds. Two real options:
 
 - `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* → pick
@@ -178,6 +183,37 @@ Two things that will bite:
 
 Develop with a temporary add-on regardless — `about:debugging` → Reload is
 instant, and signing is a minute-long round trip. Sign to *ship*, not to test.
+
+### Zen reports its own version, so `strict_min_version` is unsatisfiable
+
+**Do not put `strict_min_version` in the gecko block.** Zen substitutes its own
+version string for the application version — `Services.appinfo.version` is
+`"1.22.2b"` while `Services.appinfo.platformVersion` is `"156.0"` — and the
+add-on manager compares `strict_min_version` against the *application* version.
+So `"121.0"` can never be satisfied: 1.22.2b is not 121, and the extension is
+refused as incompatible.
+
+It fails **with no dialog and no console message anyone would recognise** — just
+`uncaught exception: Object { message }` in the Browser Console. Opening the
+`.xpi` URL does not even produce a request on the server, because the refusal
+happens before the download. Install-from-file dies the same way. Three
+different routes, all silent, all the same cause.
+
+This bit on macOS Zen 1.22.2b on 2026-09-17 and *not* on the Fedora Zen of the
+same day, which installed 0.2.0 happily — so a build that works on one Zen says
+nothing about another. Version 0.2.1 dropped the floor entirely, which costs
+nothing: every Zen in play runs Gecko 156, far past anything this code needs.
+
+Two things that make this diagnosable next time:
+- `Services.appinfo.version` in the **Browser Console** (Cmd+Shift+J) is the
+  number that matters, not the one in `about:support`. The console needs
+  `devtools.chrome.enabled` set to `true` before it will show an input box —
+  "chrome" here means the browser's own UI, not Google Chrome.
+- The server's `/ext/` route logs the requesting tailnet IP and User-Agent,
+  because `tailscale serve` makes every request arrive from `127.0.0.1` and the
+  request line alone cannot tell one machine from another. That log is what
+  proved the Mac's browser had never fetched the file at all, after an hour of
+  assuming it had.
 
 ### Four traps that are not this extension's code
 

@@ -77,6 +77,14 @@ class Handler(BaseHTTPRequestHandler):
                               'application/json')
         ctype = ('application/x-xpinstall' if name.endswith('.xpi')
                  else 'application/json')
+        # Log who asked. Every request arrives from 127.0.0.1 because
+        # `tailscale serve` proxies them, so the request line alone cannot tell
+        # one machine from another -- and "the download succeeded but nothing
+        # installed" is a question about *which* browser, on which OS.
+        ua = self.headers.get('User-Agent', '-')
+        sys.stderr.write('ext: %s <- %s | %s\n' % (
+            name, self.headers.get('X-Forwarded-For', 'local'), ua))
+        sys.stderr.flush()
         with open(path, 'rb') as fh:
             self._send(200, fh.read(), ctype)
 
