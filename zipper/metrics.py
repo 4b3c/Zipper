@@ -179,7 +179,7 @@ def compute_score(window=30):
     # --- open commitments, and the ones already past a date he set himself
     open_tasks = overdue = 0
     for p in glob.glob(os.path.join(VAULT, 'Tasks', '*.md')):
-        for line in open(p, encoding='utf-8'):
+        for line in defenced(open(p, encoding='utf-8')):
             m = TASK_RE.match(line)
             if not m or m.group(1).lower() == 'x':
                 continue

@@ -180,7 +180,7 @@ def done_task_rows():
     from .data import task_text
     out = []
     for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
-        for line in open(p, encoding='utf-8'):
+        for line in core.defenced(open(p, encoding='utf-8')):
             m = core.TASK_RE.match(line)
             if not m or m.group(1).lower() != 'x':
                 continue

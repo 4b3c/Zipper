@@ -237,6 +237,35 @@ def _place(loc):
 
 TASK_RE = re.compile(r'^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$')
 
+
+def defenced(lines):
+    """`lines` with everything inside a ``` fence blanked out.
+
+    **A checkbox in a code block is an example, not a task.** Documenting the
+    task format in `Tasks/Main.md` with a fenced example put "Buy a Pantry
+    subscription on a real device" on the dashboard twice on 2026-09-18, and into
+    the ledger: the sample line is a perfectly well-formed task line, and nothing
+    was reading the fence. Same shape as the rule about checkboxes in `Events/`
+    notes, which is why that one is a rule rather than a fix --- this is the fix.
+
+    Blanked rather than dropped, so line numbers survive and anything tracking
+    the line *before* a match still lines up. A blank line also ends a task's
+    description block, which is the behaviour a fence should have anyway.
+    """
+    fence = None
+    for line in lines:
+        m = re.match(r'^\s*(`{3,}|~{3,})', line)
+        if fence is None and m:
+            fence = m.group(1)[0]
+            yield ''
+            continue
+        if fence is not None:
+            if m and m.group(1)[0] == fence:
+                fence = None
+            yield ''
+            continue
+        yield line
+
 def _all_md():
     out = []
     for dp, dn, fn in os.walk(VAULT):
@@ -282,6 +311,6 @@ __all__ = [
     'iter_notes', 'read_note', 'write_note', 'title_of', 'rel', 'set_field',
     '_dt', '_fmt_dt', '_days_since', '_utc_local', '_split_repo',
     '_norm_title', '_months_ago', '_median', '_hhmm', '_dur', '_snip',
-    '_place', 'TASK_RE', '_all_md', 'GH_JSON', 'CAL_CFG', 'LEDGER',
+    '_place', 'TASK_RE', 'defenced', '_all_md', 'GH_JSON', 'CAL_CFG', 'LEDGER',
     'VIEWS_JSON', 'LINK_RE', 'ANCHOR_RE'
 ]

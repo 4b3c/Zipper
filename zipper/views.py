@@ -56,7 +56,7 @@ def vault_tasks():
     normalisation as the queue, so a task keys identically everywhere."""
     out = []
     for p in sorted(glob.glob(os.path.join(VAULT, 'Tasks', '*.md'))):
-        for line in open(p, encoding='utf-8'):
+        for line in defenced(open(p, encoding='utf-8')):
             m = TASK_RE.match(line)
             if not m:
                 continue

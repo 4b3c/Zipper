@@ -220,7 +220,7 @@ def open_tasks():
     out = []
     for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
         cur = None
-        for line in open(p, encoding='utf-8'):
+        for line in core.defenced(open(p, encoding='utf-8')):
             m = core.TASK_RE.match(line)
             if m:
                 cur = None
@@ -349,7 +349,7 @@ def toggle_done(key):
     if key.startswith('task:'):
         title = key.split('|', 1)[1]
         for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
-            lines = open(p, encoding='utf-8').read().split('\n')
+            lines = list(core.defenced(open(p, encoding='utf-8').read().split('\n')))
             hit = False
             for i, line in enumerate(lines):
                 m = core.TASK_RE.match(line)

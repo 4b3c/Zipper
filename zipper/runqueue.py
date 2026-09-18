@@ -212,7 +212,7 @@ def _tasks():
     keeps its own history and so needs no baseline of its own."""
     tasks = {}
     for p in _all_md():
-        for line in open(p, encoding='utf-8').read().split('\n'):
+        for line in defenced(open(p, encoding='utf-8').read().split('\n')):
             m = TASK_RE.match(line)
             if not m:
                 continue
