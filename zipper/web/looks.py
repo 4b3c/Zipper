@@ -233,7 +233,7 @@ li.crossed .rowtitle{text-decoration:line-through}
 
 def looknav(n):
     links = ''.join('<a class="%s" href="/look/%d">%d</a>'
-                    % ('on' if i == n else '', i, i) for i in range(1, 6))
+                    % ('on' if i == n else '', i, i) for i in sorted(LOOKS))
     return ('<nav class="looknav"><a href="/">&larr; live</a>'
             '<span style="opacity:.35">contenders</span>%s'
             '<span style="opacity:.45;margin-left:auto">%s</span></nav>'
@@ -247,101 +247,171 @@ def daystrip_days(day):
 
 # ================================================================ 1. Rail
 
+# Palette lifted from look 4: paper ground, green accent, and per-subject hues
+# for the section titles. The hue is the same function everywhere, so a course
+# is the same colour in the week strip, on its block and over its group.
 RAIL_CSS = """
-:root{--bg:#f7f6f3;--fg:#171614;--dim:#6e685f;--line:#e3dfd7;--card:#fff;
-  --accent:#8c1d40;--warn:#b3541e;--ok:#3f6f4a}
-@media(prefers-color-scheme:dark){:root{--bg:#121110;--fg:#efebe4;--dim:#948d83;
-  --line:#2a2724;--card:#1a1917;--accent:#f0839f;--warn:#e0965c;--ok:#7fb98b}}
+:root{--bg:#fbfaf7;--fg:#1a1916;--dim:#726c62;--line:#e6e1d8;--card:#fff;
+  --accent:#1f5f4f;--warn:#a3521c;--paper:#f3f0e9;--tint:22%;--tl:35%}
+@media(prefers-color-scheme:dark){:root{--bg:#121311;--fg:#eceae4;--dim:#8f8a80;
+  --line:#272825;--card:#191a18;--accent:#6fcfae;--warn:#dd9455;--paper:#1f201d;
+  --tint:26%;--tl:68%}}
 body{background:var(--bg);color:var(--fg)}
-.wrap{max-width:1280px;margin:0 auto;padding:16px 22px 52px}
+.wrap{max-width:1320px;margin:0 auto;padding:16px 22px 52px}
 .head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:14px 0 14px}
-h1{font:600 20px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
-.head .meta{font:11px/1 var(--mono);color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
+.head .meta{font:10.5px/1 var(--mono);color:var(--dim);letter-spacing:.11em;text-transform:uppercase}
 .head .back{margin-left:auto;font:11px/1 var(--mono);color:var(--accent);text-decoration:none}
-/* The week is navigation and nothing else: counts and colour, never titles.
-   Clicking a chip moves the schedule and the due list together -- that is the
-   whole contract of this layout. */
-.strip{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:0 0 16px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 15px;
+  margin-bottom:14px}
+.panel h2{font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+  color:var(--dim);margin:0 0 11px;display:flex;align-items:center;gap:8px}
+.panel h2 .n{margin-left:auto;color:var(--accent)}
+.panel h2 .lk{margin-left:auto;color:var(--accent);text-decoration:none;letter-spacing:.06em}
+
+/* --- the week strip: navigation, never titles ------------------------- */
+.strip{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:0 0 14px}
 .sday{background:var(--card);border:1px solid var(--line);border-radius:10px;
   padding:8px 10px 9px;text-decoration:none;display:block;position:relative}
 .sday:hover{border-color:var(--accent)}
-.sday.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.sday.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--paper)}
 .sday.today .num{color:var(--accent)}
 .sday b{font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
   color:var(--dim);display:block}
 .sday .num{font:600 21px/1.15 var(--mono);display:block}
 .sday .bars{display:flex;gap:2px;margin-top:6px;height:4px}
 .sday .bars i{flex:1;border-radius:2px;max-width:18px}
-.sday .none{display:block;height:4px;margin-top:6px;border-radius:2px;background:var(--line);
-  max-width:18px}
-.sday .mt{position:absolute;top:8px;right:9px;font:10px/1 var(--mono);color:var(--dim);opacity:.75}
-.cols{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:16px;align-items:start}
-@media(max-width:960px){.cols{grid-template-columns:1fr}}
-.stack{display:flex;flex-direction:column;gap:16px}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 15px}
-.panel h2{font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.11em;
-  color:var(--dim);margin:0 0 11px;display:flex;align-items:center;gap:8px}
-.panel h2 .n{margin-left:auto;color:var(--accent)}
-.panel h2 .lk{margin-left:auto;color:var(--accent);text-decoration:none}
-/* The fix: a fixed-height viewport that scrolls. The day's contents never
-   decide the page's height. */
-.daycol{height:430px;overflow-y:auto;position:relative}
-.daybody{position:relative;height:1000px}
-.hr{position:absolute;left:0;right:0;border-top:1px solid var(--line)}
-.hr span{position:absolute;top:-8px;left:0;font:10px/1 var(--mono);color:var(--dim);
-  background:var(--card);padding-right:6px}
-.nowline{position:absolute;left:42px;right:0;border-top:2px solid var(--accent);z-index:5}
-.nowline:after{content:'';position:absolute;left:-5px;top:-4px;width:7px;height:7px;
-  border-radius:50%;background:var(--accent)}
-.blk{position:absolute;border-radius:8px;padding:4px 9px;overflow:hidden;cursor:pointer;z-index:2;
-  display:flex;flex-direction:column;
-  background:hsl(var(--hue) 60% 55% / .14);border:1px solid hsl(var(--hue) 60% 55% / .42);
-  border-left:3px solid hsl(var(--hue) 60% 50%)}
-@media(prefers-color-scheme:dark){.blk{background:hsl(var(--hue) 50% 55% / .2)}}
-.blk.live{box-shadow:0 0 0 1px var(--accent),0 6px 18px rgba(0,0,0,.14)}
+.sday .none{display:block;height:4px;margin-top:6px;border-radius:2px;background:var(--line);max-width:18px}
+.sday .mt{position:absolute;top:8px;right:9px;font:10px/1 var(--mono);color:var(--dim);opacity:.7}
+
+/* --- the horizontal day ----------------------------------------------- */
+/* Time runs left to right across the full width, 06:00 to 23:00, always.
+   Nothing scrolls and nothing resizes: morning is on the left and evening is
+   on the right whether the day holds one meeting or nine. `overflow:visible`
+   so an opened block can spill downward as a popover -- the band itself stays
+   exactly as tall as the stylesheet says. */
+.band{position:relative;height:126px;margin-top:2px;overflow:visible}
+.vr{position:absolute;top:16px;bottom:0;border-left:1px solid var(--line)}
+.vr.q{border-left-style:dotted;opacity:.6}
+.vr span{position:absolute;top:-15px;left:3px;font:9.5px/1 var(--mono);color:var(--dim)}
+.nowline{position:absolute;top:10px;bottom:0;border-left:2px solid var(--warn);z-index:6}
+.nowline:after{content:'';position:absolute;top:-4px;left:-4px;width:6px;height:6px;
+  border-radius:50%;background:var(--warn)}
+.nowline em{position:absolute;top:-16px;left:-13px;font:9.5px/1 var(--mono);color:var(--warn);
+  font-style:normal;background:var(--card);padding:0 2px}
+.blk{position:absolute;border-radius:6px;padding:3px 7px;overflow:hidden;cursor:pointer;z-index:2;
+  min-width:32px;
+  background:hsl(var(--hue) 55% 50% / .16);border:1px solid hsl(var(--hue) 55% 50% / .38);
+  border-top:3px solid hsl(var(--hue) 50% 42%);display:flex;flex-direction:column;min-width:0}
+@media(prefers-color-scheme:dark){.blk{background:hsl(var(--hue) 45% 55% / .2);
+  border-top-color:hsl(var(--hue) 55% 60%)}}
 .blk.past{opacity:.42}
-.blk.open{height:auto!important;min-height:var(--h);z-index:9;overflow:visible;
-  box-shadow:0 10px 30px rgba(0,0,0,.24)}
-.bt{font:600 13px/1.2 var(--sans);flex:none}
-.bm{font:10.5px/1.4 var(--mono);color:var(--dim);flex:none}
-.why{font:11.5px/1.4 var(--sans);color:var(--dim);margin-top:3px;flex:1;min-height:0;
-  overflow:hidden;-webkit-mask-image:linear-gradient(#000 calc(100% - 10px),transparent);
-  mask-image:linear-gradient(#000 calc(100% - 10px),transparent)}
-.blk.open .why{flex:none;overflow:visible;-webkit-mask-image:none;mask-image:none}
-.why p{margin:0 0 4px}
-.acts{display:none;gap:5px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
+.blk.live{box-shadow:0 0 0 1px var(--warn)}
+.blk.open{height:auto!important;min-height:var(--h);z-index:20;overflow:visible;min-width:250px;
+  max-width:360px;background:var(--card);box-shadow:0 12px 32px rgba(0,0,0,.24);padding:7px 10px}
+.bt{font:600 12px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none}
+.blk.open .bt{white-space:normal}
+.bm{font:9.5px/1.4 var(--mono);color:var(--dim);flex:none}
+.why{display:none;font:11.5px/1.45 var(--sans);color:var(--dim);margin-top:6px;
+  border-top:1px solid var(--line);padding-top:6px}
+.blk.open .why{display:block}
+.why p{margin:0 0 5px}
+.why p:last-child{margin:0}
+.acts{display:none;gap:5px;flex-wrap:wrap;margin-top:7px}
 .blk.open .acts{display:flex}
 .act{font:10.5px/1.5 var(--mono);border:1px solid var(--line);border-radius:5px;padding:2px 7px;
-  color:var(--accent);text-decoration:none;white-space:nowrap;background:var(--card)}
+  color:var(--accent);text-decoration:none;white-space:nowrap}
 .act:hover{border-color:var(--accent)}
-li.row{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start}
-li.row:last-child{border-bottom:0}
-.scroll{max-height:290px;overflow-y:auto}
-.pill{font:10px/1.6 var(--mono);letter-spacing:.05em;border-radius:99px;padding:0 7px;
-  background:hsl(var(--hue) 60% 55% / .16);color:hsl(var(--hue) 55% 34%);
-  border:1px solid hsl(var(--hue) 60% 55% / .34);white-space:nowrap;flex:none}
-@media(prefers-color-scheme:dark){.pill{color:hsl(var(--hue) 70% 74%)}}
+.bandempty{position:absolute;left:4px;top:56px;font:11.5px/1 var(--mono);color:var(--dim);opacity:.6}
+
+/* --- the two lists ----------------------------------------------------- */
+.cols{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:940px){.cols{grid-template-columns:1fr}}
+/* Look 4's grouping, in both cards: a coloured monospaced rule per section,
+   which is the thing that made that page readable -- the eye lands on the
+   subject before it lands on any title. */
+.grp{border-bottom:1px solid var(--line);padding:9px 0}
+.grp:last-child{border-bottom:0}
+.grp.sel{background:var(--paper);border-radius:8px;padding:9px 10px;margin:0 -10px}
+.grph{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.grph .nm{font:600 11px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;
+  color:hsl(var(--hue) 45% var(--tl))}
+.grph .nm.dayhd{color:var(--dim)}
+.grph .nm.dayhd.on{color:var(--accent)}
+.grph .w{margin-left:auto;font:10px/1 var(--mono);color:var(--dim)}
+.grph .today{color:var(--accent);border:1px solid var(--accent);border-radius:99px;
+  padding:0 6px;font-size:9px;letter-spacing:.08em}
+li.row{display:flex;gap:9px;padding:5px 0;align-items:flex-start}
+.rowtitle{font-size:13.5px;line-height:1.35}
+.rowmeta{font-size:10.5px}
 .at{color:var(--dim)}
 .od{color:var(--warn);font-weight:600}
-.sm{font:11px/1.5 var(--mono);color:var(--dim)}
-.empty{font:12.5px/1.6 var(--mono);color:var(--dim);opacity:.65;padding:6px 0}
-.flag{color:var(--warn);font-size:13px;padding:3px 0}
-.carry{border-left:2px solid var(--warn);padding-left:10px}
+.dash{font:11px/1.6 var(--mono);color:var(--dim);opacity:.45;padding:1px 0}
+.pill{font:10px/1.6 var(--mono);letter-spacing:.05em;border-radius:99px;padding:0 7px;flex:none;
+  background:hsl(var(--hue) 55% 50% / .15);color:hsl(var(--hue) 45% var(--tl));
+  border:1px solid hsl(var(--hue) 55% 50% / .32);white-space:nowrap;margin-top:2px}
+.empty{font:12px/1.7 var(--mono);color:var(--dim);opacity:.65;padding:5px 0}
+.carry{border-left:2px solid var(--warn);padding-left:11px;margin:0 0 12px}
+.carry .ch{font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--warn);margin-bottom:3px}
+.flag{color:var(--warn);font-size:13px;padding:3px 0;line-height:1.45}
+.wsum{font:10.5px/1 var(--mono);color:var(--dim);letter-spacing:.06em;text-align:right;
+  margin:11px 0 0}
 """
 
 
+def _rail_row(it, showat=True, showdue=False, pill=False):
+    """One assignment or task. Shared by both cards so a Canvas row and a task
+    row line up: same tick, same title weight, same monospaced metadata."""
+    title = plain(it['title'])
+    if it.get('url'):
+        title = '<a href="%s" target="_blank" rel="noopener">%s</a>' % (esc(it['url']), title)
+    meta = []
+    if showdue and it.get('due'):
+        meta.append('<span class="%s">%s</span>'
+                    % ('od' if it.get('overdue') else '', it['due'][5:]))
+    if showat and it.get('at') and it['at'] not in ('', '23:59'):
+        meta.append('<span class="at">%s</span>' % esc(it['at']))
+    if it.get('points'):
+        meta.append('%s pts' % esc(str(it['points'])))
+    if it.get('elsewhere'):
+        meta.append('on %s' % esc(it['elsewhere']))
+    if it.get('next'):
+        meta.append('next')
+    if it.get('overdue') and not showdue:
+        meta.append('<span class="od">late</span>')
+    # The day is the section heading here, so without this the course is
+    # nowhere on the row -- and which class a thing belongs to is most of what
+    # makes a week legible at a glance.
+    tag = ('<span class="pill" %s>%s</span>'
+           % (_style('--hue:%d' % hue(it.get('tag'))), esc(it['tag']))
+           if pill and it.get('tag') else '')
+    return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
+            '<span class="rowbody"><span class="rowtitle">%s</span>'
+            '<span class="rowmeta">%s</span></span>%s</li>'
+            % (' crossed' if it.get('done') else '', esc(it['key']),
+               ' disabled title="submitted in Canvas"' if it.get('submitted') else '',
+               '&#10003;' if it.get('done') else '', title,
+               ' &middot; '.join(meta), tag))
+
+
 def look_rail(day=None):
-    """1 -- Rail. The one he picked, with the four fixes in.
+    """1 -- Rail. The front-runner, with the horizontal day in it.
 
-    Geometry is correct now: blocks sit at their real clock position, because
-    the hue and the position finally share one `style` attribute.
+    The schedule is a band, not a column: 06:00 to 23:00 across the full width,
+    always, so morning is on the left and evening on the right and there is
+    nothing to scroll. It sits directly under the week strip, and the strip
+    aims it -- clicking a day moves the band and highlights that day in the
+    Canvas card.
 
-    The week strip is navigation and carries no titles -- clicking a day moves
-    **both** the schedule and the *Due* list, so the day being read is never
-    ambiguous. Canvas work and `Tasks/` are separate panels, because a deadline
-    someone else set and a note he wrote to himself are not the same kind of
-    thing and ranking them into one list hid that. And the furniture is
-    monospaced throughout.
+    The vertical column is gone rather than kept alongside. Two drawings of the
+    same three meetings on one page is the exact duplication this whole
+    exercise started from.
+
+    Both cards use look 4's grouping. **Canvas** is the whole week, sectioned by
+    day, so the week's shape is readable without the day chips having to carry
+    titles. **Tasks** is sectioned by project. Each section rule is coloured by
+    its subject, which is the thing that made look 4 scan well.
     """
     day = day or core.TODAY.isoformat()
     today_iso = core.TODAY.isoformat()
@@ -349,114 +419,116 @@ def look_rail(day=None):
     d = datetime.date(*map(int, day.split('-')))
     blocks, nowpct = _blocks(day, is_today)
     wk = week_canvas(day)
+    days = daystrip_days(day)
 
+    # --- week strip -----------------------------------------------------
     chips = []
-    for i, dd in enumerate(daystrip_days(day)):
+    for i, dd in enumerate(days):
         items = [it for it in wk['days'][dd] if not it['done']]
         nmeet = len(today_split(dd)[1])
-        bars = (''.join('<i %s></i>' % _style('background:hsl(%d 60%% 55%%)' % hue(it['tag']))
+        bars = (''.join('<i %s></i>' % _style('background:hsl(%d 55%% 50%%)' % hue(it['tag']))
                         for it in items[:5])
                 if items else '<span class="none"></span>')
         chips.append('<a class="sday%s%s" href="/look/1?day=%s"><b>%s</b>'
-                     '<span class="num">%s</span>%s%s</a>'
+                     '<span class="num">%s</span>%s<span class="bars">%s</span></a>'
                      % (' on' if dd == day else '', ' today' if dd == today_iso else '',
                         dd, DOW[i], dd[8:10],
-                        '<span class="mt">%s</span>' % ('●' * min(nmeet, 3)) if nmeet else '',
-                        '<span class="bars">%s</span>' % bars))
+                        '<span class="mt">%s</span>' % ('&bull;' * min(nmeet, 3))
+                        if nmeet else '', bars))
 
-    grid = ''.join('<div class="hr" %s><span>%02d:00</span></div>'
-                   % (_style('top:%.3f%%' % p), m // 60) for m, p in _hours())
+    # --- the horizontal band --------------------------------------------
+    # Lanes stack downward inside a fixed band height, so two overlapping
+    # meetings split the band rather than making it taller.
+    BAND, TOP = 126.0, 18.0
+    rail = []
+    for m, p in _hours():
+        rail.append('<div class="vr" %s><span>%02d</span></div>'
+                    % (_style('left:%.3f%%' % p), m // 60))
     if nowpct is not None:
-        grid += '<div class="nowline" %s></div>' % _style('top:%.3f%%' % nowpct)
+        rail.append('<div class="nowline" %s><em>%s</em></div>'
+                    % (_style('left:%.3f%%' % nowpct),
+                       esc(datetime.datetime.now().strftime('%H:%M'))))
+    nl = max(1, blocks[0]['nlanes']) if blocks else 1
+    lane_h = (BAND - TOP - 4) / nl
     for b in blocks:
         e = b['ev']
-        grid += ('<div class="blk%s%s" %s>'
-                 '<div class="bt">%s</div><div class="bm">%s &middot; %s</div>%s'
-                 '<div class="acts">%s</div></div>'
-                 % (' past' if b['past'] else '', ' live' if b['live'] else '',
-                    _style('--hue:%d' % b['hue'], 'top:%.3f%%' % b['top'],
-                           '--h:%.3f%%' % b['h'], 'height:%.3f%%' % b['h'],
-                           'left:calc(46px + %.3f%%)' % (b['lane'] * 100.0 / b['nlanes']),
-                           'width:calc(%.3f%% - 50px)' % (100.0 / b['nlanes'])),
-                    esc(e['summary']), b['span'], core._dur(b['mins']),
-                    _why(b['rec']), _blk_acts(e, b['rec'])))
+        rail.append('<div class="blk%s%s" %s><div class="bt">%s</div>'
+                    '<div class="bm">%s &middot; %s</div>%s<div class="acts">%s</div></div>'
+                    % (' past' if b['past'] else '', ' live' if b['live'] else '',
+                       _style('--hue:%d' % b['hue'], 'left:%.3f%%' % b['top'],
+                              'width:%.3f%%' % b['h'],
+                              'top:%.1fpx' % (TOP + b['lane'] * lane_h),
+                              '--h:%.1fpx' % (lane_h - 3),
+                              'height:%.1fpx' % (lane_h - 3)),
+                       esc(e['summary']), b['span'], core._dur(b['mins']),
+                       _why(b['rec']), _blk_acts(e, b['rec'])))
     if not blocks:
-        grid += ('<p class="empty" %s>Nothing scheduled.</p>'
-                 % _style('position:absolute', 'top:44%', 'left:50px'))
+        rail.append('<p class="bandempty">Nothing scheduled.</p>')
 
-    def crow(it):
-        title = plain(it['title'])
-        if it['url']:
-            title = '<a href="%s" target="_blank" rel="noopener">%s</a>' % (esc(it['url']), title)
-        meta = []
-        if it.get('at') and it['at'] not in ('', '23:59'):
-            meta.append('<span class="at">%s</span>' % esc(it['at']))
-        if it.get('points'):
-            meta.append('%s pts' % esc(str(it['points'])))
-        if it.get('elsewhere'):
-            meta.append('on %s' % esc(it['elsewhere']))
-        if it.get('overdue'):
-            meta.append('<span class="od">late</span>')
-        return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
-                '<span class="rowbody"><span class="rowtitle">%s</span>'
-                '<span class="rowmeta">%s</span></span><span class="pill" %s>%s</span></li>'
-                % (' crossed' if it['done'] else '', esc(it['key']),
-                   ' disabled title="submitted in Canvas"' if it.get('submitted') else '',
-                   '&#10003;' if it['done'] else '', title, ' &middot; '.join(meta),
-                   _style('--hue:%d' % hue(it['tag'])), esc(it['tag'])))
+    # --- Canvas: the whole week, by day ---------------------------------
+    carry = ''
+    if wk['carried']:
+        carry = ('<div class="carry"><div class="ch">Carried in &middot; %d</div><ul>%s</ul></div>'
+                 % (len(wk['carried']),
+                    ''.join(_rail_row(it, showdue=True, pill=True) for it in wk['carried'])))
+    secs = []
+    for i, dd in enumerate(days):
+        items = wk['days'][dd]
+        openn = sum(1 for it in items if not it['done'])
+        dd_d = datetime.date(*map(int, dd.split('-')))
+        secs.append('<div class="grp%s"><div class="grph"><span class="nm%s">%s %s</span>%s'
+                    '<span class="w">%s</span></div>%s</div>'
+                    % (' sel' if dd == day else '',
+                       ' dayhd' + (' on' if dd == today_iso else ''),
+                       DOW[i], dd_d.strftime('%d'),
+                       '<span class="today">today</span>' if dd == today_iso else '',
+                       ('%d open' % openn) if openn else ('%d done' % len(items)) if items else '',
+                       ('<ul>%s</ul>' % ''.join(_rail_row(it, pill=True) for it in items)) if items
+                       else '<div class="dash">&mdash;</div>'))
+    allit = [it for v in wk['days'].values() for it in v]
+    nopen = sum(1 for it in allit if not it['done'])
+    pts = sum(it['points'] or 0 for it in allit if not it['done'])
 
-    due = canvas_on(day)
-    duehtml = ''.join(crow(it) for it in due)
-    carried = ''
-    if is_today and wk['carried']:
-        carried = ('<div class="carry" style="margin-top:10px"><h2 class="sm" '
-                   'style="margin:0 0 4px">Carried in &middot; %d</h2><ul>%s</ul></div>'
-                   % (len(wk['carried']), ''.join(crow(it) for it in wk['carried'])))
-
+    # --- Tasks: by project ----------------------------------------------
     tasks = task_rows()
-    trows = ''.join(
-        '<li class="row%s"><button class="tick" data-key="%s">%s</button>'
-        '<span class="rowbody"><span class="rowtitle">%s</span>'
-        '<span class="rowmeta">%s</span></span></li>'
-        % (' crossed' if t['done'] else '', esc(t['key']),
-           '&#10003;' if t['done'] else '', plain(t['title']),
-           ' &middot; '.join(x for x in [
-               esc(t['tag']),
-               ('<span class="od">%s</span>' % t['due'][5:]) if t['overdue']
-               else (t['due'][5:] if t['due'] else ''),
-               'next' if t.get('next') else ''] if x))
-        for t in tasks[:12])
+    byproj = {}
+    for t in tasks:
+        byproj.setdefault(t['tag'] or 'unfiled', []).append(t)
+    tgroups = ''.join(
+        '<div class="grp"><div class="grph"><span class="nm" %s>%s</span>'
+        '<span class="w">%d</span></div><ul>%s</ul></div>'
+        % (_style('--hue:%d' % hue(tag)), esc(tag), len(byproj[tag]),
+           ''.join(_rail_row(t, showat=False, showdue=True) for t in byproj[tag]))
+        for tag in sorted(byproj, key=lambda t: (-len(byproj[t]), t)))
 
     fl = flags()
     label = ('Today' if is_today else
              'Tomorrow' if d == core.TODAY + datetime.timedelta(days=1) else
              d.strftime('%A'))
-    nopen = sum(1 for it in due if not it['done'])
     body = ('<div class="wrap">%s'
             '<div class="head"><h1>%s</h1><span class="meta">%s</span>%s</div>'
             '<div class="strip">%s</div>'
+            '<div class="panel"><h2>%s <span class="n">%d</span></h2>'
+            '<div class="band">%s</div></div>'
             '<div class="cols">'
-            '<div class="panel"><h2>Schedule <span class="n">%d</span></h2>'
-            '<div class="daycol" data-scrollnow><div class="daybody">%s</div></div></div>'
-            '<div class="stack">'
-            '<div class="panel"><h2>Due %s <span class="n">%d</span></h2>'
-            '<div class="scroll"><ul>%s</ul></div>%s</div>'
+            '<div class="panel"><h2>Due this week <span class="n">%d open</span></h2>'
+            '%s%s<p class="wsum">%d this week &middot; %d open%s</p></div>'
             '<div class="panel"><h2>Tasks <a class="lk" href="/tasks" target="_blank" '
-            'rel="noopener">see all</a></h2><div class="scroll"><ul>%s</ul></div></div>'
-            '%s</div></div></div>'
+            'rel="noopener">see all</a></h2>%s</div>'
+            '</div>%s</div>'
             % (looknav(1), esc(d.strftime('%A %d %B')), esc(label),
                '' if is_today else '<a class="back" href="/look/1">back to today &rarr;</a>',
-               ''.join(chips), len(blocks), grid,
-               esc(label.lower()), nopen,
-               duehtml or '<li class="empty">Nothing due %s.</li>' % esc(label.lower()),
-               carried, trows or '<li class="empty">No open tasks.</li>',
+               ''.join(chips), esc(label), len(blocks), ''.join(rail),
+               nopen, carry, ''.join(secs), len(allit), nopen,
+               ' &middot; %g pts' % pts if pts else '',
+               tgroups or '<p class="empty">No open tasks.</p>',
                ('<div class="panel"><h2>Flags <span class="n">%d</span></h2>%s</div>'
                 % (len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)))
                if fl else ''))
     return _page('Look 1 - Rail', RAIL_CSS, body)
 
 
-LOOKS[1] = ('Rail', 'refined: real positions, split sections, day picks the due list', look_rail)
+LOOKS[1] = ('Rail', 'horizontal day, week by day, sections by subject', look_rail)
 
 
 # ================================================================ 2. Horizon
@@ -647,217 +719,6 @@ def look_horizon(day=None):
 
 
 LOOKS[2] = ('Horizon', 'the day turned sideways; seven boards under it', look_horizon)
-
-
-# ================================================================ 3. Now
-
-NOW_CSS = """
-:root{--bg:#0f0f11;--fg:#f2f0ee;--dim:#85817c;--line:#232225;--card:#171618;
-  --accent:#7fe7c4;--warn:#f0a95c;--hot:#f2727e}
-body{background:var(--bg);color:var(--fg)}
-.wrap{max-width:1200px;margin:0 auto;padding:16px 22px 48px}
-.head{display:flex;align-items:baseline;gap:12px;margin:14px 0 18px;flex-wrap:wrap}
-h1{font:600 13px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0}
-.head .clock{margin-left:auto;font:600 13px/1 var(--mono);color:var(--dim)}
-/* The hero answers one question -- what is happening, and what is next -- at a
-   size you can read from across the room. Everything else on the page is
-   deliberately smaller than it. */
-.hero{border:1px solid var(--line);border-radius:18px;padding:22px 24px;margin-bottom:14px;
-  background:linear-gradient(135deg,hsl(var(--hue) 45% 22%),var(--card) 62%);position:relative;
-  overflow:hidden}
-.hero:before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;
-  background:hsl(var(--hue) 65% 58%)}
-.hero .kick{font:11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
-  color:hsl(var(--hue) 60% 70%);margin-bottom:9px}
-.hero .big{font:600 30px/1.15 var(--sans);letter-spacing:-.025em;margin:0 0 6px}
-@media(max-width:620px){.hero .big{font-size:23px}}
-.hero .when{font:13px/1.5 var(--mono);color:var(--dim)}
-.hero .why{font:13.5px/1.55 var(--sans);color:var(--dim);margin-top:11px;max-width:62ch;
-  border-top:1px solid var(--line);padding-top:10px}
-.hero .why p{margin:0 0 6px}
-.hero .acts{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px}
-.act{font:11px/1.6 var(--mono);border:1px solid var(--line);border-radius:7px;padding:3px 10px;
-  color:var(--accent);text-decoration:none;background:rgba(255,255,255,.03)}
-.act:hover{border-color:var(--accent)}
-.hero.idle{background:var(--card)}
-.hero.idle:before{background:var(--line)}
-.next{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-bottom:16px}
-.nx{border:1px solid var(--line);border-radius:12px;padding:11px 13px;background:var(--card);
-  border-left:3px solid hsl(var(--hue) 62% 56%)}
-.nx .t{font:11px/1 var(--mono);color:var(--dim);letter-spacing:.07em}
-.nx .s{font:600 14px/1.3 var(--sans);margin-top:4px}
-.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-@media(max-width:920px){.cols{grid-template-columns:1fr}}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:13px;
-  display:flex;flex-direction:column;height:360px;overflow:hidden}
-.ph{padding:11px 14px 9px;border-bottom:1px solid var(--line);display:flex;align-items:center;
-  gap:8px;font:600 10.5px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--dim)}
-.ph .n{margin-left:auto;color:var(--accent)}
-.pb{flex:1;overflow-y:auto;padding:6px 14px 12px}
-/* Seven buttons, not a grid: the week here is purely "which day's deadlines am
-   I reading", and it costs one row. */
-.days{display:flex;gap:5px;padding:9px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.dbtn{font:10.5px/1 var(--mono);letter-spacing:.06em;text-decoration:none;border-radius:7px;
-  border:1px solid var(--line);padding:5px 7px;color:var(--dim);text-align:center;flex:1;min-width:34px}
-.dbtn b{display:block;font-size:13px;color:var(--fg);margin-top:2px;font-weight:600}
-.dbtn.on{border-color:var(--accent);color:var(--accent)}
-.dbtn.on b{color:var(--accent)}
-.dbtn.has{border-color:hsl(var(--hue) 50% 42%)}
-.dbtn:hover{color:var(--fg)}
-li.row{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start}
-li.row:last-child{border-bottom:0}
-.rowtitle{font-size:13px}
-.tt{font:10px/1.6 var(--mono);padding:0 6px;border-radius:99px;white-space:nowrap;flex:none;
-  background:hsl(var(--hue) 55% 55% / .18);color:hsl(var(--hue) 68% 74%)}
-.empty{font:12px/1.7 var(--mono);color:var(--dim);opacity:.55;padding:8px 0}
-.flag{color:var(--warn);font:12.5px/1.6 var(--mono);padding:4px 0}
-.od{color:var(--hot)}
-.later{font:11px/1.6 var(--mono);color:var(--dim);padding:7px 0 0;border-top:1px solid var(--line);
-  margin-top:7px;display:flex;gap:9px}
-.later b{color:var(--fg);font-weight:500}
-"""
-
-
-def look_now(day=None):
-    """3 -- Now. One question at hero size: what is happening, and what is next.
-
-    The other four looks all draw the whole day and leave the reading to him.
-    This one does the reading: the largest thing on the page is the meeting
-    currently running -- with its note's *why* in full, at a size that can
-    actually be read before walking into the room -- and beside it what follows.
-    The day's remaining blocks shrink to a strip of times, because once you know
-    what is now and next, the rest of the morning is reference.
-
-    There is no pixel grid at all, so there is no height to control. The three
-    panels below are fixed 360px: **Due** (Canvas, day-selectable from its own
-    seven-button row), **Tasks**, **Flags**.
-    """
-    day = day or core.TODAY.isoformat()
-    today_iso = core.TODAY.isoformat()
-    is_today = day == today_iso
-    blocks, _ = _blocks(today_iso, True)
-    now = datetime.datetime.now()
-    nowm = now.hour * 60 + now.minute
-
-    cur = next((b for b in blocks if b['s'] <= nowm < b['e']), None)
-    later = [b for b in blocks if b['s'] > nowm]
-    nxt = later[0] if later else None
-
-    if cur:
-        e, rec = cur['ev'], cur['rec']
-        left = cur['e'] - nowm
-        hero = ('<div class="hero" %s><div class="kick">now &middot; %d min left</div>'
-                '<h2 class="big">%s</h2><div class="when">%s &middot; %s%s</div>%s%s</div>'
-                % (_style('--hue:%d' % cur['hue']), left, esc(e['summary']),
-                   cur['span'], core._dur(cur['mins']),
-                   ' &middot; %s' % esc(e['loc'][:40])
-                   if e['loc'] and 'http' not in e['loc'] else '',
-                   _why(rec),
-                   '<div class="acts">%s</div>' % _blk_acts(e, rec)))
-    elif nxt:
-        e, rec = nxt['ev'], nxt['rec']
-        mins = nxt['s'] - nowm
-        hero = ('<div class="hero" %s><div class="kick">next &middot; in %s</div>'
-                '<h2 class="big">%s</h2><div class="when">%s &middot; %s</div>%s%s</div>'
-                % (_style('--hue:%d' % nxt['hue']), core._dur(mins), esc(e['summary']),
-                   nxt['span'], core._dur(nxt['mins']), _why(rec),
-                   '<div class="acts">%s</div>' % _blk_acts(e, rec)))
-        nxt = later[1] if len(later) > 1 else None
-    else:
-        done = [b for b in blocks if b['e'] <= nowm]
-        hero = ('<div class="hero idle"><div class="kick">now</div>'
-                '<h2 class="big">Nothing scheduled.</h2>'
-                '<div class="when">%s</div></div>'
-                % ('%d meeting%s done today' % (len(done), '' if len(done) == 1 else 's')
-                   if done else 'No meetings today at all.'))
-
-    cards = []
-    if nxt:
-        cards.append('<div class="nx" %s><div class="t">next &middot; %s</div>'
-                     '<div class="s">%s</div></div>'
-                     % (_style('--hue:%d' % nxt['hue']), nxt['span'],
-                        esc(nxt['ev']['summary'])))
-    duetoday = [it for it in canvas_on(today_iso) if not it['done']]
-    if duetoday:
-        cards.append('<div class="nx" %s><div class="t">due today &middot; %d</div>'
-                     '<div class="s">%s</div></div>'
-                     % (_style('--hue:%d' % hue(duetoday[0]['tag'])), len(duetoday),
-                        plain(duetoday[0]['title'])))
-    tasks = task_rows()
-    od = [t for t in tasks if t['overdue']]
-    if od:
-        cards.append('<div class="nx" %s><div class="t">overdue tasks &middot; %d</div>'
-                     '<div class="s">%s</div></div>'
-                     % (_style('--hue:2'), len(od), plain(od[0]['title'])))
-
-    rest = ''
-    if later:
-        rest = ('<div class="later"><span>rest of today</span>%s</div>'
-                % ''.join('<span><b>%s</b> %s</span>' % (b['from'], esc(b['ev']['summary'][:26]))
-                          for b in later[:5]))
-
-    wk = week_canvas(day)
-    dbtns = ''
-    for i, dd in enumerate(daystrip_days(day)):
-        n = sum(1 for it in wk['days'][dd] if not it['done'])
-        dbtns += ('<a class="dbtn%s%s" href="/look/3?day=%s" %s>%s<b>%s</b></a>'
-                  % (' on' if dd == day else '', ' has' if n else '', dd,
-                     _style('--hue:%d' % (150 if n else 0)), DOW[i][:2], dd[8:10]))
-
-    def crow(it):
-        title = plain(it['title'])
-        if it['url']:
-            title = '<a href="%s" target="_blank" rel="noopener">%s</a>' % (esc(it['url']), title)
-        meta = []
-        if it.get('at') and it['at'] not in ('', '23:59'):
-            meta.append(esc(it['at']))
-        if it.get('points'):
-            meta.append('%spts' % esc(str(it['points'])))
-        if it.get('elsewhere'):
-            meta.append('on %s' % esc(it['elsewhere']))
-        return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
-                '<span class="rowbody"><span class="rowtitle">%s</span>'
-                '<span class="rowmeta">%s</span></span><span class="tt" %s>%s</span></li>'
-                % (' crossed' if it['done'] else '', esc(it['key']),
-                   ' disabled' if it.get('submitted') else '',
-                   '&#10003;' if it['done'] else '', title, ' &middot; '.join(meta),
-                   _style('--hue:%d' % hue(it['tag'])), esc(it['tag'])))
-
-    due = canvas_on(day)
-    trows = ''.join(
-        '<li class="row%s"><button class="tick" data-key="%s">%s</button>'
-        '<span class="rowbody"><span class="rowtitle">%s</span>'
-        '<span class="rowmeta">%s</span></span></li>'
-        % (' crossed' if t['done'] else '', esc(t['key']),
-           '&#10003;' if t['done'] else '', plain(t['title']),
-           ' &middot; '.join(x for x in [
-               esc(t['tag']),
-               ('<span class="od">%s</span>' % t['due'][5:]) if t['overdue']
-               else (t['due'][5:] if t['due'] else '')] if x))
-        for t in tasks)
-    fl = flags()
-
-    body = ('<div class="wrap">%s<div class="head"><h1>%s</h1>'
-            '<span class="clock">%s</span></div>%s%s%s'
-            '<div class="cols">'
-            '<div class="panel"><div class="ph">due<span class="n">%d</span></div>'
-            '<div class="days">%s</div><div class="pb"><ul>%s</ul></div></div>'
-            '<div class="panel"><div class="ph">tasks<span class="n">%d</span></div>'
-            '<div class="pb"><ul>%s</ul></div></div>'
-            '<div class="panel"><div class="ph">flags<span class="n">%d</span></div>'
-            '<div class="pb">%s</div></div></div></div>'
-            % (looknav(3), esc(core.TODAY.strftime('%A %d %B')),
-               esc(now.strftime('%H:%M')), hero,
-               '<div class="next">%s</div>' % ''.join(cards) if cards else '',
-               rest, sum(1 for it in due if not it['done']), dbtns,
-               ''.join(crow(it) for it in due) or '<li class="empty">Nothing due.</li>',
-               len(tasks), trows or '<li class="empty">No open tasks.</li>',
-               len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)
-               or '<p class="empty">Clean.</p>'))
-    return _page('Look 3 - Now', NOW_CSS, body)
-
-
-LOOKS[3] = ('Now', 'hero answers what is happening and what is next', look_now)
 
 
 # ================================================================ 4. Ledger
@@ -1079,196 +940,6 @@ def look_ledger(day=None):
 
 
 LOOKS[4] = ('Ledger', 'grouped by course, not by day; schedule as a margin rule', look_ledger)
-
-
-# ================================================================ 5. Matrix
-
-MATRIX_CSS = """
-:root{--bg:#0a0b0e;--fg:#e9ebf0;--dim:#78818f;--line:#1b1e24;--card:#111318;
-  --accent:#f0abfc;--accent2:#67e8f9;--warn:#fcd34d;--hot:#fb7185}
-body{background:var(--bg);color:var(--fg);
-  background-image:radial-gradient(1000px 420px at 50% -10%,rgba(240,171,252,.07),transparent)}
-.wrap{max-width:1500px;margin:0 auto;padding:16px 20px 46px}
-.head{display:flex;align-items:baseline;gap:13px;flex-wrap:wrap;margin:14px 0 13px}
-h1{font:600 18px/1.2 var(--mono);margin:0;letter-spacing:.01em;
-  background:linear-gradient(92deg,var(--accent),var(--accent2));
-  -webkit-background-clip:text;background-clip:text;color:transparent}
-.head .meta{font:10.5px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--dim)}
-.head .clock{margin-left:auto;font:600 14px/1 var(--mono);color:var(--accent2)}
-/* The whole week as one grid: seven day columns sharing one hour axis, so the
-   shape of the week and the shape of each day are the same picture. Fixed
-   height, because the axis is fixed -- adding a meeting cannot resize it. */
-.matrix{background:var(--card);border:1px solid var(--line);border-radius:14px;
-  overflow:hidden;margin-bottom:13px}
-.mh{display:grid;grid-template-columns:44px repeat(7,minmax(0,1fr));
-  border-bottom:1px solid var(--line)}
-.mh .sp{border-right:1px solid var(--line)}
-.mh a{padding:9px 6px 8px;text-align:center;text-decoration:none;
-  border-right:1px solid var(--line);font:10px/1 var(--mono);letter-spacing:.09em;
-  text-transform:uppercase;color:var(--dim)}
-.mh a:last-child{border-right:0}
-.mh a b{display:block;font-size:16px;font-weight:600;margin-top:3px;color:var(--fg);letter-spacing:0}
-.mh a .due{display:block;margin-top:4px;font-size:9.5px;color:var(--accent)}
-.mh a.on{background:rgba(240,171,252,.09);color:var(--accent)}
-.mh a.on b{color:var(--accent)}
-.mh a.today b{text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--accent2)}
-.mh a:hover{background:rgba(255,255,255,.04)}
-.mbody{height:430px;overflow-y:auto;position:relative}
-.mgrid{display:grid;grid-template-columns:44px repeat(7,minmax(0,1fr));position:relative;
-  height:1000px}
-.axis{position:relative;border-right:1px solid var(--line)}
-.axis span{position:absolute;right:6px;font:9.5px/1 var(--mono);color:var(--dim);transform:translateY(-4px)}
-.dcell{position:relative;border-right:1px solid var(--line)}
-.dcell:last-child{border-right:0}
-.dcell.on{background:rgba(240,171,252,.05)}
-.dcell.past{opacity:.5}
-.hr{position:absolute;left:0;right:0;border-top:1px solid var(--line);opacity:.55}
-.nowline{position:absolute;left:0;right:0;border-top:2px solid var(--hot);z-index:6;
-  box-shadow:0 0 12px var(--hot)}
-.blk{position:absolute;border-radius:5px;padding:2px 5px;overflow:hidden;cursor:pointer;z-index:2;
-  background:hsl(var(--hue) 58% 55% / .22);border-left:2px solid hsl(var(--hue) 68% 62%);
-  font:10.5px/1.2 var(--sans);min-width:0}
-.blk.past{opacity:.4}
-.blk.live{box-shadow:0 0 0 1px var(--hot)}
-.blk.open{height:auto!important;z-index:9;background:var(--card);min-width:210px;
-  box-shadow:0 12px 32px rgba(0,0,0,.65);border:1px solid var(--accent);padding:6px 9px}
-.bt{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.blk.open .bt{white-space:normal}
-.bm{font:9px/1.4 var(--mono);color:var(--dim)}
-.why{display:none;font:11px/1.4 var(--sans);color:var(--dim);margin-top:5px}
-.blk.open .why{display:block}
-.why p{margin:0 0 4px}
-.acts{display:none;gap:5px;flex-wrap:wrap;margin-top:6px}
-.blk.open .acts{display:flex}
-.act{font:10px/1.5 var(--mono);border:1px solid var(--line);border-radius:4px;padding:2px 6px;
-  color:var(--accent2);text-decoration:none}
-.cols{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,.85fr);gap:12px}
-@media(max-width:1060px){.cols{grid-template-columns:1fr}}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:13px;
-  display:flex;flex-direction:column;height:340px;overflow:hidden}
-.ph{padding:11px 14px 9px;border-bottom:1px solid var(--line);display:flex;align-items:center;
-  gap:8px;font:600 10.5px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--dim)}
-.ph .n{margin-left:auto;color:var(--accent)}
-.pb{flex:1;overflow-y:auto;padding:6px 14px 12px}
-li.row{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start}
-li.row:last-child{border-bottom:0}
-.rowtitle{font-size:13px}
-.tt{font:10px/1.6 var(--mono);padding:0 6px;border-radius:99px;white-space:nowrap;flex:none;
-  background:hsl(var(--hue) 55% 55% / .2);color:hsl(var(--hue) 70% 76%)}
-.empty{font:12px/1.7 var(--mono);color:var(--dim);opacity:.55;padding:8px 0}
-.flag{color:var(--warn);font:12.5px/1.6 var(--mono);padding:4px 0}
-.od{color:var(--hot)}
-"""
-
-
-def look_matrix(day=None):
-    """5 -- Matrix. The whole week on one hour axis.
-
-    The furthest from the live page. Seven day columns share a single 06:00
-    -23:00 rule, so every meeting of the week is placed at its real time in one
-    picture -- Tuesday being solid and Thursday being empty is a thing you see
-    rather than count. The day and the week stop being two views of the same
-    calendar; they are one.
-
-    Height is structural here: the axis is fixed, so the grid is 430px whether
-    the week holds three meetings or thirty. Below it, **Due**, **Tasks** and
-    **Flags** as three fixed panels, with the day headers selecting which day
-    the Due panel reads.
-    """
-    day = day or core.TODAY.isoformat()
-    today_iso = core.TODAY.isoformat()
-    days = daystrip_days(day)
-    wk = week_canvas(day)
-
-    heads = ['<div class="sp"></div>']
-    cells = ['<div class="axis">%s</div>'
-             % ''.join('<span %s>%02d</span>' % (_style('top:%.3f%%' % p), m // 60)
-                       for m, p in _hours())]
-    for i, dd in enumerate(days):
-        ndue = sum(1 for it in wk['days'][dd] if not it['done'])
-        heads.append('<a class="%s%s" href="/look/5?day=%s">%s<b>%s</b>%s</a>'
-                     % ('on' if dd == day else '', ' today' if dd == today_iso else '',
-                        dd, DOW[i], dd[8:10],
-                        '<span class="due">%d due</span>' % ndue if ndue else ''))
-        blocks, nowpct = _blocks(dd, dd == today_iso)
-        inner = ''.join('<div class="hr" %s></div>' % _style('top:%.3f%%' % p)
-                        for _m, p in _hours())
-        if nowpct is not None:
-            inner += '<div class="nowline" %s></div>' % _style('top:%.3f%%' % nowpct)
-        for b in blocks:
-            e = b['ev']
-            inner += ('<div class="blk%s%s" %s><div class="bt">%s</div>'
-                      '<div class="bm">%s</div>%s<div class="acts">%s</div></div>'
-                      % (' past' if b['past'] else '', ' live' if b['live'] else '',
-                         _style('--hue:%d' % b['hue'], 'top:%.3f%%' % b['top'],
-                                'height:%.3f%%' % b['h'],
-                                'left:calc(2px + %.3f%%)' % (b['lane'] * 96.0 / b['nlanes']),
-                                'width:calc(%.3f%% - 4px)' % (96.0 / b['nlanes'])),
-                         esc(e['summary']), b['from'], _why(b['rec']),
-                         _blk_acts(e, b['rec'])))
-        cells.append('<div class="dcell%s%s">%s</div>'
-                     % (' on' if dd == day else '', ' past' if dd < today_iso else '', inner))
-
-    def crow(it):
-        title = plain(it['title'])
-        if it['url']:
-            title = '<a href="%s" target="_blank" rel="noopener">%s</a>' % (esc(it['url']), title)
-        meta = []
-        if it.get('at') and it['at'] not in ('', '23:59'):
-            meta.append(esc(it['at']))
-        if it.get('points'):
-            meta.append('%spts' % esc(str(it['points'])))
-        if it.get('elsewhere'):
-            meta.append('on %s' % esc(it['elsewhere']))
-        if it.get('overdue'):
-            meta.append('<span class="od">late</span>')
-        return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
-                '<span class="rowbody"><span class="rowtitle">%s</span>'
-                '<span class="rowmeta">%s</span></span><span class="tt" %s>%s</span></li>'
-                % (' crossed' if it['done'] else '', esc(it['key']),
-                   ' disabled' if it.get('submitted') else '',
-                   '&#10003;' if it['done'] else '', title, ' &middot; '.join(meta),
-                   _style('--hue:%d' % hue(it['tag'])), esc(it['tag'])))
-
-    due = canvas_on(day) + ([] if day != today_iso else wk['carried'])
-    tasks = task_rows()
-    trows = ''.join(
-        '<li class="row%s"><button class="tick" data-key="%s">%s</button>'
-        '<span class="rowbody"><span class="rowtitle">%s</span>'
-        '<span class="rowmeta">%s</span></span></li>'
-        % (' crossed' if t['done'] else '', esc(t['key']),
-           '&#10003;' if t['done'] else '', plain(t['title']),
-           ' &middot; '.join(x for x in [
-               esc(t['tag']),
-               ('<span class="od">%s</span>' % t['due'][5:]) if t['overdue']
-               else (t['due'][5:] if t['due'] else '')] if x))
-        for t in tasks)
-    fl = flags()
-    d = datetime.date(*map(int, day.split('-')))
-
-    body = ('<div class="wrap">%s<div class="head"><h1>%s</h1>'
-            '<span class="meta">week of %s</span><span class="clock">%s</span></div>'
-            '<div class="matrix"><div class="mh">%s</div>'
-            '<div class="mbody" data-scrollnow><div class="mgrid">%s</div></div></div>'
-            '<div class="cols">'
-            '<div class="panel"><div class="ph">due %s<span class="n">%d</span></div>'
-            '<div class="pb"><ul>%s</ul></div></div>'
-            '<div class="panel"><div class="ph">tasks<span class="n">%d</span></div>'
-            '<div class="pb"><ul>%s</ul></div></div>'
-            '<div class="panel"><div class="ph">flags<span class="n">%d</span></div>'
-            '<div class="pb">%s</div></div></div></div>'
-            % (looknav(5), esc(core.TODAY.strftime('%A %d %B')), esc(wk['monday'][5:]),
-               esc(datetime.datetime.now().strftime('%H:%M')),
-               ''.join(heads), ''.join(cells), esc(d.strftime('%a %d').lower()),
-               sum(1 for it in due if not it['done']),
-               ''.join(crow(it) for it in due) or '<li class="empty">Nothing due.</li>',
-               len(tasks), trows or '<li class="empty">No open tasks.</li>',
-               len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)
-               or '<p class="empty">Clean.</p>'))
-    return _page('Look 5 - Matrix', MATRIX_CSS, body)
-
-
-LOOKS[5] = ('Matrix', 'the whole week on one hour axis', look_matrix)
 
 
 # ---------------------------------------------------------------- index
