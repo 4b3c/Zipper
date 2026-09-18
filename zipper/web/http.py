@@ -7,7 +7,7 @@ Split out of `zipper/serve.py` on 2026-09-07. That file had grown to 2,788
 lines, which meant no part of it could be read without loading all of it.
 """
 from .base import *
-from .base import core, canvas, chat, conversations, events, gh, ics, metrics, usage
+from .base import box, core, canvas, chat, conversations, events, gh, ics, metrics, usage
 from .conv import (PASTE_DIR, TTYD, _prune_pastes, _queue_prompt, conversation_rows,
                    current_conversation, new_conversation, newest_buffer,
                    open_conversation, start_session)
@@ -526,6 +526,7 @@ def main():
     SRV['server'] = srv
     SRV['daemon'] = a.daemon
     feed_load()
+    box.start_sampler()
     threading.Thread(target=feed_watch, daemon=True).start()
     threading.Thread(target=notes_watch, daemon=True).start()
     threading.Thread(target=conversation_reaper, daemon=True).start()

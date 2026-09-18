@@ -357,6 +357,7 @@ h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
 .grph{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
 .grph .nm{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;
   color:hsl(var(--hue) 45% var(--tl))}
+.grph .nm.warn{color:var(--warn)}
 .grph .nm.dayhd{color:var(--dim)}
 .grph .nm.dayhd.on{color:var(--accent)}
 .grph .w{margin-left:auto;font:9.5px/1 var(--mono);color:var(--dim)}
@@ -379,15 +380,16 @@ li.hid{display:none}
 .moretog:hover{text-decoration:underline}
 .grp.expand .moretog .lbl:after{content:'show less'}
 .moretog .lbl:after{content:'show all'}
+.grp.flags{margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.ph .warn{color:var(--warn)}
 .flag{color:var(--warn);font-size:12.5px;padding:4px 0;line-height:1.45;
   padding-left:11px;border-left:2px solid var(--warn);margin:5px 0}
 
 /* --- the second row: queue, flags, system ----------------------------- */
 /* Shorter than the top row -- these are read to check on something, not
    worked through, and giving them equal weight said otherwise. */
-.cols2{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr) 274px;
+.cols2{display:grid;grid-template-columns:minmax(0,1fr) 320px;
   gap:12px;align-items:start;margin-top:12px}
-@media(max-width:1180px){.cols2{grid-template-columns:minmax(0,1fr) 274px}}
 @media(max-width:820px){.cols2{grid-template-columns:1fr}}
 .cols2 .panel{height:var(--ph2)}
 .qrow{display:flex;gap:9px;align-items:baseline;font:11.5px/1.5 var(--mono);
@@ -409,12 +411,34 @@ li.hid{display:none}
 .bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
 .bar i.hot,.gb i.hot{background:var(--warn)}
 .mtr{font:9.5px/1 var(--mono);color:var(--dim);letter-spacing:.06em}
-.gauges{border-top:1px solid var(--line);margin-top:4px;padding-top:10px}
-.gs{display:flex;align-items:center;gap:8px;font:10.5px/1.7 var(--mono);color:var(--dim)}
-.gs>span:first-child{flex:none;width:30px;letter-spacing:.08em}
-.gs .gb{flex:1;height:4px;border-radius:99px;background:var(--paper);overflow:hidden}
-.gs .gb i{display:block;height:100%;background:var(--accent)}
-.gs .v{flex:none;color:var(--fg);font-size:10px}
+/* --- the box, as three small multiples -------------------------------- */
+/* One chart per metric. Three lines on shared axes would say cpu, memory and
+   disk are comparable quantities, and the eye would try to compare them. */
+.sparks{border-top:1px solid var(--line);margin-top:6px;padding-top:12px}
+.spark{margin:0 0 13px}
+.skh{display:flex;align-items:baseline;gap:7px;font:10.5px/1 var(--mono);color:var(--dim)}
+.skl{text-transform:uppercase;letter-spacing:.1em}
+.skv{color:var(--fg);margin-left:auto;font-variant-numeric:tabular-nums}
+.skt{position:absolute;right:0;top:0;font-size:9.5px;opacity:0;
+  font-variant-numeric:tabular-nums}
+.skh{position:relative}
+.spark svg{display:block;width:100%;height:40px;margin:5px 0 1px;overflow:visible}
+/* Hairline, solid, one shade off the surface -- a dashed rule would read as a
+   threshold when it is only the midpoint. */
+.spark .gl{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.spark .ln{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;
+  stroke-linecap:round;vector-effect:non-scaling-stroke}
+.spark .end{fill:var(--accent)}
+.spark svg.hot .ln{stroke:var(--warn)}
+.spark svg.hot .end{fill:var(--warn)}
+.spark .cross{stroke:var(--fg);stroke-width:1;opacity:.45;vector-effect:non-scaling-stroke}
+.skx{display:flex;justify-content:space-between;font:9px/1 var(--mono);
+  color:var(--dim);letter-spacing:.06em;opacity:.75}
+.skempty{font:10px/1.4 var(--mono);color:var(--dim);margin:6px 0 2px}
+/* The trend sits where the axis label is until the pointer arrives, then the
+   readout takes the same slot -- one line of furniture, never two. */
+.spark:hover .skt,.spark.live .skt{opacity:1}
+.spark:hover .skv,.spark.live .skv{opacity:0}
 .svcs{display:flex;flex-wrap:wrap;gap:5px;margin-top:11px;padding-top:10px;
   border-top:1px solid var(--line)}
 .svc{font:9.5px/1 var(--mono);padding:4px 7px;border-radius:99px;
@@ -428,6 +452,34 @@ PAGE_JS = """
 document.addEventListener('click',e=>{
   const b=e.target.closest('.moretog'); if(!b) return;
   b.closest('.grp').classList.toggle('expand');
+});
+
+// A line chart that cannot be interrogated is a picture. The crosshair snaps to
+// the nearest real sample rather than interpolating along the line, so the
+// readout is always a number that was actually measured.
+document.querySelectorAll('.spark[data-spark]').forEach(el=>{
+  const pts=JSON.parse(el.dataset.spark), svg=el.querySelector('svg');
+  if(!svg||!pts.length) return;
+  const cross=svg.querySelector('.cross'), out=el.querySelector('.skt');
+  const trend=out.textContent, W=240, DAY=86400;
+  // The server's clock, not the browser's: the points were placed against
+  // `now` at render time, and snapping against a different one would put the
+  // crosshair a few pixels off its own dot.
+  const now=+el.dataset.now;
+  svg.addEventListener('pointermove',ev=>{
+    const r=svg.getBoundingClientRect();
+    const t=now-DAY*(1-(ev.clientX-r.left)/r.width);
+    let best=pts[0];
+    for(const p of pts) if(Math.abs(p[0]-t)<Math.abs(best[0]-t)) best=p;
+    const x=W*Math.max(0,1-(now-best[0])/DAY);
+    cross.setAttribute('x1',x); cross.setAttribute('x2',x); cross.hidden=false;
+    out.textContent=best[1]+'% at '+
+      new Date(best[0]*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    el.classList.add('live');
+  });
+  svg.addEventListener('pointerleave',()=>{
+    cross.hidden=true; out.textContent=trend; el.classList.remove('live');
+  });
 });
 """
 
@@ -460,31 +512,39 @@ def _dur(secs):
     return '%dm' % (secs // 60)
 
 
-def queue_panel():
-    """The queue, grouped by the system an event came from.
+def queue_panel(fl):
+    """The queue, grouped by the system an event came from, with the flags on
+    top.
 
-    **Read-only, and deliberately so** -- the same rule the old card states at
-    length: a row means something happened that the vault has not accounted for,
-    and the only thing that accounts for it is a pass. A tick box here would
-    offer to shorten the list without the reasoning the list exists to prompt,
-    and a short list then reads as a reconciled one. It clears by
-    `zipper commit`, or by `--mark` from the session that did the thinking.
+    **Ticked rows are not drawn.** They were there to show the panel had been
+    worked -- but a ticked row is a finished thought, and the queue is a list of
+    unfinished ones. Keeping them meant the count in the header and the length
+    of the list disagreed, and the thing being counted was the one that mattered.
+    They are still in `Inbox/feed.json`; `zipper commit` prunes them.
 
-    Open rows sort above ticked ones inside each group, newest first, because
-    what is outstanding is the question the panel answers.
+    **Still read-only**, the same rule the old card states at length: a row means
+    something happened that the vault has not accounted for, and the only thing
+    that accounts for it is a pass. A tick box would offer to shorten the list
+    without the reasoning the list exists to prompt.
+
+    The flags sit above the events rather than in a panel of their own because
+    they are read in the same glance and answer the same question -- what has not
+    been dealt with. They are a different *kind* of thing, though, so they keep
+    their own heading and their own colour: an event happened once and clears by
+    being accounted for, a flag is a condition derived fresh every run and stops
+    only when the underlying data changes.
     """
-    rows = feed_rows() or feed_load()
+    rows = [r for r in (feed_rows() or feed_load()) if not r.get('done')]
     notes = note_rows()
     groups = {}
     for r in rows:
         groups.setdefault(r.get('system') or 'other', []).append(
-            {'done': bool(r.get('done')), 'at': r.get('at') or '',
-             'text': r.get('text') or ''})
+            {'at': r.get('at') or '', 'text': r.get('text') or ''})
     for r in notes:
         groups.setdefault('vault', []).append(
-            {'done': False, 'at': (r.get('when') or '')[11:16],
+            {'at': (r.get('when') or '')[11:16],
              'text': r.get('text') or '%-11s %s' % (r.get('action'), r.get('path'))})
-    nopen = sum(1 for g in groups.values() for r in g if not r['done'])
+    nopen = sum(len(g) for g in groups.values())
 
     out = []
     for sysk in ('vault', 'github', 'canvas', 'calendar'):
@@ -494,45 +554,101 @@ def queue_panel():
     out.extend(sorted(groups.items()))
 
     html_ = []
+    if fl:
+        html_.append('<div class="grp flags"><div class="grph">'
+                     '<span class="nm warn">flags</span><span class="w">%d</span></div>%s'
+                     '<p class="sub">A flag is a condition, not an event &mdash; it stops '
+                     'when the data changes. Investigate before editing: it says something '
+                     'is inconsistent, not which side is wrong.</p></div>'
+                     % (len(fl),
+                        ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)))
     for sysk, g in out:
         g.sort(key=lambda r: r['at'], reverse=True)
-        g.sort(key=lambda r: r['done'])          # stable: open first, newest first
-        nop = sum(1 for r in g if not r['done'])
         html_.append(
             '<div class="grp"><div class="grph"><span class="nm" %s>%s</span>'
-            '<span class="w">%s%d</span></div>%s</div>'
-            % (_style('--hue:%d' % hue(sysk)), esc(SYSNAME.get(sysk, sysk)),
-               '%d of ' % nop if nop and nop != len(g) else '', len(g),
-               ''.join('<div class="qrow%s"><span class="qt">%s</span>'
+            '<span class="w">%d</span></div>%s</div>'
+            % (_style('--hue:%d' % hue(sysk)), esc(SYSNAME.get(sysk, sysk)), len(g),
+               ''.join('<div class="qrow"><span class="qt">%s</span>'
                        '<span class="qx">%s</span></div>'
-                       % (' crossed' if r['done'] else '', esc(r['at'][:5]),
-                          esc(r['text']))
-                       for r in g)))
+                       % (esc(r['at'][:5]), esc(r['text'])) for r in g)))
     if not html_:
-        html_ = ['<p class="empty">The queue is empty.</p>']
-    return nopen, ('%s<p class="sub">Nothing here is ticked by hand. A pass '
-                   'clears it &mdash; <code>zipper commit</code>.</p>'
-                   % ''.join(html_))
+        html_ = ['<p class="ok">Nothing outstanding &mdash; no open events, no flags.</p>']
+    body = ''.join(html_)
+    if out:
+        body += ('<p class="sub">Nothing here is ticked by hand. A pass clears it '
+                 '&mdash; <code>zipper commit</code>.</p>')
+    return nopen, len(fl), body
 
 
-def flags_panel(fl):
-    """The flags, always drawn.
+SPARK_W, SPARK_H = 240.0, 40.0
 
-    On the old page the flag bar appeared only when something fired, which made
-    "no flags" and "the flags are not on this page" look identical -- and the
-    quiet state is the one worth being able to trust. A flag is a condition
-    derived fresh every run, so it is never tickable and never a queue row; the
-    panel says which side it is on rather than leaving that to be remembered.
+
+def spark(samples, key, label, unit='%'):
+    """One metric over 24 hours. A small multiple, not a third line on a shared
+    chart: cpu, memory and disk are three different questions and putting them
+    on one pair of axes would make them look comparable.
+
+    **The y domain is 0-100 and fixed.** These are percentages of a capacity, and
+    a sparkline auto-scaled to its own range turns 39.6%-40.1% of memory into an
+    alarming climb. The trend question is answered by the delta printed beside
+    the label instead -- a number that cannot be exaggerated by a scale.
+
+    **The x domain is always the full 24 hours**, so a history that only goes
+    back ten minutes draws ten minutes of line on the right and leaves the rest
+    empty. That is the honest picture the first day the sampler runs.
+
+    A gap longer than three sample intervals breaks the line rather than joining
+    across it. `zipper-web` restarting is a normal event here, and a straight
+    segment drawn over the hole would be invented data at exactly the moment
+    someone is looking to see what happened.
     """
-    if not fl:
-        body = ('<p class="ok">Nothing firing.</p>'
-                '<p class="sub">Flags are conditions, not events. They stop '
-                'when the data changes, and not before.</p>')
-    else:
-        body = ('%s<p class="sub">Investigate before editing &mdash; a flag says '
-                'something is inconsistent, not which side is wrong.</p>'
-                % ''.join('<div class="flag">%s</div>' % esc(x) for x in fl))
-    return body
+    now = time.time()
+    pts = [(r['t'], r.get(key)) for r in samples if r.get(key) is not None]
+    cur = pts[-1][1] if pts else None
+    head = ('<span class="skl">%s</span><span class="skv">%s</span>'
+            % (esc(label), '--' if cur is None else '%g%s' % (round(cur, 1), unit)))
+    if len(pts) < 2:
+        return ('<div class="spark"><div class="skh">%s</div>'
+                '<p class="skempty">collecting &mdash; %d sample%s</p></div>'
+                % (head, len(pts), '' if len(pts) == 1 else 's'))
+
+    def xy(t, v):
+        return (SPARK_W * max(0.0, 1 - (now - t) / box.WINDOW),
+                SPARK_H * (1 - min(100.0, max(0.0, v)) / 100.0))
+
+    segs, cur_seg = [], []
+    prev_t = None
+    for t, v in pts:
+        if prev_t is not None and t - prev_t > box.SAMPLE_EVERY * 3:
+            segs.append(cur_seg)
+            cur_seg = []
+        cur_seg.append('%.2f,%.2f' % xy(t, v))
+        prev_t = t
+    segs.append(cur_seg)
+
+    first = pts[0][1]
+    delta = cur - first
+    span = (now - pts[0][0]) / 3600.0
+    # "Over the last N hours" and not "over 24h" until there are 24 hours of it.
+    trend = ('%+.1f%s in %s' % (delta, unit,
+                                '%dh' % round(span) if span >= 1 else '%dm' % round(span * 60))
+             if abs(delta) >= 0.05 else 'flat')
+    ex, ey = xy(*pts[-1])
+    hot = (cur or 0) >= 85
+    return ('<div class="spark" data-spark="%s" data-now="%d">'
+            '<div class="skh">%s<span class="skt">%s</span></div>'
+            '<svg viewBox="0 0 %g %g" preserveAspectRatio="none" class="%s">'
+            '<line class="gl" x1="0" y1="%g" x2="%g" y2="%g"/>'
+            '%s<circle class="end" cx="%.2f" cy="%.2f" r="2.2"/>'
+            '<line class="cross" x1="0" y1="0" x2="0" y2="%g" hidden/>'
+            '</svg><div class="skx"><span>24h ago</span><span>now</span></div></div>'
+            % (esc(json.dumps([[int(t), v] for t, v in pts])), int(now),
+               head, esc(trend),
+               SPARK_W, SPARK_H, 'hot' if hot else '',
+               SPARK_H / 2, SPARK_W, SPARK_H / 2,
+               ''.join('<polyline class="ln" points="%s"/>' % ' '.join(sg)
+                       for sg in segs if len(sg) > 1),
+               ex, ey, SPARK_H))
 
 
 def system_panel():
@@ -544,7 +660,9 @@ def system_panel():
 
     The usage meters are Anthropic's own numbers -- see `zipper.usage`; nothing
     on this box can compute them, and a locally-estimated meter that looked
-    authoritative would be worse than none.
+    authoritative would be worse than none. The box's own numbers are the
+    opposite case: they are entirely local, so they get a series rather than a
+    bar, because "39%" is worth much less than "39% and falling".
     """
     u = usage.read()
     b = box.read()
@@ -573,23 +691,16 @@ def system_panel():
         bits.append('<p class="sub">last good reading &mdash; %s</p>'
                     % esc(u.get('error') or 'refetch failed'))
 
-    def gauge(label, pct, right):
-        if pct is None:
-            return ('<div class="gs"><span>%s</span><span class="v">--</span></div>'
-                    % esc(label))
-        return ('<div class="gs"><span>%s</span><span class="gb">'
-                '<i class="%s" %s></i></span><span class="v">%s</span></div>'
-                % (esc(label), 'hot' if pct >= 85 else '',
-                   _style('width:%.1f%%' % pct), esc(right)))
-
+    hist = box.history()
     mem, dsk = b.get('mem'), b.get('disk')
-    bits.append('<div class="gauges">%s%s%s</div>' % (
-        gauge('cpu', b.get('cpu'),
-              '%.0f%% \u00b7 %.2f' % (b.get('cpu') or 0, (b.get('load') or [0])[0])),
-        gauge('mem', mem and mem['pct'],
-              '%s / %s' % (_gb(mem and mem['used']), _gb(mem and mem['total']))),
-        gauge('disk', dsk and dsk['pct'],
-              '%s free' % _gb(dsk and (dsk['total'] - dsk['used'])))))
+    bits.append('<div class="sparks">%s%s%s</div>'
+                % (spark(hist, 'mem', 'memory'),
+                   spark(hist, 'cpu', 'cpu'),
+                   spark(hist, 'disk', 'disk')))
+    bits.append('<p class="sub">%s of %s memory &middot; %s disk free &middot; '
+                'load %.2f</p>'
+                % (_gb(mem and mem['used']), _gb(mem and mem['total']),
+                   _gb(dsk and (dsk['total'] - dsk['used'])), (b.get('load') or [0])[0]))
 
     # A unit that started before the current commit is serving code that is not
     # what HEAD says. That exact combination cost an afternoon on 2026-09-17 and
@@ -775,7 +886,7 @@ def page(day=None):
     tasks = task_rows()
     donetasks = done_task_rows()
     fl = flags()
-    nqueue, queue_html = queue_panel()
+    nqueue, nflags, queue_html = queue_panel(fl)
     label = ('Today' if is_today else
              'Tomorrow' if d == core.TODAY + datetime.timedelta(days=1) else
              d.strftime('%A'))
@@ -810,9 +921,7 @@ def page(day=None):
             '</div>'
 
             '<div class="cols2">'
-            '<div class="panel"><div class="ph">queue<span class="n">%d</span></div>'
-            '<div class="pb">%s</div></div>'
-            '<div class="panel"><div class="ph">flags<span class="n">%s</span></div>'
+            '<div class="panel"><div class="ph">queue%s<span class="n">%d</span></div>'
             '<div class="pb">%s</div></div>'
             '<div class="panel"><div class="ph">zipper</div>'
             '<div class="pb">%s</div></div>'
@@ -830,8 +939,9 @@ def page(day=None):
                len(tasks), len(donetasks),
                project_groups(tasks, True) or '<p class="empty">No open tasks.</p>',
                project_groups(donetasks, False) or '<p class="empty">Nothing ticked off yet.</p>',
+               (' <span class="warn">&middot; %d flag%s</span>'
+                % (nflags, '' if nflags == 1 else 's')) if nflags else '',
                nqueue, queue_html,
-               len(fl) if fl else '&mdash;', flags_panel(fl),
                system_panel()))
     return _page('Zipper', CSS, body, PAGE_JS)
 
