@@ -383,7 +383,6 @@ li.row{display:flex;gap:8px;padding:5px 0;align-items:flex-start}
   border:1px solid hsl(var(--hue) 55% 50% / .3);white-space:nowrap;margin-top:2px}
 .at{color:var(--dim)}
 .od{color:var(--warn);font-weight:600}
-.dash{font:10.5px/1.5 var(--mono);color:var(--dim);opacity:.4}
 .empty{font:11.5px/1.7 var(--mono);color:var(--dim);opacity:.65;padding:5px 0}
 .carry{border-left:2px solid var(--warn);padding-left:10px;margin:2px 0 10px}
 .carry .ch{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
@@ -525,20 +524,23 @@ def look_rail(day=None):
         grid.append('<p class="dayempty">nothing scheduled</p>')
 
     # --- 3. Canvas ------------------------------------------------------
-    def day_sections(pred, keep_empty):
+    def day_sections(pred):
+        """Only days that have something. An empty day was carrying a heading
+        and a dash purely to keep the week's shape visible -- but the week panel
+        on the left already draws that shape, with counts, and drawing it twice
+        was most of what made this column feel busy."""
         out = []
         for i, dd in enumerate(days):
             items = [it for it in wk['days'][dd] if pred(it)]
-            if not items and not keep_empty:
+            if not items:
                 continue
             dd_d = datetime.date(*map(int, dd.split('-')))
             out.append('<div class="grp%s"><div class="grph"><span class="nm%s">%s %s</span>'
-                       '<span class="w">%s</span></div>%s</div>'
+                       '<span class="w">%d</span></div><ul>%s</ul></div>'
                        % (' sel' if dd == day else '',
                           ' dayhd' + (' on' if dd == today_iso else ''),
-                          DOW[i], dd_d.strftime('%d'), len(items) or '',
-                          ('<ul>%s</ul>' % ''.join(_rail_row(it, pill=True) for it in items))
-                          if items else '<div class="dash">&mdash;</div>'))
+                          DOW[i], dd_d.strftime('%d'), len(items),
+                          ''.join(_rail_row(it, pill=True) for it in items)))
         return ''.join(out)
 
     allit = [it for v in wk['days'].values() for it in v]
@@ -620,8 +622,9 @@ def look_rail(day=None):
                '' if is_today else '<a class="back" href="/look/1">back to today &rarr;</a>',
                ''.join(wdays), esc(label), len(blocks), ''.join(grid),
                nopen, ndone,
-               carry, day_sections(lambda it: not it['done'], True),
-               day_sections(lambda it: it['done'], False)
+               carry, day_sections(lambda it: not it['done'])
+               or '<p class="empty">Nothing due this week.</p>',
+               day_sections(lambda it: it['done'])
                or '<p class="empty">Nothing handed in this week yet.</p>',
                len(tasks), len(donetasks),
                project_groups(tasks, True) or '<p class="empty">No open tasks.</p>',
