@@ -24,7 +24,8 @@ silently drops the rest, which once left every block stacked at 06:00 with the
 arithmetic behind it perfectly correct.
 """
 from .base import *
-from .base import core, canvas, events, metrics
+from .base import box, core, canvas, events, metrics, usage
+from .feed import feed_load, feed_rows, note_rows
 from .js import TICKJS
 from .data import (canvas_items, class_notes, flags, monday_of, open_tasks,
                    priority, ranked, today_split, week_canvas)
@@ -267,7 +268,7 @@ def daystrip_days(day):
 # rule stated once cannot drift.
 CSS = """
 :root{--bg:#fbfaf7;--fg:#1a1916;--dim:#726c62;--line:#e6e1d8;--card:#fff;
-  --accent:#1f5f4f;--warn:#a3521c;--paper:#f3f0e9;--tl:35%;--ph:620px}
+  --accent:#1f5f4f;--warn:#a3521c;--paper:#f3f0e9;--tl:35%;--ph:620px;--ph2:298px}
 @media(prefers-color-scheme:dark){:root{--bg:#121311;--fg:#eceae4;--dim:#8f8a80;
   --line:#272825;--card:#191a18;--accent:#6fcfae;--warn:#dd9455;--paper:#1f201d;--tl:68%}}
 body{background:var(--bg);color:var(--fg)}
@@ -378,11 +379,49 @@ li.hid{display:none}
 .moretog:hover{text-decoration:underline}
 .grp.expand .moretog .lbl:after{content:'show less'}
 .moretog .lbl:after{content:'show all'}
-.flag{color:var(--warn);font-size:12.5px;padding:3px 0;line-height:1.45}
-.flagbar{margin-top:12px;background:var(--card);border:1px solid var(--line);
-  border-left:3px solid var(--warn);border-radius:11px;padding:11px 14px}
-.flagbar h2{font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;
-  color:var(--dim);margin:0 0 7px}
+.flag{color:var(--warn);font-size:12.5px;padding:4px 0;line-height:1.45;
+  padding-left:11px;border-left:2px solid var(--warn);margin:5px 0}
+
+/* --- the second row: queue, flags, system ----------------------------- */
+/* Shorter than the top row -- these are read to check on something, not
+   worked through, and giving them equal weight said otherwise. */
+.cols2{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr) 274px;
+  gap:12px;align-items:start;margin-top:12px}
+@media(max-width:1180px){.cols2{grid-template-columns:minmax(0,1fr) 274px}}
+@media(max-width:820px){.cols2{grid-template-columns:1fr}}
+.cols2 .panel{height:var(--ph2)}
+.qrow{display:flex;gap:9px;align-items:baseline;font:11.5px/1.5 var(--mono);
+  padding:1.5px 0}
+.qrow .qt{flex:none;color:var(--dim);font-size:10.5px}
+.qrow .qx{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.qrow.crossed{opacity:.38;text-decoration:line-through}
+.sub{font:10.5px/1.5 var(--mono);color:var(--dim);margin:10px 0 2px}
+.sub code{font-size:10px}
+.ok{font-size:12.5px;color:var(--accent);margin:2px 0 0}
+
+/* meters and gauges share one bar so the plan and the box read as one scale */
+.mt{margin:0 0 11px}
+.mtl{display:flex;justify-content:space-between;font:10.5px/1 var(--mono);
+  text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
+.mtl .v{color:var(--fg);letter-spacing:0}
+.bar{height:6px;border-radius:99px;background:var(--paper);margin:5px 0 3px;
+  overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.bar i.hot,.gb i.hot{background:var(--warn)}
+.mtr{font:9.5px/1 var(--mono);color:var(--dim);letter-spacing:.06em}
+.gauges{border-top:1px solid var(--line);margin-top:4px;padding-top:10px}
+.gs{display:flex;align-items:center;gap:8px;font:10.5px/1.7 var(--mono);color:var(--dim)}
+.gs>span:first-child{flex:none;width:30px;letter-spacing:.08em}
+.gs .gb{flex:1;height:4px;border-radius:99px;background:var(--paper);overflow:hidden}
+.gs .gb i{display:block;height:100%;background:var(--accent)}
+.gs .v{flex:none;color:var(--fg);font-size:10px}
+.svcs{display:flex;flex-wrap:wrap;gap:5px;margin-top:11px;padding-top:10px;
+  border-top:1px solid var(--line)}
+.svc{font:9.5px/1 var(--mono);padding:4px 7px;border-radius:99px;
+  border:1px solid var(--line);color:var(--dim);letter-spacing:.05em}
+.svc.up{color:var(--accent);border-color:currentColor}
+.svc.down,.svc.stale{color:var(--warn);border-color:currentColor}
+.svc em{font-style:normal;opacity:.75}
 """
 
 PAGE_JS = """
@@ -391,6 +430,182 @@ document.addEventListener('click',e=>{
   b.closest('.grp').classList.toggle('expand');
 });
 """
+
+
+SYSNAME = {'github': 'GitHub', 'calendar': 'Calendar', 'canvas': 'Canvas',
+           'vault': 'Vault'}
+
+
+def _gb(n):
+    """Bytes as a short human string. One decimal below 10, none above -- a
+    dashboard number is read at a glance and `13.7G` and `14G` say the same
+    thing at different widths."""
+    if n is None:
+        return '--'
+    for unit, size in (('T', 1 << 40), ('G', 1 << 30), ('M', 1 << 20)):
+        if n >= size:
+            v = n / size
+            return ('%.1f%s' if v < 10 else '%.0f%s') % (v, unit)
+    return '%dK' % (n / 1024)
+
+
+def _dur(secs):
+    if secs is None:
+        return '--'
+    secs = int(secs)
+    if secs >= 86400:
+        return '%dd %dh' % (secs // 86400, (secs % 86400) // 3600)
+    if secs >= 3600:
+        return '%dh %dm' % (secs // 3600, (secs % 3600) // 60)
+    return '%dm' % (secs // 60)
+
+
+def queue_panel():
+    """The queue, grouped by the system an event came from.
+
+    **Read-only, and deliberately so** -- the same rule the old card states at
+    length: a row means something happened that the vault has not accounted for,
+    and the only thing that accounts for it is a pass. A tick box here would
+    offer to shorten the list without the reasoning the list exists to prompt,
+    and a short list then reads as a reconciled one. It clears by
+    `zipper commit`, or by `--mark` from the session that did the thinking.
+
+    Open rows sort above ticked ones inside each group, newest first, because
+    what is outstanding is the question the panel answers.
+    """
+    rows = feed_rows() or feed_load()
+    notes = note_rows()
+    groups = {}
+    for r in rows:
+        groups.setdefault(r.get('system') or 'other', []).append(
+            {'done': bool(r.get('done')), 'at': r.get('at') or '',
+             'text': r.get('text') or ''})
+    for r in notes:
+        groups.setdefault('vault', []).append(
+            {'done': False, 'at': (r.get('when') or '')[11:16],
+             'text': r.get('text') or '%-11s %s' % (r.get('action'), r.get('path'))})
+    nopen = sum(1 for g in groups.values() for r in g if not r['done'])
+
+    out = []
+    for sysk in ('vault', 'github', 'canvas', 'calendar'):
+        g = groups.pop(sysk, None)
+        if g:
+            out.append((sysk, g))
+    out.extend(sorted(groups.items()))
+
+    html_ = []
+    for sysk, g in out:
+        g.sort(key=lambda r: r['at'], reverse=True)
+        g.sort(key=lambda r: r['done'])          # stable: open first, newest first
+        nop = sum(1 for r in g if not r['done'])
+        html_.append(
+            '<div class="grp"><div class="grph"><span class="nm" %s>%s</span>'
+            '<span class="w">%s%d</span></div>%s</div>'
+            % (_style('--hue:%d' % hue(sysk)), esc(SYSNAME.get(sysk, sysk)),
+               '%d of ' % nop if nop and nop != len(g) else '', len(g),
+               ''.join('<div class="qrow%s"><span class="qt">%s</span>'
+                       '<span class="qx">%s</span></div>'
+                       % (' crossed' if r['done'] else '', esc(r['at'][:5]),
+                          esc(r['text']))
+                       for r in g)))
+    if not html_:
+        html_ = ['<p class="empty">The queue is empty.</p>']
+    return nopen, ('%s<p class="sub">Nothing here is ticked by hand. A pass '
+                   'clears it &mdash; <code>zipper commit</code>.</p>'
+                   % ''.join(html_))
+
+
+def flags_panel(fl):
+    """The flags, always drawn.
+
+    On the old page the flag bar appeared only when something fired, which made
+    "no flags" and "the flags are not on this page" look identical -- and the
+    quiet state is the one worth being able to trust. A flag is a condition
+    derived fresh every run, so it is never tickable and never a queue row; the
+    panel says which side it is on rather than leaving that to be remembered.
+    """
+    if not fl:
+        body = ('<p class="ok">Nothing firing.</p>'
+                '<p class="sub">Flags are conditions, not events. They stop '
+                'when the data changes, and not before.</p>')
+    else:
+        body = ('%s<p class="sub">Investigate before editing &mdash; a flag says '
+                'something is inconsistent, not which side is wrong.</p>'
+                % ''.join('<div class="flag">%s</div>' % esc(x) for x in fl))
+    return body
+
+
+def system_panel():
+    """The plan and the box, in one panel.
+
+    Both answer "can I keep working right now", which is why they are one panel
+    and not two: the session meter and the disk bar fail the same way, and the
+    answer is the same shape.
+
+    The usage meters are Anthropic's own numbers -- see `zipper.usage`; nothing
+    on this box can compute them, and a locally-estimated meter that looked
+    authoritative would be worse than none.
+    """
+    u = usage.read()
+    b = box.read()
+    bits = []
+
+    for m in u.get('meters', []):
+        r = ''
+        if m.get('resets'):
+            try:
+                t = datetime.datetime.fromisoformat(m['resets'].replace('Z', '+00:00'))
+                r = t.astimezone().strftime('%a %H:%M')
+            except Exception:
+                r = ''
+        bits.append('<div class="mt"><div class="mtl"><span>%s</span>'
+                    '<span class="v">%s%%</span></div>'
+                    '<div class="bar"><i class="%s" %s></i></div>'
+                    '<div class="mtr">%s</div></div>'
+                    % (esc(m['label']), esc('%g' % m['pct']),
+                       'hot' if m['pct'] >= 80 else '',
+                       _style('width:%.1f%%' % m['pct']),
+                       'resets %s' % esc(r) if r else ''))
+    if not u.get('meters'):
+        bits.append('<p class="sub">usage: %s</p>'
+                    % esc(u.get('error') or 'unavailable'))
+    elif u.get('stale'):
+        bits.append('<p class="sub">last good reading &mdash; %s</p>'
+                    % esc(u.get('error') or 'refetch failed'))
+
+    def gauge(label, pct, right):
+        if pct is None:
+            return ('<div class="gs"><span>%s</span><span class="v">--</span></div>'
+                    % esc(label))
+        return ('<div class="gs"><span>%s</span><span class="gb">'
+                '<i class="%s" %s></i></span><span class="v">%s</span></div>'
+                % (esc(label), 'hot' if pct >= 85 else '',
+                   _style('width:%.1f%%' % pct), esc(right)))
+
+    mem, dsk = b.get('mem'), b.get('disk')
+    bits.append('<div class="gauges">%s%s%s</div>' % (
+        gauge('cpu', b.get('cpu'),
+              '%.0f%% \u00b7 %.2f' % (b.get('cpu') or 0, (b.get('load') or [0])[0])),
+        gauge('mem', mem and mem['pct'],
+              '%s / %s' % (_gb(mem and mem['used']), _gb(mem and mem['total']))),
+        gauge('disk', dsk and dsk['pct'],
+              '%s free' % _gb(dsk and (dsk['total'] - dsk['used'])))))
+
+    # A unit that started before the current commit is serving code that is not
+    # what HEAD says. That exact combination cost an afternoon on 2026-09-17 and
+    # nothing said so; this is the surface that says so.
+    svc = []
+    for un in b.get('units', []):
+        cls = 'up' if un['state'] == 'active' else 'down'
+        note = ''
+        if un['stale']:
+            cls, note = 'stale', ' <em>pre-HEAD</em>'
+        svc.append('<span class="svc %s">%s%s</span>'
+                   % (cls, esc(un['name'].replace('zipper-', '')), note))
+    bits.append('<div class="svcs">%s</div>' % ''.join(svc))
+    bits.append('<p class="sub">up %s &middot; %d cpu</p>'
+                % (_dur(b.get('uptime')), b.get('cpus') or 1))
+    return ''.join(bits)
 
 
 def _row(it, showat=True, showdue=False, pill=False):
@@ -560,6 +775,7 @@ def page(day=None):
     tasks = task_rows()
     donetasks = done_task_rows()
     fl = flags()
+    nqueue, queue_html = queue_panel()
     label = ('Today' if is_today else
              'Tomorrow' if d == core.TODAY + datetime.timedelta(days=1) else
              d.strftime('%A'))
@@ -591,7 +807,18 @@ def page(day=None):
             '<div class="pb" data-pane="open">%s</div>'
             '<div class="pb" data-pane="done" hidden>%s</div></div>'
 
-            '</div>%s</div>'
+            '</div>'
+
+            '<div class="cols2">'
+            '<div class="panel"><div class="ph">queue<span class="n">%d</span></div>'
+            '<div class="pb">%s</div></div>'
+            '<div class="panel"><div class="ph">flags<span class="n">%s</span></div>'
+            '<div class="pb">%s</div></div>'
+            '<div class="panel"><div class="ph">zipper</div>'
+            '<div class="pb">%s</div></div>'
+            '</div>'
+
+            '</div>'
             % (NAV, esc(d.strftime('%A %d %B')), esc(label),
                '' if is_today else '<a class="back" href="/">back to today &rarr;</a>',
                ''.join(wdays), esc(label), len(blocks), ''.join(grid),
@@ -603,9 +830,9 @@ def page(day=None):
                len(tasks), len(donetasks),
                project_groups(tasks, True) or '<p class="empty">No open tasks.</p>',
                project_groups(donetasks, False) or '<p class="empty">Nothing ticked off yet.</p>',
-               ('<div class="flagbar"><h2>Flags &middot; %d</h2>%s</div>'
-                % (len(fl), ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)))
-               if fl else ''))
+               nqueue, queue_html,
+               len(fl) if fl else '&mdash;', flags_panel(fl),
+               system_panel()))
     return _page('Zipper', CSS, body, PAGE_JS)
 
 
