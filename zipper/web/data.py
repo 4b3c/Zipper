@@ -198,31 +198,64 @@ def task_text(raw):
 
 
 def open_tasks():
+    """Unticked `Tasks/` lines, with their descriptions.
+
+    **A task is a title and, optionally, a description.** The title is the line
+    itself and is meant to be short -- five to ten words, the action and nothing
+    else. Anything that explains, qualifies or evidences it goes on indented
+    continuation lines underneath, which markdown already treats as part of the
+    list item, so Obsidian and the dashboard read the same file the same way::
+
+        - [ ] Buy a Pantry subscription on a real device [project:: [[Pantry]]]
+          Nobody has ever verified the purchase flow end to end.
+
+    The rule is about being able to *see* the list. A title carrying its own
+    justification is unreadable at a glance, and a list of forty of them is a
+    wall -- which is what this file used to produce.
+
+    A continuation line is anything indented that is not itself a checkbox. A
+    nested `- [ ]` stays a task of its own; that is the one shape this must not
+    swallow.
+    """
     out = []
     for p in sorted(glob.glob(os.path.join(core.VAULT, 'Tasks', '*.md'))):
+        cur = None
         for line in open(p, encoding='utf-8'):
             m = core.TASK_RE.match(line)
-            if not m or m.group(1).lower() == 'x':
+            if m:
+                cur = None
+                if m.group(1).lower() == 'x':
+                    continue
+                raw = m.group(2)
+                due = re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
+                proj = re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
+                # Every note the line names, `project::` first and no duplicates.
+                # A task is often about one project and done with another team's
+                # work, and linking only `project::` sent the one about five CSE
+                # 423 documents to the Orbitscape note. What he wrote down is the
+                # evidence; nothing here infers a link he did not type.
+                links = [proj.group(1)] if proj else []
+                for n in re.findall(r'\[\[([^\]|#]+)', raw):
+                    n = n.strip()
+                    if n and n not in links:
+                        links.append(n)
+                cur = {'text': task_text(raw), 'desc': '',
+                       'due': due.group(1) if due else '',
+                       'project': proj.group(1) if proj else '',
+                       'links': links,
+                       'next': '#next' in raw,
+                       'overdue': bool(due and due.group(1) < core.TODAY.isoformat())}
+                out.append(cur)
                 continue
-            raw = m.group(2)
-            due = re.search(r'\[due::\s*(\d{4}-\d{2}-\d{2})\]', raw)
-            proj = re.search(r'\[project::\s*\[\[([^\]]+)\]\]', raw)
-            # Every note the line names, `project::` first and no duplicates.
-            # A task is often about one project and done with another team's
-            # work, and linking only `project::` sent the one about five CSE 423
-            # documents to the Orbitscape note. What he wrote down is the
-            # evidence; nothing here infers a link he did not type.
-            links = [proj.group(1)] if proj else []
-            for n in re.findall(r'\[\[([^\]|#]+)', raw):
-                n = n.strip()
-                if n and n not in links:
-                    links.append(n)
-            out.append({'text': task_text(raw),
-                        'due': due.group(1) if due else '',
-                        'project': proj.group(1) if proj else '',
-                        'links': links,
-                        'next': '#next' in raw,
-                        'overdue': bool(due and due.group(1) < core.TODAY.isoformat())})
+            if cur is None:
+                continue
+            if not line.strip():
+                cur = None                      # a blank line ends the item
+                continue
+            if not line[:1].isspace():
+                cur = None                      # back at the margin: not ours
+                continue
+            cur['desc'] = (cur['desc'] + ' ' + task_text(line.strip())).strip()
     return out
 
 
@@ -270,7 +303,7 @@ def ranked(limit=10):
     for t in open_tasks():
         items.append({'source': 'task', 'title': t['text'], 'due': t['due'],
                       'tag': t['project'], 'url': '', 'points': 0,
-                      'desc': '', 'kind': '', 'links': t['links'],
+                      'desc': t['desc'], 'kind': '', 'links': t['links'],
                       # Canvas assignments are what a class-backed task is
                       # actually about, so the course page is the link it wants
                       # -- the note is context, not the work.

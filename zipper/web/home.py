@@ -238,9 +238,15 @@ ul{list-style:none;margin:0;padding:0}
 .tick[disabled]{opacity:.25;cursor:default}
 li.crossed{opacity:.42}
 li.crossed .rowtitle{text-decoration:line-through}
-.rowbody{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.rowtitle{line-height:1.3;overflow-wrap:anywhere}
-.rowmeta{font:11px/1.45 var(--mono);opacity:.7}
+.rowbody{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+/* The title carries the row. It was the same size as the metadata under it,
+   which is what made a list of forty read as a wall of text rather than as
+   forty things. */
+.rowtitle{font:500 15.5px/1.32 var(--sans);letter-spacing:-.005em;overflow-wrap:anywhere}
+/* Two lines, then a fade. The file holds the rest. */
+.rowdesc{font:12.5px/1.45 var(--sans);opacity:.62;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rowmeta{font:10.5px/1.45 var(--mono);opacity:.62;letter-spacing:.03em}
 .nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center;
   font:11px/1 var(--mono);padding:10px 0 0;letter-spacing:.05em}
 .nav a{text-decoration:none;opacity:.55;padding:4px 9px;border-radius:99px;
@@ -274,7 +280,7 @@ CSS = """
 body{background:var(--bg);color:var(--fg)}
 .wrap{max-width:1380px;margin:0 auto;padding:16px 22px 46px}
 .head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:14px 0 14px}
-h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
+h1{font:600 25px/1.15 var(--sans);margin:0;letter-spacing:-.02em}
 .head .meta{font:10.5px/1 var(--mono);color:var(--dim);letter-spacing:.11em;text-transform:uppercase}
 .head .back{margin-left:auto;font:11px/1 var(--mono);color:var(--accent);text-decoration:none}
 
@@ -286,8 +292,8 @@ h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
   .panel.day{height:var(--ph)!important}}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:13px;
   height:var(--ph);display:flex;flex-direction:column;overflow:hidden}
-.ph{padding:12px 14px 10px;display:flex;align-items:center;gap:8px;flex:none;
-  font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);
+.ph{padding:13px 14px 11px;display:flex;align-items:center;gap:8px;flex:none;
+  font:600 12.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--fg);
   border-bottom:1px solid var(--line)}
 .ph .n{margin-left:auto;color:var(--accent)}
 /* The lists scroll inside their panel; the day never does. */
@@ -355,7 +361,7 @@ h1{font:600 21px/1.2 var(--sans);margin:0;letter-spacing:-.015em}
 .grp:last-child{border-bottom:0}
 .grp.sel{background:var(--paper);border-radius:8px;padding:8px 9px;margin:0 -9px}
 .grph{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
-.grph .nm{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;
+.grph .nm{font:600 12px/1.2 var(--mono);letter-spacing:.07em;text-transform:uppercase;
   color:hsl(var(--hue) 45% var(--tl))}
 .grph .nm.warn{color:var(--warn)}
 .grph .nm.dayhd{color:var(--dim)}
@@ -382,7 +388,7 @@ li.hid{display:none}
 .moretog .lbl:after{content:'show all'}
 .grp.flags{margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .ph .warn{color:var(--warn)}
-.flag{color:var(--warn);font-size:12.5px;padding:4px 0;line-height:1.45;
+.flag{color:var(--warn);font-size:13.5px;padding:5px 0;line-height:1.4;
   padding-left:11px;border-left:2px solid var(--warn);margin:5px 0}
 
 /* --- the second row: queue, flags, system ----------------------------- */
@@ -392,9 +398,9 @@ li.hid{display:none}
   gap:12px;align-items:start;margin-top:12px}
 @media(max-width:820px){.cols2{grid-template-columns:1fr}}
 .cols2 .panel{height:var(--ph2)}
-.qrow{display:flex;gap:9px;align-items:baseline;font:11.5px/1.5 var(--mono);
-  padding:1.5px 0}
-.qrow .qt{flex:none;color:var(--dim);font-size:10.5px}
+.qrow{display:flex;gap:9px;align-items:baseline;font:12.5px/1.5 var(--mono);
+  padding:2.5px 0}
+.qrow .qt{flex:none;color:var(--dim);font-size:11px}
 .qrow .qx{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
 .qrow.crossed{opacity:.38;text-decoration:line-through}
 .sub{font:10.5px/1.5 var(--mono);color:var(--dim);margin:10px 0 2px}
@@ -557,9 +563,7 @@ def queue_panel(fl):
     if fl:
         html_.append('<div class="grp flags"><div class="grph">'
                      '<span class="nm warn">flags</span><span class="w">%d</span></div>%s'
-                     '<p class="sub">A flag is a condition, not an event &mdash; it stops '
-                     'when the data changes. Investigate before editing: it says something '
-                     'is inconsistent, not which side is wrong.</p></div>'
+                     '</div>'
                      % (len(fl),
                         ''.join('<div class="flag">%s</div>' % esc(x) for x in fl)))
     for sysk, g in out:
@@ -573,11 +577,7 @@ def queue_panel(fl):
                        % (esc(r['at'][:5]), esc(r['text'])) for r in g)))
     if not html_:
         html_ = ['<p class="ok">Nothing outstanding &mdash; no open events, no flags.</p>']
-    body = ''.join(html_)
-    if out:
-        body += ('<p class="sub">Nothing here is ticked by hand. A pass clears it '
-                 '&mdash; <code>zipper commit</code>.</p>')
-    return nopen, len(fl), body
+    return nopen, len(fl), ''.join(html_)
 
 
 SPARK_W, SPARK_H = 240.0, 40.0
@@ -735,8 +735,6 @@ def _row(it, showat=True, showdue=False, pill=False):
         meta.append('%s pts' % esc(str(it['points'])))
     if it.get('elsewhere'):
         meta.append('on %s' % esc(it['elsewhere']))
-    if it.get('next'):
-        meta.append('next')
     if it.get('overdue') and not showdue:
         meta.append('<span class="od">late</span>')
     # The day is the section heading in the Canvas panel, so without this the
@@ -745,12 +743,26 @@ def _row(it, showat=True, showdue=False, pill=False):
     tag = ('<span class="pill" %s>%s</span>'
            % (_style('--hue:%d' % hue(it.get('tag'))), esc(it['tag']))
            if pill and it.get('tag') else '')
+    # The description is the rest of what he wrote, kept off the title line.
+    # Two lines of it, then a fade -- a row is a thing to recognise, and the
+    # whole of it is one click away in the file.
+    #
+    # A task's description is always shown: he wrote it, and the title rule
+    # means it is where the content deliberately went. A Canvas one is only
+    # shown when it is short enough to be a summary -- those bodies run to
+    # thousands of characters of course boilerplate, and two clamped lines of
+    # "Submit your work using the template below" on twenty rows is the wall
+    # this whole change is getting rid of. `/old` still expands the full text.
+    d = it.get('desc') or ''
+    if it.get('source') == 'canvas' and len(d) > 140:
+        d = ''
+    desc = '<span class="rowdesc">%s</span>' % esc(plain(d)) if d else ''
     return ('<li class="row%s"><button class="tick" data-key="%s"%s>%s</button>'
-            '<span class="rowbody"><span class="rowtitle">%s</span>'
+            '<span class="rowbody"><span class="rowtitle">%s</span>%s'
             '<span class="rowmeta">%s</span></span>%s</li>'
             % (' crossed' if it.get('done') else '', esc(it['key']),
                ' disabled title="submitted in Canvas"' if it.get('submitted') else '',
-               '&#10003;' if it.get('done') else '', title,
+               '&#10003;' if it.get('done') else '', title, desc,
                ' &middot; '.join(meta), tag))
 
 
