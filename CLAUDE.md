@@ -46,7 +46,7 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `hooks/forward_reply.py` | the `Stop` hook that posts a reply back to its Discord thread |
 | `zipper/README.md` | operational reference. **Read before touching any of it** |
 | `HISTORY.md` | finished changes and the reasoning behind them. Never how anything works today |
-| `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half |
+| `bot/` | Discord relay — gateway client, HTTP surface, and the send/history CLI's other half. `client.py` also saves a message's **attachments** to `/tmp/zipper-discord-files/<message id>/` and appends `attached file saved here: <path>` to the prompt, keeping the last 20 messages' worth. The path only means anything because the bot and the pane share `/tmp`: **`PrivateTmp` must stay off on `zipper-discord` and `zipper-web`**, or every forwarded path is a file the session cannot open |
 | `utils/` | `constants.py` and `text.py`, the bot's only dependencies |
 | `extension/` | the browser collector — Chrome and Firefox from one manifest. Reads what only a logged-in browser can see and POSTs it to the dashboard. **It collects and never concludes**; adding a site is one file in `collectors/`. See its own README |
 

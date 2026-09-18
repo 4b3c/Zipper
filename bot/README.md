@@ -22,6 +22,17 @@ bot/
    bot's `/send`
 4. the bot posts it **in the channel**
 
+Attachments are downloaded at step 1, to `/tmp/zipper-discord-files/<message id>/`, and one
+`attached file saved here: <path>` line per file is appended to the message text. That is
+also what lets an attachment-only message through — `/discord` refuses an empty prompt, and
+a photo with no caption is a message. A download that fails still produces a line saying so,
+because a session that does not know a file was sent cannot ask for it again.
+
+The directory is scratch: the last 20 messages' files survive and `/tmp` does not outlive a
+reboot. Anything worth keeping is copied out by the session that was shown it. Both this
+service and `zipper-web` must keep `PrivateTmp` off — systemd would otherwise give each its
+own `/tmp` and the forwarded path would resolve to nothing in the Claude pane.
+
 Replies land in the channel, not in a thread. Until 2026-09-03 every message opened a thread
 named after its first 50 characters, which made one conversation per sentence. Messages that
 arrive in an existing thread are still relayed, so anything opened before that keeps working.

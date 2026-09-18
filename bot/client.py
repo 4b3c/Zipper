@@ -1,6 +1,10 @@
 """Discord gateway client: on_ready, on_message, post_to_zipper, resolve_thread."""
 
 import asyncio
+import os
+import shutil
+import tempfile
+
 import aiohttp
 from aiohttp import ClientTimeout
 import discord
@@ -21,6 +25,118 @@ ZIPPER_UNIT = "zipper-web"
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+
+
+# Where a Discord attachment lands on the way to a conversation.
+#
+# /tmp on purpose, and shared on purpose: the bot writes these, the Claude
+# session reads them, and the only thing making a path in a prompt mean
+# anything is that both processes see the same /tmp. Neither
+# zipper-discord.service nor zipper-web.service sets PrivateTmp, and they must
+# not start -- systemd would give each its own /tmp and every path forwarded
+# from here would be a file the session cannot open.
+ATTACH_DIR = os.path.join(tempfile.gettempdir(), 'zipper-discord-files')
+
+# Discord's own non-Nitro ceiling. Anything past it is refused with a reason
+# rather than streamed onto the box's disk.
+ATTACH_MAX_BYTES = 25 * 1024 * 1024
+
+# A slow CDN must not wedge the gateway's event loop.
+ATTACH_TIMEOUT = 60
+
+# How many messages' attachments survive. This is scratch space for a
+# conversation to read in the next few minutes, not storage -- anything worth
+# keeping gets copied out of tmp by the session that was shown it.
+ATTACH_KEEP = 20
+
+
+def _safe_name(name: str, n: int):
+    """A filename that cannot escape its directory.
+
+    Attachment names come from whoever sent the message, so they are treated as
+    hostile: basename first, then a whitelist, and a generated name when
+    nothing survives. `../../opt/zipper/.env` must not be a path this function
+    can return.
+    """
+    name = os.path.basename(name or '')
+    cleaned = ''.join(c for c in name if c.isalnum() or c in '._- ').strip('. ')
+    return cleaned[:120] or f'file-{n}'
+
+
+def _prune_attachments():
+    """Keep the last few messages' files and no more.
+
+    Same bargain as the dashboard's paste directory: they are things a
+    conversation was handed a moment ago, not vault content, so they live in
+    tmp and age out. Every failure here is ignored -- pruning is housekeeping
+    and must never be the reason a message does not get delivered.
+    """
+    try:
+        dirs = sorted((os.path.getmtime(os.path.join(ATTACH_DIR, d)), d)
+                      for d in os.listdir(ATTACH_DIR))
+    except OSError:
+        return
+    for _, d in dirs[:-ATTACH_KEEP]:
+        shutil.rmtree(os.path.join(ATTACH_DIR, d), ignore_errors=True)
+
+
+async def save_attachments(message: discord.Message):
+    """Download a message's attachments to tmp. Returns display lines.
+
+    One line per attachment, in the order they were sent, ready to append to
+    the prompt. A file that could not be fetched still gets a line saying so:
+    **a failure degrades the line, it never drops the message.** Silence would
+    leave the session answering confidently about a message it only half
+    received -- it would not know a file had been sent at all, so it could not
+    ask for it again.
+
+    Files go in a per-message directory so the sender's own filename survives
+    without two people's `image.png` colliding, and so pruning can drop a whole
+    message's worth at once.
+    """
+    if not message.attachments:
+        return []
+
+    dest = os.path.join(ATTACH_DIR, str(message.id))
+    try:
+        os.makedirs(dest, exist_ok=True)
+    except OSError as e:
+        print(f"[discord] attachments: cannot create {dest}: {e}")
+        return [f'⚠️ {len(message.attachments)} attachment(s) could not be saved: {e}']
+
+    lines = []
+    for n, att in enumerate(message.attachments, 1):
+        name = _safe_name(att.filename, n)
+        if att.size and att.size > ATTACH_MAX_BYTES:
+            lines.append(f'⚠️ attachment "{att.filename}" skipped — '
+                         f'{att.size // (1024 * 1024)}MB, over the '
+                         f'{ATTACH_MAX_BYTES // (1024 * 1024)}MB limit')
+            continue
+        path = os.path.join(dest, name)
+        try:
+            await asyncio.wait_for(att.save(path), timeout=ATTACH_TIMEOUT)
+        except Exception as e:
+            print(f"[discord] attachment {att.filename} failed: {e}")
+            lines.append(f'⚠️ attachment "{att.filename}" could not be downloaded: {e}')
+            continue
+        lines.append(f'attached file saved here: {path}')
+
+    _prune_attachments()
+    return lines
+
+
+async def build_prompt(message: discord.Message):
+    """The text a message becomes: what was typed, plus where its files are.
+
+    An attachment-only message has empty `content`, and these lines are then
+    the whole prompt -- which is also what stops `/discord` refusing it as
+    `content required`. A photo of a whiteboard with no caption is a message.
+    """
+    lines = await save_attachments(message)
+    if not lines:
+        return message.content
+    body = (message.content or '').rstrip()
+    return (body + '\n\n' if body else '') + '\n'.join(lines)
 
 
 async def post_to_zipper(prompt: str, discord_thread_id: int,
@@ -212,7 +328,7 @@ async def on_message(message: discord.Message):
     # reply -- while actually having no memory of any of it, which is a worse
     # failure than saying so. It also costs nothing: no session, no tokens.
     if isinstance(message.channel, discord.Thread):
-        ok, err = await post_to_zipper(message.content, message.channel.id)
+        ok, err = await post_to_zipper(await build_prompt(message), message.channel.id)
         if not ok:
             notice = await failure_notice(err)
             if notice:
@@ -226,7 +342,16 @@ async def on_message(message: discord.Message):
     if message.channel.id != DISCORD_CHANNEL_ID:
         return
 
-    title = " ".join((message.content or "new conversation").split())[:60] or "new conversation"
+    # Downloaded before the thread exists, so a slow CDN cannot leave a created
+    # thread sitting empty with its message still in flight.
+    prompt = await build_prompt(message)
+
+    # The title comes from what he typed, or failing that from the first
+    # filename -- never from the prompt, whose first line may be a tmp path.
+    # A thread named /tmp/zipper-discord-files/... is unreadable in the sidebar.
+    subject = message.content or (message.attachments[0].filename
+                                  if message.attachments else "")
+    title = " ".join((subject or "new conversation").split())[:60] or "new conversation"
     try:
         thread = await message.create_thread(name=title, auto_archive_duration=1440)
     except Exception as e:
@@ -238,7 +363,7 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"⚠️ Couldn't open a thread for that: {e}")
         return
 
-    ok, err = await post_to_zipper(message.content, thread.id, opening=True)
+    ok, err = await post_to_zipper(prompt, thread.id, opening=True)
     if not ok:
         notice = await failure_notice(err)
         if notice:
