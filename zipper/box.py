@@ -8,11 +8,17 @@ number here is read at call time and cached for a few seconds; nothing is
 written to the vault, because none of it is a conclusion about anything. It is
 the box's vital signs, and a vital sign is only worth reading live.
 
-The one judgement in this file is `stale`: a unit whose process started *before*
-the current commit is serving code that is not what HEAD says. On 2026-09-17
-exactly that combination -- `zipper-web` restarted thirty seconds before the
-commits it needed -- cost an afternoon, and nothing on any surface said so. Now
-something does.
+The one judgement in this file is `stale`: a unit whose process started *before
+the code it runs was last edited*. On 2026-09-17 exactly that combination --
+`zipper-web` restarted thirty seconds before the change it needed -- cost an
+afternoon, and nothing on any surface said so. Now something does.
+
+**Against file mtimes, not the commit.** The first version compared the start
+time to HEAD's timestamp, which is a different question and gets the common case
+backwards: the normal order here is edit, restart, verify, commit, so HEAD lands
+seconds *after* a restart that already picked the change up, and every commit
+lit the flag on a process running exactly the right code. Committing changes no
+code. Editing does.
 """
 import os, json, time, shutil, subprocess, threading
 
@@ -115,15 +121,31 @@ def uptime():
         return None
 
 
-def head_epoch(repo=CODE):
-    try:
-        v = _run('git', '-C', repo, 'log', '-1', '--format=%ct')
-        return int(v) if v else None
-    except Exception:
-        return None
+def code_epoch(root=CODE):
+    """When the source this box runs was last written.
+
+    `.py` under the package and the hooks -- the files a running process has
+    already imported and will not pick up again. `__pycache__` is skipped: it is
+    written *by* the import, so counting it would make every start look stale
+    against itself.
+    """
+    newest = None
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs
+                   if d not in ('__pycache__', '.git', 'node_modules')]
+        for fn in files:
+            if not fn.endswith('.py'):
+                continue
+            try:
+                m = os.path.getmtime(os.path.join(base, fn))
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+    return None if newest is None else int(newest)
 
 
-def _unit(name, head):
+def _unit(name, code_at):
     """One service: is it up, since when, and is that before the code it runs.
 
     `ActiveEnterTimestampMonotonic` would be the precise field, but it is
@@ -140,7 +162,10 @@ def _unit(name, head):
         out = _run('date', '-d', val, '+%s')
         if out.isdigit():
             started = int(out)
-    stale = bool(started and head and head > started and name != 'zipper-fetch.timer')
+    # A timer is not a long-lived process holding imported code, so the
+    # question does not apply to it.
+    stale = bool(started and code_at and code_at > started
+                 and name != 'zipper-fetch.timer')
     return {'name': name, 'state': state, 'started': started, 'stale': stale}
 
 
@@ -153,11 +178,11 @@ def _read(force):
     now = time.time()
     if not force and _CACHE['data'] and now - _CACHE['at'] < TTL:
         return _CACHE['data']
-    head = head_epoch()
+    code_at = code_epoch()
     data = {'at': now, 'cpu': cpu_pct(), 'mem': meminfo(), 'disk': disk(),
             'uptime': uptime(), 'load': list(os.getloadavg()),
-            'cpus': os.cpu_count() or 1, 'head': head,
-            'units': [_unit(u, head) for u in UNITS]}
+            'cpus': os.cpu_count() or 1, 'code_at': code_at,
+            'units': [_unit(u, code_at) for u in UNITS]}
     _CACHE.update(at=now, data=data)
     return data
 

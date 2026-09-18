@@ -717,15 +717,15 @@ def system_panel():
                 % (_gb(mem and mem['used']), _gb(mem and mem['total']),
                    _gb(dsk and (dsk['total'] - dsk['used'])), (b.get('load') or [0])[0]))
 
-    # A unit that started before the current commit is serving code that is not
-    # what HEAD says. That exact combination cost an afternoon on 2026-09-17 and
-    # nothing said so; this is the surface that says so.
+    # A unit that started before its code was last edited is running something
+    # other than what is on disk. That exact combination cost an afternoon on
+    # 2026-09-17 and nothing said so; this is the surface that says so.
     svc = []
     for un in b.get('units', []):
         cls = 'up' if un['state'] == 'active' else 'down'
         note = ''
         if un['stale']:
-            cls, note = 'stale', ' <em>pre-HEAD</em>'
+            cls, note = 'stale', ' <em>old code</em>'
         svc.append('<span class="svc %s">%s%s</span>'
                    % (cls, esc(un['name'].replace('zipper-', '')), note))
     bits.append('<div class="svcs">%s</div>' % ''.join(svc))
