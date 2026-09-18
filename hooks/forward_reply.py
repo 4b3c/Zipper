@@ -111,6 +111,22 @@ def read_turn(path):
     for row in _tail(path):
         t = row.get('type')
         if t == 'user':
+            # **Not every `user` row is a person speaking.** Invoking a skill
+            # writes the skill's own body into the transcript as a `user` row of
+            # plain text -- no `tool_result` block, so the guard above does not
+            # catch it -- and it looks exactly like a fresh prompt: it resets the
+            # turn's prompt list, the delivery check then finds no fingerprint
+            # for "Base directory for this skill: ...", and the turn is called
+            # typed. On 2026-09-18 that ate the reply to a Discord turn that
+            # happened to read a skill.
+            #
+            # The harness marks these three ways at once -- `isMeta`,
+            # `turnCompanion`, and a `sourceToolUseID` naming the call that
+            # produced them. A real prompt carries none of the three, so any one
+            # of them is enough to know this row is the harness talking to
+            # itself.
+            if row.get('isMeta') or row.get('turnCompanion') or row.get('sourceToolUseID'):
+                continue
             blocks = _text_blocks(row)
             body = '\n'.join(b for b in blocks if b.strip())
             if body.strip():
