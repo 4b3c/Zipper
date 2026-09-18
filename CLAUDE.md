@@ -38,6 +38,8 @@ it that way: the deployment target is a box where `apt install python3` is the w
 | `zipper/runqueue.py` `views.py` | the between-runs diff, and the saved queries |
 | `zipper/chat.py` | the Discord CLI |
 | `zipper/serve.py` + `zipper/web/` | the dashboard — `serve.py` is the entry point, `web/` is the server, one module per concern |
+| `zipper/web/home.py` | **`/`** — the front page since 2026-09-18: four panels, one row, one height. Owns its own CSS |
+| `zipper/web/render.py` | **`/old`** — the page `/` replaced. Still the only home of the **Claude terminal** and the **queue**, so it is live, not an archive. Do not delete it until both have somewhere else to be |
 | `zipper/conversations.py` | front door over `convcore.py` (identity, registry, paste), `ttyd.py` (a ttyd per conversation) and `convstate.py` (liveness, listing, reaper) |
 | `hooks/forward_reply.py` | the `Stop` hook that posts a reply back to its Discord thread |
 | `zipper/README.md` | operational reference. **Read before touching any of it** |

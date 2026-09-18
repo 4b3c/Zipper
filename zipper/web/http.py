@@ -16,7 +16,7 @@ from .feed import (SUBS, SUBS_LOCK, do_refresh, emit_diff, feed_load, feed_mark,
                    feed_mark_all, feed_rows, feed_watch, notes_watch, publish,
                    snapshot_data)
 from .render import _list_page, _views_page, panels_html, render, views_blob
-from . import looks
+from . import home
 
 
 # ---------------------------------------------------------------- http
@@ -94,7 +94,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         core.TODAY = datetime.date.today()
-        if self.path == '/':
+        if self.path == '/' or self.path.startswith('/?'):
+            # The front page. `?day=` selects which day the schedule draws;
+            # anything else is ignored rather than guessed at.
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            day = (q.get('day') or [''])[0]
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', day or ''):
+                day = None
+            self._send(200, home.page(day))
+        elif self.path == '/old':
+            # The page this replaced. Still the only home of the Claude
+            # terminal and the queue, so it is a live route, not an archive --
+            # and every one of its /api/* endpoints below is still wired.
             self._send(200, render())
         elif self.path == '/events':
             self._events()
@@ -171,23 +182,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, '<p>no such view page</p>')
             else:
                 self._send(200, page)
-        elif self.path == '/look' or self.path.startswith('/look/') or self.path.startswith('/look?'):
-            # The five candidate dashboards. Read-only alternatives to `/`, on
-            # their own routes so the live page is not the thing being
-            # experimented on -- he picks one by looking at all five, and
-            # nothing here is wired into the real dashboard until he does.
-            u = urllib.parse.urlparse(self.path)
-            q = urllib.parse.parse_qs(u.query)
-            day = (q.get('day') or [''])[0]
-            if not re.match(r'^\d{4}-\d{2}-\d{2}$', day or ''):
-                day = None
-            tail = u.path[6:].strip('/')
-            if not tail:
-                self._send(200, looks.index())
-            elif tail.isdigit() and int(tail) in looks.LOOKS:
-                self._send(200, looks.LOOKS[int(tail)][2](day))
-            else:
-                self._send(404, '<p>no such look</p>')
         elif self.path in ('/tasks', '/canvas'):
             self._send(200, _list_page('task' if self.path == '/tasks' else 'canvas'))
         elif self.path == '/bookmarklet':
