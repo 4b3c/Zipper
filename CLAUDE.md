@@ -209,6 +209,22 @@ key and rewrites the remote URL in memory. **Never `git push origin` by hand** �
 back to his stored credentials and the push lands as him, which is the exact thing this
 undoes.
 
+**Do not ask before pushing this repository. Commit and push it yourself.** The identity on
+the commit is a bot's and the remote is the published code; a push costs Abram nothing and
+asks him to arbitrate something he has no stake in. Waiting for permission just leaves work
+sitting locally where the next session cannot see it, and "eight commits, unpushed" is a
+status report nobody wanted.
+
+A good stopping point, and the bar is low: something works, something is verified or tested,
+a bug is fixed, or a change is worth not losing. Push then. Several small pushes across a
+session are correct — the thing to avoid is a session that ends with the remote hours behind
+the box. If something is half-built and known broken, say so in the message rather than
+holding the commit back.
+
+**This licenses `/opt/zipper` only.** `/opt/vault` is local-only by design, has no remote but
+`/srv/vault.git`, and must never be pushed anywhere — see its own CLAUDE.md. Committing there
+is still how a bookkeeping pass ends; pushing there is not a thing that exists.
+
 Three properties worth keeping:
 
 - **The key on disk mints tokens and does nothing else.** A compromised box gets an hour of
