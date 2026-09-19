@@ -163,8 +163,14 @@ def plan(sheet_id, tab_name, entries):
             refused.append((e, f'{w["label"]} has no free row inside '
                                f'{w["sum_from"]}:{w["sum_to"]}'))
             continue
-        taken.add(row)
         st, en = hours.sheet_times(e['start'], e['end'])
+        if not st or not en:
+            # Column D is `=C-B`, so a row without a span bills zero hours and
+            # reads back with a key the entry does not have -- invisible to
+            # `pull`, still pending, and written again on the next push.
+            refused.append((e, 'no start/end; the sheet totals by subtraction'))
+            continue
+        taken.add(row)
         writes.append((row, [date.strftime('%m/%d/%Y'), st, en,
                              f'=C{row}-B{row}', e['note'], '']))
     return tab, writes, refused
