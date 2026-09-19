@@ -7,7 +7,7 @@ Split out of `zipper/serve.py` on 2026-09-07. That file had grown to 2,788
 lines, which meant no part of it could be read without loading all of it.
 """
 from .base import *
-from .base import box, core, canvas, chat, conversations, events, gh, hours, ics, metrics, usage
+from .base import box, core, canvas, chat, conversations, events, gh, google, hours, ics, metrics, usage
 from .conv import (PASTE_DIR, TTYD, _prune_pastes, _queue_prompt, conversation_rows,
                    current_conversation, new_conversation, newest_buffer,
                    open_conversation, start_session)
@@ -151,6 +151,26 @@ class Handler(BaseHTTPRequestHandler):
             st['sig'] = content_sig()
             st['clients'] = SRV['clients']
             self._send(200, json.dumps(st), 'application/json')
+        elif self.path.split('?')[0] == '/oauth/google/callback':
+            # Where Google sends him back. This is the only unauthenticated
+            # path that writes a credential, so it does exactly one thing with
+            # exactly one input and says so in plain text -- he is looking at
+            # this page in a browser, not at a JSON body.
+            q = urllib.parse.parse_qs(self.path.split('?', 1)[-1])
+            code = (q.get('code') or [''])[0]
+            err = (q.get('error') or [''])[0]
+            if err:
+                msg = 'Google refused: %s' % err
+            elif not code:
+                msg = 'No code in the callback. Start again from `zipper google --auth`.'
+            else:
+                try:
+                    google.exchange(code)
+                    msg = ('Authorized. The refresh token is in .env — this '
+                           'page can be closed, and it will not be needed again.')
+                except Exception as e:
+                    msg = 'Exchange failed: %s' % e
+            self._send(200, msg, 'text/plain; charset=utf-8')
         elif self.path.split('?')[0] == '/api/hours':
             # What the sheet is missing. The extension asks on page load and
             # writes these rows; it never decides what an hour is. Times are

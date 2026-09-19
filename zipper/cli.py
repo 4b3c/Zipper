@@ -6,8 +6,8 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, hours,
-               ics, lint, metrics, runqueue, status, sync, views)
+from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, google,
+               hours, ics, lint, metrics, runqueue, status, sync, views)
 
 
 def main():
@@ -37,6 +37,10 @@ def main():
 
     # The timesheet. `add` captures; the sheet stays the system of record and
     # the extension reconciles the two, so nothing here submits anything.
+    s = sub.add_parser('google', help='the Google account behind the timesheet')
+    s.add_argument('--auth', action='store_true', help='print the consent link')
+    s.set_defaults(fn=google.cmd_google)
+
     s = sub.add_parser('hours', help='the Luminosity timesheet ledger')
     hs = s.add_subparsers(dest='action')
     s.set_defaults(fn=hours.cmd_hours)
