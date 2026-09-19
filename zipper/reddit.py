@@ -30,6 +30,16 @@ from . import core, chat
 
 UA = 'zipper/1.0 (personal thread watcher)'
 
+# Where the links go. A channel of its own, not the main one: these arrive
+# hourly, nobody asked for any individual one, and mixed into the channel that
+# starts conversations they would bury the messages he actually wrote.
+#
+# **A message here starts nothing.** The bot only opens a conversation for the
+# main channel and for threads it already knows, so this is a one-way board --
+# replying in it reaches no session. That is the intended shape: the decision a
+# link is asking for is made on Reddit, not here.
+CHANNEL = lambda: os.environ.get('ZIPPER_REDDIT_CHANNEL', '').strip() or None
+
 # Where the watch configuration lives inside the vault. A note, not a config
 # file: what to look for is a conclusion about a market, it changes when the
 # positioning changes, and it belongs next to the project it serves.
@@ -305,7 +315,7 @@ def cmd_reddit(a):
             print('\n' + line)
         else:
             try:
-                chat.discord_send(line)
+                chat.discord_send(line, thread_id=a.thread or CHANNEL())
             except Exception as e:
                 print('  ! could not send %s: %s' % (c['url'], e))
     return 0

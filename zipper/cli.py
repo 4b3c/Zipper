@@ -101,6 +101,7 @@ def main():
     s.add_argument('--hours', type=int, help='how far back to look; default is the watch note')
     s.add_argument('--model', default='sonnet', help='the model that does the judging')
     s.add_argument('--dry-run', action='store_true', help='print the picks instead of sending')
+    s.add_argument('--thread', help='channel or thread id; default is ZIPPER_REDDIT_CHANNEL')
     s.set_defaults(fn=reddit.cmd_reddit)
     # No --days and no fetch: the browser extension takes the reading, this
     # reports it. --file still ingests a saved planner dump.
