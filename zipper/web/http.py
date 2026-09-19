@@ -7,7 +7,7 @@ Split out of `zipper/serve.py` on 2026-09-07. That file had grown to 2,788
 lines, which meant no part of it could be read without loading all of it.
 """
 from .base import *
-from .base import box, core, canvas, chat, conversations, events, gh, ics, metrics, usage
+from .base import box, core, canvas, chat, conversations, events, gh, hours, ics, metrics, usage
 from .conv import (PASTE_DIR, TTYD, _prune_pastes, _queue_prompt, conversation_rows,
                    current_conversation, new_conversation, newest_buffer,
                    open_conversation, start_session)
@@ -151,6 +151,14 @@ class Handler(BaseHTTPRequestHandler):
             st['sig'] = content_sig()
             st['clients'] = SRV['clients']
             self._send(200, json.dumps(st), 'application/json')
+        elif self.path.split('?')[0] == '/api/hours':
+            # What the sheet is missing. The extension asks on page load and
+            # writes these rows; it never decides what an hour is. Times are
+            # already rendered in his convention (24h only across noon), so
+            # the browser copies cells and does no arithmetic.
+            self._send(200, json.dumps({'pending': hours.to_write(),
+                                        'tab': hours._load().get('sheet', {}).get('tab')}),
+                       'application/json')
         elif self.path == '/api/worklist':
             # What the extension draws in Canvas' sidebar: this Monday-Sunday
             # week, Canvas only, built on the same `week_canvas` behind the
@@ -416,6 +424,29 @@ class Handler(BaseHTTPRequestHandler):
                 chat.discord_typing(False, tid)
             self._send(200 if res.get('ok') else 503, json.dumps(res),
                        'application/json')
+        elif self.path == '/api/hours':
+            # The sheet is the system of record for pay, so a snapshot of it
+            # overwrites the ledger rather than merging into it: rows he typed
+            # by hand are adopted, rows he deleted are dropped, and a captured
+            # row seen here stops being pending. Posting is therefore the only
+            # thing that can confirm an hour actually landed.
+            n = int(self.headers.get('Content-Length', 0))
+            try:
+                body = json.loads(self.rfile.read(n).decode('utf-8'))
+                rows = body.get('rows') if isinstance(body, dict) else body
+                tab = (body.get('tab') if isinstance(body, dict) else None)
+                if not isinstance(rows, list):
+                    raise ValueError('expected {"rows": [...]}')
+                res = hours.reconcile(rows, tab=tab,
+                                      complete=bool(isinstance(body, dict)
+                                                    and body.get('complete')),
+                                      force=bool(isinstance(body, dict)
+                                                 and body.get('force')))
+                res['write'] = hours.to_write()
+                publish('source', 'hours')
+                self._send(200, json.dumps({'ok': True, **res}), 'application/json')
+            except Exception as e:
+                self._send(400, json.dumps({'error': str(e)}), 'application/json')
         elif self.path == '/api/canvas':
             n = int(self.headers.get('Content-Length', 0))
             try:

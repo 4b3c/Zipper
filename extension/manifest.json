@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zipper Collector",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Reads what only a logged-in browser can see, and hands it to Zipper. Collects; never concludes.",
 
   "background": {
@@ -19,6 +19,11 @@
     {
       "matches": ["https://canvas.asu.edu/*", "*://*.instructure.com/*"],
       "js": ["ui/canvas-todo.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://docs.google.com/spreadsheets/d/*"],
+      "js": ["ui/sheet-hours.js"],
       "run_at": "document_idle"
     }
   ],

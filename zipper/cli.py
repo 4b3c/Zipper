@@ -6,8 +6,8 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, ics,
-               lint, metrics, runqueue, status, sync, views)
+from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, hours,
+               ics, lint, metrics, runqueue, status, sync, views)
 
 
 def main():
@@ -34,6 +34,18 @@ def main():
                    help='regex; keep only events whose summary matches')
     s.add_argument('--label', default='calendar'); s.set_defaults(fn=ics.cmd_ingest_ics)
     sub.add_parser('calendars').set_defaults(fn=ics.cmd_calendars)
+
+    # The timesheet. `add` captures; the sheet stays the system of record and
+    # the extension reconciles the two, so nothing here submits anything.
+    s = sub.add_parser('hours', help='the Luminosity timesheet ledger')
+    hs = s.add_subparsers(dest='action')
+    s.set_defaults(fn=hours.cmd_hours)
+    a1 = hs.add_parser('add'); a1.add_argument('--date', required=True)
+    a1.add_argument('--start'); a1.add_argument('--end')
+    a1.add_argument('--hours', type=float); a1.add_argument('--note', default='')
+    a1.add_argument('--source', default='cli'); a1.set_defaults(fn=hours.cmd_hours)
+    a2 = hs.add_parser('rm'); a2.add_argument('key'); a2.set_defaults(fn=hours.cmd_hours)
+    a3 = hs.add_parser('import'); a3.add_argument('csvfile'); a3.set_defaults(fn=hours.cmd_hours)
 
     s = sub.add_parser('ingest-budget'); s.add_argument('csvfile')
     s.set_defaults(fn=metrics.cmd_ingest_budget)

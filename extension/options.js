@@ -20,6 +20,12 @@ function say(text, cls) {
   el.className = cls || '';
 }
 
+function sheetIdOf(value) {
+  const v = (value || '').trim();
+  const m = v.match(/\/spreadsheets\/d\/([^/?#]+)/);
+  return m ? m[1] : v;
+}
+
 function originOf(value) {
   // A pattern, not a bare origin: host permissions are matched against URLs.
   return new URL(value).origin + '/*';
@@ -39,8 +45,11 @@ function loadSaved() {
     return say('storage API unavailable — the manifest is missing its '
                + '"storage" permission.', 'bad');
   }
-  api.storage.sync.get('endpoint')
-    .then(({ endpoint }) => { if (endpoint) $('endpoint').value = endpoint; })
+  api.storage.sync.get(['endpoint', 'sheetId'])
+    .then(({ endpoint, sheetId }) => {
+      if (endpoint) $('endpoint').value = endpoint;
+      if (sheetId) $('sheetId').value = sheetId;
+    })
     .catch((e) => say('Could not read saved settings: ' + e, 'bad'));
 }
 
@@ -65,7 +74,11 @@ $('save').addEventListener('click', async () => {
   }
   if (!granted) return say('Not saved — without permission it cannot post there.', 'bad');
 
-  await api.storage.sync.set({ endpoint: raw });
+  // The document id is stored raw and without a permission prompt: it grants
+  // nothing on its own, and the host permission for docs.google.com is the
+  // manifest's business. Accepting a whole URL is the point -- he will paste
+  // what is in the address bar, not hunt for the id inside it.
+  await api.storage.sync.set({ endpoint: raw, sheetId: sheetIdOf($('sheetId').value) });
   say('Saved.', 'ok');
 });
 

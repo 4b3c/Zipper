@@ -133,6 +133,10 @@ function send(name, payload) {
 const ALLOWED = {
   '/api/worklist': 'GET',
   '/api/done': 'POST',
+  // The timesheet goes both ways: read what the sheet is missing, post back
+  // what the sheet actually says. Both halves are the same path, so this map
+  // holds a list where it used to hold one verb.
+  '/api/hours': ['GET', 'POST'],
 };
 
 /* The panel's channel.
@@ -147,11 +151,20 @@ api.runtime.onMessage.addListener((msg, _sender, respond) => {
   (async () => {
     try {
       const want = ALLOWED[msg.path];
-      if (!want) {
+      const verbs = Array.isArray(want) ? want : (want ? [want] : []);
+      if (!verbs.length) {
         respond({ ok: false, error: 'not an allowed path' });
         return;
       }
-      respond(await call(msg.path, want === 'POST' ? (msg.body || {}) : undefined));
+      // One path may allow both verbs, so the caller says which it meant; a
+      // path with a single verb keeps working without naming it.
+      const method = msg.method || (verbs.length === 1 ? verbs[0]
+                                    : (msg.body ? 'POST' : 'GET'));
+      if (!verbs.includes(method)) {
+        respond({ ok: false, error: method + ' not allowed on ' + msg.path });
+        return;
+      }
+      respond(await call(msg.path, method === 'POST' ? (msg.body || {}) : undefined));
     } catch (e) {
       respond({ ok: false, error: String(e) });
     }
