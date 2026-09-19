@@ -396,6 +396,47 @@ the terminal keeps the working detail.
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
 
+### The Reddit thread watcher
+
+`zipper reddit` looks for recent threads someone could usefully reply to, asks Claude which
+of them actually qualify, and sends the survivors to Discord as links.
+`zipper-reddit.timer` runs it hourly. `--dry-run` prints the picks instead of sending.
+
+```
+search  ->  recent threads matching the watch terms, minus the ones already offered
+judge   ->  one `claude -p` per batch of 12: worth a comment, or not?
+deliver ->  the survivors, one Discord message each, with a line on why
+```
+
+**The middle step is the point and it is not mechanical.** A thread matching a search term
+is a fact; that it is a person asking a real question rather than a photo of somebody's
+lunch is a judgement. The judge runs from `/tmp` with no tools, so it sees the standard and
+the threads and nothing else — a run inside this repository would load a `CLAUDE.md` about
+an engine, which has no bearing on whether a stranger's question deserves an answer.
+
+**What to watch is a vault note, not configuration here.** `Meta/Reddit Watch.md`: the
+frontmatter holds the queries, the subreddits and the window, and the **body is handed to
+the judge verbatim** as the standard a thread is held to. Prose is the right shape for that
+— it is a standard, not a filter, and anything expressible as a filter should have been a
+query. Keeping it in the vault is also what keeps a product and a market out of this
+repository.
+
+Note `parse_fm` reads a minimal YAML subset: lists must be written inline as `[a, b, c]`,
+and **a query may not contain a comma**.
+
+**Credentials are required.** Reddit blocks its anonymous JSON endpoints from datacenter
+IPs — every `www.reddit.com/*.json` path returns 403 from the box — so this reads the OAuth
+API with an app-only token minted from `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (a
+"script" app at reddit.com/prefs/apps). It never acts as an account and asks for read scope
+only.
+
+**A thread is offered once.** `Inbox/reddit-seen.json` remembers every id that has been
+*judged*, trimmed to 4000. A batch the judge failed to answer for is deliberately **not**
+remembered, so the next run gets another go at it: a duplicate link is visible and merely
+annoying, a silently dropped one is indistinguishable from a quiet hour. Same reason the
+timer is not `Persistent` — a box that was down for six hours should not wake and post six
+hours of links at once.
+
 ### The evening digest
 
 `zipper digest` posts one message a day to the main Discord channel — what is due tomorrow,
