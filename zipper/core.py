@@ -66,6 +66,42 @@ BOOL_FIELDS  = ['revenue_intent', 'open_loop', 'open_problem', 'open_question',
 
 
 # ------------------------------------------------- frontmatter
+ENV_FILE = os.path.join(os.path.dirname(HERE), '.env')
+
+
+def _env_file():
+    """`.env` as a dict, re-read on every call."""
+    out = {}
+    try:
+        with open(ENV_FILE) as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or ln.startswith('#') or '=' not in ln:
+                    continue
+                k, v = ln.split('=', 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def cfg(key, default=''):
+    """Configuration, from `.env` first and the environment second.
+
+    **The environment alone is not enough.** A service gets `.env` through
+    systemd's EnvironmentFile, but a CLI run from a shell that started before a
+    key was added sees nothing -- which reads as "unset" while the value sits in
+    the file. That gap is not theoretical: the first digest sent after the
+    notifications channel was configured went to the main channel from a
+    terminal, and to the right one from the timer, an hour apart, with no
+    difference in the code.
+
+    The file wins over the environment, because the file is where things are
+    pasted and written.
+    """
+    return (_env_file().get(key) or os.environ.get(key) or default).strip()
+
+
 def parse_fm(text):
     """Return (ordered list of (key, raw_value), body). Minimal YAML subset."""
     m = re.match(r'^---\n(.*?)\n---\n?', text, re.S)
@@ -312,5 +348,5 @@ __all__ = [
     '_dt', '_fmt_dt', '_days_since', '_utc_local', '_split_repo',
     '_norm_title', '_months_ago', '_median', '_hhmm', '_dur', '_snip',
     '_place', 'TASK_RE', 'defenced', '_all_md', 'GH_JSON', 'CAL_CFG', 'LEDGER',
-    'VIEWS_JSON', 'LINK_RE', 'ANCHOR_RE'
+    'VIEWS_JSON', 'LINK_RE', 'ANCHOR_RE', 'cfg'
 ]

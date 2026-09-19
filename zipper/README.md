@@ -396,6 +396,16 @@ the terminal keeps the working detail.
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
 
+### Configuration is read from `.env`, not just the environment
+
+`core.cfg(key)` reads `.env` first and `os.environ` second. **A service gets `.env` through
+systemd's `EnvironmentFile`; a shell does not**, so a CLI run from a terminal that started
+before a key was added sees nothing and reports the value as unset while it sits in the
+file. That is not hypothetical: the first digest sent after the notifications channel was
+configured went to the *main* channel from a terminal and to the right one from the timer,
+with no difference in the code. Anything reading configuration at call time should go
+through `cfg`.
+
 ### The Reddit thread watcher
 
 `zipper reddit` looks for recent threads someone could usefully reply to, asks Claude which
@@ -424,6 +434,8 @@ repository.
 Note `parse_fm` reads a minimal YAML subset: lists must be written inline as `[a, b, c]`,
 and **a query may not contain a comma**.
 
+Links go to the notifications channel too — see the digest below. `--thread` overrides.
+
 **Credentials are required.** Reddit blocks its anonymous JSON endpoints from datacenter
 IPs — every `www.reddit.com/*.json` path returns 403 from the box — so this reads the OAuth
 API with an app-only token minted from `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (a
@@ -451,6 +463,11 @@ nothing next to it to catch the drift.
 **Coursework and self-set tasks are counted in separate sections.** They are not the same
 kind of obligation — a task's due date is one he chose and can move, an assignment's is not
 — and ranked into one list the tasks push the homework below the truncation line.
+
+**It posts to the notifications channel** (`ZIPPER_NOTIFY_CHANNEL`), with the Reddit
+watcher and anything else a timer sends. Not the main channel: that is the door *he* opens,
+and a message that posts itself at 19:00 every day should not sit in front of his own.
+Unset falls back to the main channel, which is the old behaviour.
 
 It sends at most one digest per date, recorded in `Inbox/digest-sent.json` and written only
 after the send succeeds. That is what makes the timer's `Persistent=true` safe: a box asleep

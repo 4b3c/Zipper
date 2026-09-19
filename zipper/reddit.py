@@ -30,15 +30,8 @@ from . import core, chat
 
 UA = 'zipper/1.0 (personal thread watcher)'
 
-# Where the links go. A channel of its own, not the main one: these arrive
-# hourly, nobody asked for any individual one, and mixed into the channel that
-# starts conversations they would bury the messages he actually wrote.
-#
-# **A message here starts nothing.** The bot only opens a conversation for the
-# main channel and for threads it already knows, so this is a one-way board --
-# replying in it reaches no session. That is the intended shape: the decision a
-# link is asking for is made on Reddit, not here.
-CHANNEL = lambda: os.environ.get('ZIPPER_REDDIT_CHANNEL', '').strip() or None
+# Where the links go: the notifications channel, shared with the digest and
+# anything else that arrives without being asked for. See `chat.notify_channel`.
 
 # Where the watch configuration lives inside the vault. A note, not a config
 # file: what to look for is a conclusion about a market, it changes when the
@@ -107,8 +100,8 @@ def watch():
 # --- reddit -----------------------------------------------------------------
 
 def _creds():
-    cid = os.environ.get('REDDIT_CLIENT_ID', '').strip()
-    secret = os.environ.get('REDDIT_CLIENT_SECRET', '').strip()
+    cid = core.cfg('REDDIT_CLIENT_ID')
+    secret = core.cfg('REDDIT_CLIENT_SECRET')
     return (cid, secret) if cid and secret else (None, None)
 
 
@@ -315,7 +308,7 @@ def cmd_reddit(a):
             print('\n' + line)
         else:
             try:
-                chat.discord_send(line, thread_id=a.thread or CHANNEL())
+                chat.discord_send(line, thread_id=a.thread or chat.notify_channel())
             except Exception as e:
                 print('  ! could not send %s: %s' % (c['url'], e))
     return 0

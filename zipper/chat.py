@@ -66,6 +66,22 @@ def default_thread():
     return os.environ.get('ZIPPER_DISCORD_THREAD') or None
 
 
+def notify_channel():
+    """**Where an unasked-for message goes.** A channel id, or nothing.
+
+    Distinct from `default_thread`, and the split is the point: that one answers
+    "where does a reply go", this one answers "where does something nobody asked
+    for go". The digest and the Reddit watcher both arrive on a timer, and in the
+    main channel they bury the messages he actually wrote.
+
+    A message here starts nothing -- the bot opens conversations only for the
+    main channel and for threads it already knows -- so it is a one-way board by
+    construction. Unset falls back to the main channel, which is the old
+    behaviour and still correct for a box that has no such channel.
+    """
+    return core.cfg('ZIPPER_NOTIFY_CHANNEL') or None
+
+
 def current_conversation():
     """**Which conversation this process is.** An id, thread-shaped or `local-`.
 

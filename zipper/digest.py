@@ -195,9 +195,11 @@ def cmd_digest(a):
         print('digest: already sent today (%s). --force to send anyway.' % core.TODAY)
         return 0
 
-    # No thread. A timer is not a conversation, so it has none to answer into,
-    # and the main channel is the door he actually opens.
-    r = chat.discord_send(msg, thread_id=a.thread or None)
+    # No thread. A timer is not a conversation, so it has none to answer into.
+    # It goes to the notifications channel with everything else that arrives
+    # unasked-for; the main channel is the door *he* opens, and a message that
+    # posts itself at 19:00 every day does not belong in front of his own.
+    r = chat.discord_send(msg, thread_id=a.thread or chat.notify_channel())
     if r.get('error'):
         print('digest: %s' % r['error'])
         return 1
