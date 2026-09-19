@@ -35,8 +35,33 @@ ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    '.env')
 
 
+def _env_file():
+    """.env as a dict, re-read each time.
+
+    The environment is not enough on its own. A service gets .env through
+    systemd, but a CLI run from a shell that started before a key was added
+    sees the old value or none -- which reads as "the secret is unset" while
+    the secret is sitting in the file. Worse, `exchange` writes the refresh
+    token here, so a long-lived process that trusted os.environ would keep
+    insisting it was unauthorized immediately after authorizing.
+    """
+    out = {}
+    try:
+        with open(ENV) as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or ln.startswith('#') or '=' not in ln:
+                    continue
+                k, v = ln.split('=', 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
 def _cfg(key, default=''):
-    return (os.environ.get(key) or default).strip()
+    # The file wins: it is where `exchange` writes, and where he pastes.
+    return (_env_file().get(key) or os.environ.get(key) or default).strip()
 
 
 def redirect_uri():
