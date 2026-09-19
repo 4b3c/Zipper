@@ -110,9 +110,24 @@ def hhmmss(hours):
 # in every term of the existing sheet; where a row has no times (carried-over
 # hours) the duration stands in for them.
 
-def key_of(date, start, end, hours):
+def key_of(date, start, end, hours, rendered=False):
+    """The key is the pair *as the sheet shows it*, never a reconstruction.
+
+    His convention is lossy on purpose: a span that does not cross noon is
+    written in 12-hour, so 7:30 in the sheet could be either half of the day
+    and nothing in the row says which. Inverting that was a guess, and on
+    2026-09-19 the guess read a 7:30 start as the evening -- the captured entry
+    and the row it had just written got different keys, the entry stayed
+    pending, and the next push would have added the same hour again.
+
+    Rendering is total and one-way, so key on the rendered form. A captured
+    entry knows its real 24-hour times and renders down to the sheet's shape; a
+    row read back is already in that shape. Both land on the same string.
+    """
     st, en = (start or ''), (end or '')
     if st and en:
+        if not rendered:
+            st, en = sheet_times(st, en)
         return f'{date}|{st}|{en}'
     return f'{date}|~{hhmmss(hours or 0)}'
 
@@ -187,7 +202,10 @@ def reconcile(rows, tab=None, complete=False, force=False):
             hours = duration(r.get('start'), r.get('end'))
         if hours is None:
             continue
-        k = key_of(date, r.get('start'), r.get('end'), hours)
+        # Rows here are read out of the sheet, so their times are already in
+        # his written form -- and the duration is a subtraction of exactly
+        # those two cells, which is why it survives the ambiguity intact.
+        k = key_of(date, r.get('start'), r.get('end'), hours, rendered=True)
         seen.add(k)
         sub = (r.get('submitted') or '').strip() or None
         e = by_key.get(k)
@@ -305,9 +323,17 @@ def pull():
 
 
 def push(dry=False):
-    """Put every pending entry into the sheet, or say why it cannot."""
+    """Put every pending entry into the sheet, or say why it cannot.
+
+    Reads the sheet *first*. `pending` is the ledger's belief about what the
+    sheet is missing, and a belief formed before he typed a row in by hand is
+    how the same hour gets written twice -- so the belief is refreshed against
+    the sheet in the same breath, and a row already there simply stops being
+    pending before anything is planned.
+    """
     from . import google, sheet
     sid = google._cfg('ZIPPER_SHEET_ID')
+    pull()
     tab = _load().get('sheet', {}).get('tab') or current_tab()
     ents = sorted(pending(), key=lambda x: (x['date'], x['start'] or '~'))
     t, writes, refused = sheet.plan(sid, tab, ents)
@@ -399,31 +425,11 @@ def _read_csv(path):
             sub = r[5].strip()
             if sub.lower() in ('yes', 'no'):
                 sub = ''
-            rows.append({'date': d.isoformat(), 'start': _to24(r[1], r[2])[0],
-                         'end': _to24(r[1], r[2])[1],
+            rows.append({'date': d.isoformat(), 'start': r[1].strip(),
+                         'end': r[2].strip(),
                          'hours': round(h + mi / 60 + se / 3600, 4),
                          'note': r[4].strip(), 'submitted': _iso(sub)})
     return rows
-
-
-def _to24(start, end):
-    """Undo the sheet's rendering rule: a pair that does not cross noon is 12h."""
-    a, b = _hm(start), _hm(end)
-    if a is None or b is None:
-        return '', ''
-    if a < 12 * 60 <= b:                     # already 24-hour, by his rule
-        pass
-    else:
-        # Both ends share a half of the day. Afternoon unless the span makes
-        # sense in the morning -- the sheet writes 1:30-7:30 for the afternoon.
-        if a < 12 * 60 and b < 12 * 60 and a >= 8 * 60:
-            pass                             # 9:00-11:30 really is the morning
-        else:
-            if a < 12 * 60:
-                a += 12 * 60
-            if b < 12 * 60:
-                b += 12 * 60
-    return f'{a//60}:{a%60:02d}', f'{b//60}:{b%60:02d}'
 
 
 def _iso(s):

@@ -74,10 +74,11 @@ class Tab:
     def entries(self):
         """Every session row, in the shape `hours.reconcile` takes.
 
-        Read from the *displayed* values, not the underlying serials: his
-        12-hour cells are stored as morning fractions and only the display
-        carries his convention, so this is the one place where what the sheet
-        shows is more true than what it holds.
+        Read from the *displayed* values, not the underlying serials, and kept
+        that way. His 12-hour cells are ambiguous about which half of the day
+        they mean, and nothing here needs to know -- the duration is the
+        subtraction of the two cells as written, and the key is the pair as
+        written. Guessing the real hour was a bug, not a missing feature.
         """
         out = []
         for i, row in enumerate(self.shown, 1):
@@ -99,7 +100,7 @@ class Tab:
             if not m:
                 continue
             h, mi, se = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
-            st, en = hours._to24(row[1], row[2])
+            st, en = str(row[1]).strip(), str(row[2]).strip()
             sub = str(row[5]).strip()
             try:
                 sub = dt.datetime.strptime(sub, '%m/%d/%Y').date().isoformat()
