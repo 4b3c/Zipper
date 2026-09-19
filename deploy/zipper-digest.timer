@@ -1,0 +1,15 @@
+[Unit]
+Description=Post the evening digest once a day
+
+[Timer]
+# Early enough that there is still an evening left to do the work in, late
+# enough that the day's submissions are already reflected.
+OnCalendar=*-*-* 19:00:00
+# A box that was down at 19:00 still sends when it comes back. Safe because
+# `zipper digest` records the date it sent and refuses a second one, so the
+# catch-up run and the ordinary run cannot both deliver.
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

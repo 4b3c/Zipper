@@ -1,0 +1,21 @@
+[Unit]
+Description=Zipper — the evening digest, posted to Discord
+After=network-online.target zipper-discord.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Deliberately not a fetch. The hourly timer keeps the inputs current; this
+# reads what is already there and sends one message. Fetching here would make
+# the reminder's arrival depend on GitHub being up, and a digest that silently
+# does not arrive is worse than a slightly stale one.
+#
+# The Canvas half is as fresh as the last time he had Canvas open -- the
+# message says so in its own last line rather than pretending otherwise.
+ExecStart=/usr/bin/python3 -m zipper digest
+WorkingDirectory=/opt/zipper
+EnvironmentFile=/opt/zipper/.env
+Environment=HOME=/root
+
+[Install]
+WantedBy=multi-user.target

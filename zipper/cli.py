@@ -6,8 +6,8 @@ want to know what zipper can do.
 """
 import argparse
 
-from . import (canvas, chat, conversations, decisions, events, ext, gh, ghapp, google,
-               hours, ics, lint, metrics, runqueue, status, sync, views)
+from . import (canvas, chat, conversations, decisions, digest, events, ext, gh, ghapp,
+               google, hours, ics, lint, metrics, runqueue, status, sync, views)
 
 
 def main():
@@ -88,6 +88,14 @@ def main():
     s.add_argument('--thread', help='thread id; default is the main channel')
     s.add_argument('--limit', type=int, default=5)
     s.set_defaults(fn=chat.cmd_discord)
+    # The evening reminder. Reads the dashboard's own ranking and posts it to
+    # Discord; --dry-run is how you look at one without sending it.
+    s = sub.add_parser('digest', help='post the evening what-is-due message to Discord')
+    s.add_argument('--days', type=int, default=7, help='how far past tomorrow to look ahead')
+    s.add_argument('--dry-run', action='store_true', help='print it instead of sending')
+    s.add_argument('--force', action='store_true', help='send even if one already went today')
+    s.add_argument('--thread', help='thread id; default is the main channel')
+    s.set_defaults(fn=digest.cmd_digest)
     # No --days and no fetch: the browser extension takes the reading, this
     # reports it. --file still ingests a saved planner dump.
     s = sub.add_parser('canvas'); s.add_argument('--file')

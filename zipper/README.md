@@ -396,6 +396,26 @@ the terminal keeps the working detail.
 **Typing is cleared by `discord_send`**, not by the caller, so no reply path can answer and
 leave Discord showing that Zipper is still typing.
 
+### The evening digest
+
+`zipper digest` posts one message a day to the main Discord channel — what is due tomorrow,
+tomorrow's timed events, what is overdue, and the next week by day. `zipper-digest.timer`
+fires it at 19:00. `--dry-run` prints it instead of sending.
+
+It reads through `zipper/web/data.py`, so the digest and the dashboard's *What to work on*
+card rank the same work the same way and apply the same cross-offs. Reading `canvas.json`
+here for itself would make a nightly message that quietly disagrees with the screen, with
+nothing next to it to catch the drift.
+
+**Coursework and self-set tasks are counted in separate sections.** They are not the same
+kind of obligation — a task's due date is one he chose and can move, an assignment's is not
+— and ranked into one list the tasks push the homework below the truncation line.
+
+It sends at most one digest per date, recorded in `Inbox/digest-sent.json` and written only
+after the send succeeds. That is what makes the timer's `Persistent=true` safe: a box asleep
+at 19:00 still delivers when it wakes, without the catch-up run and the ordinary run both
+arriving.
+
 **The idle sweep is a price signal, not a saving.** An idle instance costs nothing to leave
 running; what changes at the prompt-cache boundary is the price of the *next* message, which
 is re-read in full once the cache is cold. It happens in two steps, five minutes apart, and
