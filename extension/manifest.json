@@ -40,7 +40,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "zipper-collector@zipper.local",
-      "update_url": "https://srv1441333.tail0dcbff.ts.net:9443/ext/updates.json"
+      "update_url": "__ZIPPER_EXT_BASE__/ext/updates.json"
     }
   }
 }

@@ -26,6 +26,13 @@ from .core import INBOX
 
 LEDGER = os.path.join(INBOX, 'hours.json')
 
+# Which Google Sheet is the timesheet. A document id is not a credential, but it
+# points straight at a private file, so it lives in .env with everything else
+# personal rather than in the extension -- whose manifest is published. The
+# panel matches spreadsheets in general and asks the server which one is his,
+# which also means moving to a new sheet is one line here and no rebuild there.
+SHEET_ID = os.environ.get('ZIPPER_SHEET_ID', '').strip()
+
 # A week is Monday-based, matching the sheet's own `Week N` ranges.
 def _monday(d):
     return d - dt.timedelta(days=d.weekday())

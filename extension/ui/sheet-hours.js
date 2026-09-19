@@ -140,24 +140,27 @@ function mount() {
     #zipper-hours .zh-ok{background:#e8f0fe;border-color:#c6dafc}
   `;
   document.documentElement.append(style, panel);
-  refresh(panel);
+  render(panel);
 }
 
-/* Which document this is allowed to touch is a setting, not a match pattern.
+/* Which document this is allowed to touch is Zipper's answer, not a setting.
  *
- * The manifest lives in a public repo, so it matches spreadsheets in general
- * and names none of them: a document id is not a credential but it is a
- * pointer straight at a private file, and there is no reason for the id of his
- * timesheet to be readable by anyone who clones Zipper. The options page holds
- * the real one, and this refuses to mount anywhere else.
+ * The manifest is published, so it matches spreadsheets in general and names
+ * none of them: a document id is not a credential but it points straight at a
+ * private file. The id lives in .env on the box, and the first thing this asks
+ * for is whether the document in the address bar is that one. Nothing renders
+ * until it says yes -- so on any other spreadsheet the panel simply is not
+ * there, and the extension never learns the id of a sheet he did not open.
  */
-async function wanted() {
+async function mountIfMine() {
   const here = location.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
-  if (!here) return false;
-  const { sheetId } = await api.storage.sync.get('sheetId');
-  return Boolean(sheetId) && sheetId === here[1];
+  if (!here) return;
+  const res = await call('/api/hours', 'GET');
+  if (!res || !res.sheet_id || res.sheet_id !== here[1]) return;
+  PENDING = res.pending || [];
+  mount();
 }
 
 // Sheets builds its chrome late and swaps tabs without a navigation, so mount
 // once the document settles rather than at document_idle alone.
-setTimeout(async () => { if (await wanted()) mount(); }, 1500);
+setTimeout(mountIfMine, 1500);

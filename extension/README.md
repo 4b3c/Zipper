@@ -128,6 +128,11 @@ override in release builds. Two real options:
 
 - `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* → pick
   `manifest.json`. Fine for testing; **gone on restart.**
+- `update_url` in the tracked manifest is the placeholder `__ZIPPER_EXT_BASE__`.
+  It is inside the signature, so it cannot be patched in after signing —
+  `zipper ext --build` resolves it from `ZIPPER_EXT_BASE` just before upload and
+  puts the placeholder back afterwards. A failed sign leaves the real address in
+  place for the retry; `zipper ext --clean` restores it by hand.
 - Sign it through AMO as **unlisted / self-distributed** — free, interactive,
   not held up by review, never publicly listed. `web-ext sign --channel=unlisted`
   with an API key gives a `.xpi` that installs like any add-on.
@@ -136,8 +141,11 @@ Then open the extension's options and enter the dashboard's address — the
 MagicDNS name rather than the tailnet IP, so it survives the address changing:
 
 ```
-http://srv1441333.tail0dcbff.ts.net:8800
+http://<machine>.<tailnet>.ts.net:8800
 ```
+
+(The real one is `ZIPPER_URL` in `/opt/zipper/.env`, not written out here: this
+file is published, and the hostname names his box.)
 
 (Port 8800, not 4199. `zipper-web.service` binds `127.0.0.1:8800` and the enabled
 nginx site proxies the tailnet address to it. The `4199`/`4200` blocks in

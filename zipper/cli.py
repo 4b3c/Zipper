@@ -112,6 +112,8 @@ def main():
     s.add_argument('--build', action='store_true', help='sign a new version')
     s.add_argument('--bump', choices=['major', 'minor', 'patch'], default='patch')
     s.add_argument('--set-version', dest='set_version', metavar='X.Y.Z')
+    s.add_argument('--clean', action='store_true',
+                   help='put the update_url placeholder back after a failed sign')
     s.set_defaults(fn=ext.cmd_ext)
 
     a = ap.parse_args()

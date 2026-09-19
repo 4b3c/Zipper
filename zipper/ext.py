@@ -69,6 +69,46 @@ def set_version(version):
     return old, version
 
 
+PLACEHOLDER = '__ZIPPER_EXT_BASE__'
+
+
+def set_update_url(base=None):
+    """Point the manifest at this box, just before it is signed.
+
+    `update_url` is inside the manifest and therefore covered by the signature,
+    so it cannot be patched in afterwards -- but it is also a personal hostname,
+    and this repo is public. The tracked manifest carries a placeholder and the
+    real address arrives from `ZIPPER_EXT_BASE` at build time, which keeps the
+    two in step: before, the same host was written out in two places and the
+    .env comment could only ask that they match.
+
+    Textual, for the same reason `set_version` is: a build should not reflow a
+    file its author is still reading.
+    """
+    base = (base or BASE).rstrip('/')
+    if not base:
+        raise RuntimeError('ZIPPER_EXT_BASE is unset - see .env.example')
+    with open(MANIF, encoding='utf-8') as fh:
+        s = fh.read()
+    cur = _manifest()['browser_specific_settings']['gecko'].get('update_url', '')
+    s = s.replace('"update_url": "%s"' % cur,
+                  '"update_url": "%s/ext/updates.json"' % base, 1)
+    with open(MANIF, 'w', encoding='utf-8') as fh:
+        fh.write(s)
+    return base
+
+
+def clear_update_url():
+    """Put the placeholder back, so the working tree stays publishable."""
+    with open(MANIF, encoding='utf-8') as fh:
+        s = fh.read()
+    cur = _manifest()['browser_specific_settings']['gecko'].get('update_url', '')
+    s = s.replace('"update_url": "%s"' % cur,
+                  '"update_url": "%s/ext/updates.json"' % PLACEHOLDER, 1)
+    with open(MANIF, 'w', encoding='utf-8') as fh:
+        fh.write(s)
+
+
 def write_update_manifest(version, xpi_name, base=None):
     """The JSON Firefox polls. Its shape is fixed by Mozilla, not by us."""
     base = (base or BASE).rstrip('/')
@@ -93,6 +133,10 @@ def write_update_manifest(version, xpi_name, base=None):
 
 
 def cmd_ext(a):
+    if getattr(a, 'clean', False):
+        clear_update_url()
+        print('update_url : %s/ext/updates.json' % PLACEHOLDER)
+        return 0
     if getattr(a, 'show', False) or not getattr(a, 'build', False):
         return _show()
     return _build(a)
@@ -103,8 +147,12 @@ def _show():
     print('source     : %s' % SRC)
     print('version    : %s' % m['version'])
     print('addon id   : %s' % addon_id())
-    print('update_url : %s' % m['browser_specific_settings']['gecko']
-          .get('update_url', '(none - auto-update is off)'))
+    url = m['browser_specific_settings']['gecko'].get(
+        'update_url', '(none - auto-update is off)')
+    if PLACEHOLDER in url:
+        url = '%s  (resolved from ZIPPER_EXT_BASE=%s at build time)' % (
+            url, BASE or 'UNSET')
+    print('update_url : %s' % url)
     print('artifacts  : %s' % OUT)
     for f in sorted(glob.glob(os.path.join(OUT, '*'))):
         print('   %-42s %6.1f kB' % (os.path.basename(f),
@@ -135,6 +183,7 @@ def _build(a):
         version = _bump(_manifest()['version'], getattr(a, 'bump', None) or 'patch')
     old, new = set_version(version)
     print('version    : %s -> %s' % (old, new))
+    print('update_url : %s/ext/updates.json' % set_update_url())
 
     os.makedirs(OUT, exist_ok=True)
     cmd = ['web-ext', 'sign', '--channel=unlisted',
@@ -150,8 +199,16 @@ def _build(a):
         # Leave the manifest at the bumped version anyway: AMO rejects a repeat
         # version, and a failed upload may still have consumed the number.
         print('signing failed - the version stays bumped, because AMO may have '
-              'taken it either way', file=sys.stderr)
+              'taken it either way, and update_url stays resolved for the '
+              'retry. `zipper ext --clean` puts the placeholder back.',
+              file=sys.stderr)
         return p.returncode
+
+    # Signed: the address is baked into the .xpi now, so the working copy goes
+    # back to the placeholder. Doing it here rather than in a finally block is
+    # deliberate -- a failed signing leaves the real URL in place, which is what
+    # a retry needs, and the failure path already says the tree was touched.
+    clear_update_url()
 
     xpis = sorted(glob.glob(os.path.join(OUT, '*.xpi')), key=os.path.getmtime)
     if not xpis:

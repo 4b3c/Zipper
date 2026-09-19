@@ -157,6 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             # already rendered in his convention (24h only across noon), so
             # the browser copies cells and does no arithmetic.
             self._send(200, json.dumps({'pending': hours.to_write(),
+                                        'sheet_id': hours.SHEET_ID,
                                         'tab': hours._load().get('sheet', {}).get('tab')}),
                        'application/json')
         elif self.path == '/api/worklist':

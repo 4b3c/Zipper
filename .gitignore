@@ -211,3 +211,6 @@ __marimo__/
 
 # GitHub App private key — credential, never published
 *.pem
+
+# web-ext build state; the values live in .env
+extension/.amo-upload-uuid
