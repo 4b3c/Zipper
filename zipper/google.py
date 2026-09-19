@@ -225,16 +225,20 @@ def cmd_google(a):
         print('ZIPPER_GOOGLE_CLIENT_ID / _SECRET are unset in /opt/zipper/.env')
         return 1
     if getattr(a, 'auth', False) or not authorized():
-        # Whose account, not a name: the client is Internal to one Workspace
-        # org, so authorising as the wrong login fails at the consent screen
-        # rather than quietly writing a token for a sheet he cannot see.
-        print('Open this, signed in as the account that owns the sheet:\n')
+        # Naming the account is worth a line -- the client is Internal to one
+        # Workspace org, so the wrong login fails at the consent screen and it
+        # is better to be told which one up front. The address is config, not a
+        # default: unset, this says what it needs rather than who he is.
+        who = _cfg('ZIPPER_GOOGLE_ACCOUNT')
+        print('Open this, signed in as %s:\n'
+              % (who or 'the account that owns the sheet'))
         print(auth_url())
         print('\nThe callback writes the refresh token into .env itself.')
         if not getattr(a, 'auth', False):
             print('\n(not authorized yet — that is why you are seeing this)')
         return 0
     print('client     : %s' % _cfg('ZIPPER_GOOGLE_CLIENT_ID')[:28] + '...')
+    print('account    : %s' % (_cfg('ZIPPER_GOOGLE_ACCOUNT') or '(unset)'))
     print('redirect   : %s' % redirect_uri())
     print('authorized : yes')
     sid = _cfg('ZIPPER_SHEET_ID')
