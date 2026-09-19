@@ -163,6 +163,27 @@ def read(sheet_id, rng):
     return res.get('values', [])
 
 
+def read_formula(sheet_id, rng):
+    """The same cells as formulas, for reading a sheet's shape rather than its
+    contents -- which week a SUM covers, and how much room is left in it."""
+    res = _call(f'{sheet_id}/values/{urllib.parse.quote(rng)}',
+                valueRenderOption='FORMULA')
+    return res.get('values', [])
+
+
+def write(sheet_id, updates):
+    """Several ranges at once. USER_ENTERED so "1:30" becomes a time and
+    "=C31-B31" becomes a formula, exactly as if he had typed them."""
+    return _call(f'{sheet_id}/values:batchUpdate', 'POST', {
+        'valueInputOption': 'USER_ENTERED',
+        'data': [{'range': r, 'values': v} for r, v in updates]})
+
+
+def batch(sheet_id, requests):
+    """spreadsheets.batchUpdate -- structure, as opposed to values."""
+    return _call(f'{sheet_id}:batchUpdate', 'POST', {'requests': requests})
+
+
 def tabs(sheet_id):
     res = _call(sheet_id, fields='sheets.properties')
     return [s['properties'] for s in res.get('sheets', [])]

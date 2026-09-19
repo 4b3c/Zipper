@@ -50,6 +50,11 @@ def main():
     a1.add_argument('--source', default='cli'); a1.set_defaults(fn=hours.cmd_hours)
     a2 = hs.add_parser('rm'); a2.add_argument('key'); a2.set_defaults(fn=hours.cmd_hours)
     a3 = hs.add_parser('import'); a3.add_argument('csvfile'); a3.set_defaults(fn=hours.cmd_hours)
+    a4 = hs.add_parser('pull', help='read the sheet; it wins')
+    a4.set_defaults(fn=hours.cmd_hours)
+    a5 = hs.add_parser('push', help='write pending entries into the sheet')
+    a5.add_argument('--dry-run', action='store_true')
+    a5.set_defaults(fn=hours.cmd_hours)
 
     s = sub.add_parser('ingest-budget'); s.add_argument('csvfile')
     s.set_defaults(fn=metrics.cmd_ingest_budget)

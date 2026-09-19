@@ -290,6 +290,45 @@ def flags():
     return out
 
 
+def pull():
+    """Read the sheet and make the ledger agree with it.
+
+    `complete=True` is honest here in a way it never was from the browser: an
+    API read returns the whole tab, so a row missing from it really is a row he
+    deleted. This is the path the delete guard was written for.
+    """
+    from . import google, sheet
+    sid = google._cfg('ZIPPER_SHEET_ID')
+    tab = _load().get('sheet', {}).get('tab') or current_tab()
+    t = sheet.Tab(sid, tab)
+    return reconcile(t.entries(), tab=tab, complete=True)
+
+
+def push(dry=False):
+    """Put every pending entry into the sheet, or say why it cannot."""
+    from . import google, sheet
+    sid = google._cfg('ZIPPER_SHEET_ID')
+    tab = _load().get('sheet', {}).get('tab') or current_tab()
+    ents = sorted(pending(), key=lambda x: (x['date'], x['start'] or '~'))
+    t, writes, refused = sheet.plan(sid, tab, ents)
+    if writes and not dry:
+        google.write(sid, [(f"'{tab}'!A{r}:F{r}", [v]) for r, v in writes])
+        # Formatting first: the read-back below trusts what the sheet displays.
+        sheet.match_format(sid, tab, writes)
+        # Read back rather than assume. A write that lands in the wrong row is
+        # the failure worth catching, and the sheet is the only witness.
+        pull()
+    return writes, refused
+
+
+def current_tab():
+    """The tab for today, by name. One per semester, so this is a guess only
+    at the turn of a term -- and a wrong guess refuses rather than writes."""
+    today = dt.date.today()
+    term = 'Spring' if today.month <= 6 else 'Fall'
+    return f'{term} {today.year}'
+
+
 def cmd_hours(a):
     action = getattr(a, 'action', None) or 'show'
     if action == 'add':
@@ -302,6 +341,20 @@ def cmd_hours(a):
     if action == 'import':
         rows = _read_csv(a.csvfile)
         print(reconcile(rows, tab=os.path.basename(a.csvfile)))
+        return
+    if action == 'pull':
+        print(pull())
+        return
+    if action == 'push':
+        writes, refused = push(dry=getattr(a, 'dry_run', False))
+        for r, v in writes:
+            print(f'  row {r:>4}  {v[0]}  {v[1]}-{v[2]:<6} {v[4][:48]}')
+        for e, why in refused:
+            print(f'  REFUSED  {e["date"]}  {e["note"][:34]:36} {why}')
+        if not writes and not refused:
+            print('nothing pending')
+        elif getattr(a, 'dry_run', False):
+            print('\n(dry run — nothing was written)')
         return
 
     ws = weeks()
@@ -339,10 +392,10 @@ def _read_csv(path):
                 d = dt.datetime.strptime(a, '%m/%d/%Y').date()
             except ValueError:
                 continue
-            m = re.match(r'^(\d+):(\d+):(\d+)$', r[3].strip())
+            m = re.match(r'^(\d+):(\d+)(?::(\d+))?$', r[3].strip())
             if not m:
                 continue
-            h, mi, se = map(int, m.groups())
+            h, mi, se = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
             sub = r[5].strip()
             if sub.lower() in ('yes', 'no'):
                 sub = ''
