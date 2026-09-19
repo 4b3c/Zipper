@@ -51,6 +51,14 @@ def _blob_fetched(path):
         return _mtime_iso(path)
     return v or _mtime_iso(path)
 
+def _hours_fetched():
+    try:
+        with open(os.path.join(core.INBOX, 'hours.json')) as fh:
+            return json.load(fh).get('sheet', {}).get('fetched')
+    except Exception:
+        return None
+
+
 def freshness():
     cal = [_blob_fetched(p) for p in glob.glob(os.path.join(core.INBOX, 'calendar-*.json'))]
     cal = [c for c in cal if c]
@@ -59,6 +67,8 @@ def freshness():
         'calendars': min(cal) if cal else None,
         'github': _blob_fetched(core.GH_JSON),
         'canvas': _blob_fetched(canvas.CANVAS_JSON),
+        # The timesheet is a real source now, so it ages like one.
+        'hours': _hours_fetched(),
         'vault': vault,
     }
 

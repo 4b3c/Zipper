@@ -327,6 +327,14 @@ def fetch_all(a, emit=True):
     # to beat `agenda` to the strike-throughs on a cookie that expired hourly;
     # with no fetch there is no ordering left to enforce. `zipper canvas` still
     # reports what was last read, and how long ago.
+    print('\n== hours ==')
+    try:
+        from . import hours as _hours
+        _hours.cmd_refresh(a)
+    except Exception as e:
+        # Same contract as every other source: a Google outage or a revoked
+        # token degrades the brief, it does not stop it.
+        print('hours step skipped: %s' % e)
     print('\n== sync ==');   sync.cmd_sync(a)
     print('\n== agenda =='); a.days = getattr(a, 'days', 14) or 14; ics.cmd_agenda(a)
     print('\n== status =='); status.cmd_status(a)

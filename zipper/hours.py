@@ -347,6 +347,56 @@ def push(dry=False):
     return writes, refused
 
 
+def sync_metric():
+    """Make `luminosity_hours` a consequence of the sheet, not a parallel record.
+
+    Appends a row only where the week's total actually moved. `metrics.csv` is
+    append-only -- a past row is never edited -- so writing every week on every
+    fetch would turn a stable series into a wall of identical rows and make the
+    trend unreadable. Weeks the ledger has never seen are left alone, which is
+    what protects the hand-backfilled 2025 history from a ledger that only
+    holds the current semester.
+    """
+    import csv as _csv
+    from . import metrics as M
+    seen = {}
+    try:
+        with open(M.METCSV, encoding='utf-8') as fh:
+            for r in _csv.DictReader(fh):
+                if r['key'] == 'luminosity_hours':
+                    seen[r['date']] = r['value']     # last row per date wins
+    except FileNotFoundError:
+        pass
+    moved = []
+    for w in weeks():
+        prev = seen.get(w['week'])
+        if prev is not None and abs(float(prev) - w['worked']) < 1e-9:
+            continue
+        M.add_metric('luminosity_hours', w['worked'], w['week'],
+                     '' if prev is None else 'was %s' % prev, 'hours-sheet')
+        moved.append((w['week'], prev, w['worked']))
+    return moved
+
+
+def cmd_refresh(a=None):
+    """The fetch step: read the sheet, then let the metric follow.
+
+    Deliberately produces no queue rows. A week's total is current state, not
+    an event -- the same reason a flag is not a row. Ticking "the sheet changed"
+    would read as handled while the sheet went on changing.
+    """
+    res = pull()
+    moved = sync_metric()
+    print('hours: %d in sheet, %d pending%s'
+          % (len(_load()['entries']), res['pending'],
+             ', adopted %d' % res['adopted'] if res['adopted'] else ''))
+    for wk, prev, now in moved:
+        print('       %s  %s -> %s' % (wk, prev if prev is not None else '-', now))
+    for f in flags():
+        print('       flag: %s' % f)
+    return res
+
+
 def current_tab():
     """The tab for today, by name. One per semester, so this is a guess only
     at the turn of a term -- and a wrong guess refuses rather than writes."""
