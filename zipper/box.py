@@ -40,7 +40,15 @@ TTL = 5.0
 # one divides by a zero interval.
 _LOCK = threading.Lock()
 _CACHE = {'at': 0.0, 'data': None}
-_CPU = {'at': 0.0, 'idle': 0.0, 'total': 0.0}
+
+# Two baselines, deliberately. A CPU percentage is meaningless without the
+# window it covers, and the two readers want different windows: the card wants
+# "busy right now" and is read whenever a page renders, the series wants a true
+# minute and is read on a timer. Sharing one baseline let a page load consume
+# the sampler's `prev`, so a plotted point silently covered however long it had
+# been since someone last opened the dashboard rather than the minute it claims.
+_CPU = {'at': 0.0, 'idle': 0.0, 'total': 0.0}          # the live card
+_CPU_SERIES = {'at': 0.0, 'idle': 0.0, 'total': 0.0}   # the minute series
 
 
 def _run(*cmd):
@@ -61,26 +69,36 @@ def _cpu_sample():
     return v[3] + (v[4] if len(v) > 4 else 0.0), sum(v)
 
 
-def cpu_pct():
-    """Busy percentage since the last call.
+def cpu_pct(state=None):
+    """Busy percentage over the window since `state` was last read.
+
+    `state` is the caller's own baseline -- `_CPU` for the live card, or
+    `_CPU_SERIES` for the plotted minute -- so that two readers on different
+    schedules cannot consume each other's `prev` and shorten each other's
+    windows.
 
     The first call has nothing to difference against, so it takes a short real
     sample rather than reporting a number computed from boot -- an average over
     88 days of uptime is not what anyone reading a dashboard means by "CPU".
+    That 120ms reading is honest for the 120ms it covers, and on a one-core box
+    a service starting up genuinely pins the core for about that long. It is
+    still the wrong number to *plot*: see `_sampler`, which throws its first one
+    away rather than filing a peak in a slot that means an average.
     """
+    st = _CPU if state is None else state
     idle, total = _cpu_sample()
     if idle is None:
         return None
-    prev_total = _CPU['total']
-    if not prev_total or total <= prev_total or time.time() - _CPU['at'] > 300:
+    prev_total = st['total']
+    if not prev_total or total <= prev_total or time.time() - st['at'] > 300:
         time.sleep(0.12)
         idle2, total2 = _cpu_sample()
         if idle2 is None or total2 <= total:
             return None
-        _CPU.update(at=time.time(), idle=idle2, total=total2)
+        st.update(at=time.time(), idle=idle2, total=total2)
         return max(0.0, min(100.0, 100.0 * (1 - (idle2 - idle) / (total2 - total))))
-    pct = 100.0 * (1 - (idle - _CPU['idle']) / (total - prev_total))
-    _CPU.update(at=time.time(), idle=idle, total=total)
+    pct = 100.0 * (1 - (idle - st['idle']) / (total - prev_total))
+    st.update(at=time.time(), idle=idle, total=total)
     return max(0.0, min(100.0, pct))
 
 
@@ -214,11 +232,17 @@ def history():
 
 
 def sample():
-    """Append one reading. Safe to call from anywhere; only the sampler does."""
+    """Append one reading. Safe to call from anywhere; only the sampler does.
+
+    The CPU number is taken against `_CPU_SERIES` rather than reused from
+    `read()`, so every plotted point covers the same width of time whether or
+    not anyone loaded the dashboard in between.
+    """
     b = read(force=True)
+    cpu = cpu_pct(_CPU_SERIES)
     mem, dsk = b.get('mem'), b.get('disk')
     row = {'t': round(b['at']),
-           'cpu': None if b.get('cpu') is None else round(b['cpu'], 1),
+           'cpu': None if cpu is None else round(cpu, 1),
            'mem': None if not mem else round(mem['pct'], 1),
            'disk': None if not dsk else round(dsk['pct'], 1)}
     with _HLOCK:
@@ -238,12 +262,20 @@ def sample():
 
 
 def _sampler():
+    # Prime the series baseline and drop what it returns. That first reading is
+    # a 120ms sample taken while this very process is starting -- imports, the
+    # feed watcher, ttyd -- and on one core that really is ~100%. True, and the
+    # wrong shape for this series: every other point is a 60s average, so
+    # plotting it put a half-second peak in a slot that means a minute and drew
+    # a spike on every restart that looked exactly like the trouble the graph
+    # exists to warn about. Cost: the first point arrives a minute in.
+    cpu_pct(_CPU_SERIES)
     while True:
+        time.sleep(SAMPLE_EVERY)
         try:
             sample()
         except Exception:
             pass
-        time.sleep(SAMPLE_EVERY)
 
 
 def start_sampler():
