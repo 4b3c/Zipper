@@ -221,13 +221,21 @@ def new_week(sheet_id, tab_name, date, dry=False):
     An append, never an insert, for the same reason `plan` appends: inserting
     shifts every row below and rewrites the formulas of weeks already billed.
 
-    The header goes *below the last block's SUM range*, not in the first blank
-    row. Week 4 is `=SUM(D27:D35)` with rows only to 31, so rows 32-35 are blank
-    and look free -- but a header written there would put the new week's own
-    total inside the old week's sum, and Week 4 would silently bill Week 5's
-    hours on top of its own.
+    The header cannot go in the first blank row of the previous block: those
+    rows are its SUM's headroom, and a header written among them would put the
+    new week's total inside the old week's sum, so the old week would bill the
+    new week's hours on top of its own.
 
-    Returns (row, values), or raises ValueError with the reason it refused.
+    So the previous block's SUM is **trimmed to the rows it actually used**
+    first, and the header goes immediately after. The total does not move --
+    every row dropped is empty -- which is what makes this safe on a week
+    already submitted. What the old week loses is its headroom, so an entry
+    backfilled into it after the next week is open has nowhere to go and `push`
+    refuses. That is the accepted trade: he logs in order, and never a Monday
+    before the Sunday before it (his words, 2026-09-22).
+
+    Returns (row, values, trim), where `trim` is the previous block's new SUM
+    formula or None. Raises ValueError with the reason it refused.
     """
     tab = Tab(sheet_id, tab_name)
     monday = date - dt.timedelta(days=date.weekday())
@@ -243,9 +251,14 @@ def new_week(sheet_id, tab_name, date, dry=False):
     if last['sum_to'] is None:
         raise ValueError(f'{last["label"]} has no SUM range to append after')
 
-    used = max((i for i, r in enumerate(tab.shown, 1)
-                if any(str(x).strip() for x in r)), default=0)
-    row = max(last['sum_to'], used) + 1
+    # Trim the previous block to its used rows, so the new header sits directly
+    # beneath it. `sum_from` is the floor: a week with no sessions keeps one row
+    # rather than collapsing into a backwards range.
+    last_used = max(last['details']) if last['details'] else 0
+    keep_to = max(last_used, last['sum_from'])
+    trim = (f"=SUM(D{last['sum_from']}:D{keep_to})"
+            if keep_to < last['sum_to'] else None)
+    row = keep_to + 1
 
     n = 0
     for w in tab.weeks:
@@ -255,9 +268,12 @@ def new_week(sheet_id, tab_name, date, dry=False):
     values = [f'Week {n + 1}', '', '', f'=SUM(D{row + 1}:D{row + HEADROOM})',
               f'{monday:%m/%d/%Y} to {sunday:%m/%d/%Y}', 'No']
     if dry:
-        return row, values
+        return row, values, trim
 
-    google.write(sheet_id, [(f"'{tab_name}'!A{row}:F{row}", [values])])
+    writes = [(f"'{tab_name}'!A{row}:F{row}", [values])]
+    if trim:
+        writes.insert(0, (f"'{tab_name}'!D{last['header']}", [[trim]]))
+    google.write(sheet_id, writes)
     # Formatting comes from the previous *header*, not the row above -- the row
     # above is a session row, and a header that inherits it reads as one.
     gid = next((t['sheetId'] for t in google.tabs(sheet_id)
@@ -271,4 +287,4 @@ def new_week(sheet_id, tab_name, date, dry=False):
                             'endRowIndex': row, 'startColumnIndex': 0,
                             'endColumnIndex': 6},
             'pasteType': 'PASTE_FORMAT'}}])
-    return row, values
+    return row, values, trim

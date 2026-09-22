@@ -427,10 +427,13 @@ def cmd_hours(a):
         tab = _load().get('sheet', {}).get('tab') or current_tab()
         d = dt.date.fromisoformat(a.date) if a.date else dt.date.today()
         try:
-            row, v = sheet.new_week(sid, tab, d, dry=getattr(a, 'dry_run', False))
+            row, v, trim = sheet.new_week(sid, tab, d,
+                                          dry=getattr(a, 'dry_run', False))
         except ValueError as e:
             print(f'  REFUSED  {e}')
             return
+        if trim:
+            print(f'  trimmed the previous week to {trim}')
         print(f'  row {row:>4}  {v[0]}  {v[4]}  {v[3]}')
         if getattr(a, 'dry_run', False):
             print('\n(dry run — nothing was written)')
