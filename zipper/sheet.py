@@ -189,14 +189,86 @@ def match_format(sheet_id, tab, writes):
             gid = t['sheetId']
     if gid is None or not writes:
         return
+    # The nearest *session* row above, not literally the row above. The first
+    # row of a freshly opened week has the `Week N` header above it, whose A-C
+    # cells carry no date or time format -- a row that inherited those read back
+    # as bare serials, which `entries` cannot parse, so it stayed pending and
+    # would have been written again on the next push.
+    t = Tab(sheet_id, tab)
+    sessions = sorted({r for w in t.weeks for r in w['details']})
     reqs = []
     for row, _ in writes:
+        src = max((r for r in sessions if r < row), default=row - 1)
         reqs.append({'copyPaste': {
-            'source': {'sheetId': gid, 'startRowIndex': row - 2,
-                       'endRowIndex': row - 1, 'startColumnIndex': 0,
+            'source': {'sheetId': gid, 'startRowIndex': src - 1,
+                       'endRowIndex': src, 'startColumnIndex': 0,
                        'endColumnIndex': 6},
             'destination': {'sheetId': gid, 'startRowIndex': row - 1,
                             'endRowIndex': row, 'startColumnIndex': 0,
                             'endColumnIndex': 6},
             'pasteType': 'PASTE_FORMAT'}})
     google.batch(sheet_id, reqs)
+
+
+# -- opening the next week ----------------------------------------------------
+
+HEADROOM = 9            # session rows a new block's SUM covers, as Week 4 has
+
+
+def new_week(sheet_id, tab_name, date, dry=False):
+    """Append a `Week N` block covering the week `date` falls in.
+
+    An append, never an insert, for the same reason `plan` appends: inserting
+    shifts every row below and rewrites the formulas of weeks already billed.
+
+    The header goes *below the last block's SUM range*, not in the first blank
+    row. Week 4 is `=SUM(D27:D35)` with rows only to 31, so rows 32-35 are blank
+    and look free -- but a header written there would put the new week's own
+    total inside the old week's sum, and Week 4 would silently bill Week 5's
+    hours on top of its own.
+
+    Returns (row, values), or raises ValueError with the reason it refused.
+    """
+    tab = Tab(sheet_id, tab_name)
+    monday = date - dt.timedelta(days=date.weekday())
+    sunday = monday + dt.timedelta(days=6)
+
+    existing = tab.week_for(date)
+    if existing is not None:
+        raise ValueError(f'{existing["label"]} already covers {date}')
+
+    last = tab.weeks[-1] if tab.weeks else None
+    if last is None:
+        raise ValueError(f"'{tab_name}' has no week blocks to append after")
+    if last['sum_to'] is None:
+        raise ValueError(f'{last["label"]} has no SUM range to append after')
+
+    used = max((i for i, r in enumerate(tab.shown, 1)
+                if any(str(x).strip() for x in r)), default=0)
+    row = max(last['sum_to'], used) + 1
+
+    n = 0
+    for w in tab.weeks:
+        m = re.match(r'^Week\s+(\d+)', w['label'])
+        if m:
+            n = max(n, int(m.group(1)))
+    values = [f'Week {n + 1}', '', '', f'=SUM(D{row + 1}:D{row + HEADROOM})',
+              f'{monday:%m/%d/%Y} to {sunday:%m/%d/%Y}', 'No']
+    if dry:
+        return row, values
+
+    google.write(sheet_id, [(f"'{tab_name}'!A{row}:F{row}", [values])])
+    # Formatting comes from the previous *header*, not the row above -- the row
+    # above is a session row, and a header that inherits it reads as one.
+    gid = next((t['sheetId'] for t in google.tabs(sheet_id)
+                if t['title'] == tab_name), None)
+    if gid is not None:
+        google.batch(sheet_id, [{'copyPaste': {
+            'source': {'sheetId': gid, 'startRowIndex': last['header'] - 1,
+                       'endRowIndex': last['header'], 'startColumnIndex': 0,
+                       'endColumnIndex': 6},
+            'destination': {'sheetId': gid, 'startRowIndex': row - 1,
+                            'endRowIndex': row, 'startColumnIndex': 0,
+                            'endColumnIndex': 6},
+            'pasteType': 'PASTE_FORMAT'}}])
+    return row, values

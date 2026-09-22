@@ -421,6 +421,20 @@ def cmd_hours(a):
     if action == 'pull':
         print(pull())
         return
+    if action == 'week':
+        from . import google, sheet
+        sid = google._cfg('ZIPPER_SHEET_ID')
+        tab = _load().get('sheet', {}).get('tab') or current_tab()
+        d = dt.date.fromisoformat(a.date) if a.date else dt.date.today()
+        try:
+            row, v = sheet.new_week(sid, tab, d, dry=getattr(a, 'dry_run', False))
+        except ValueError as e:
+            print(f'  REFUSED  {e}')
+            return
+        print(f'  row {row:>4}  {v[0]}  {v[4]}  {v[3]}')
+        if getattr(a, 'dry_run', False):
+            print('\n(dry run — nothing was written)')
+        return
     if action == 'push':
         writes, refused = push(dry=getattr(a, 'dry_run', False))
         for r, v in writes:
